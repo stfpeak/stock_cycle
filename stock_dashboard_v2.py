@@ -153,6 +153,26 @@ def get_trading_dates_2026(days=15):
         return dates
 
 
+def get_actual_latest_date(dates):
+    """获取实际最新的日期（考虑当前时间是否开盘）
+    如果当前时间在9:25之前，说明市场尚未开盘，
+    dates[0]的数据实际上是上一个交易日的（aksahre的quirk），
+    应该使用dates[1]
+    """
+    beijing_now = get_beijing_now()
+    today_str = beijing_now.strftime('%Y%m%d')
+    hour, minute = beijing_now.hour, beijing_now.minute
+
+    # 如果当前时间在9:25之前，说明市场尚未开盘
+    # dates[0]的数据虽然是今天的日期，但实际是上一交易日的数据
+    if hour < 9 or (hour == 9 and minute < 25):
+        # 使用dates[1]作为实际最新日期
+        return dates[1] if len(dates) > 1 else (dates[0] if dates else today_str)
+
+    # 否则返回dates的第一个（最新的）
+    return dates[0] if dates else today_str
+
+
 def get_trading_dates(days=15):
     """获取近N个交易日期（备用逻辑）"""
     dates = []
@@ -575,7 +595,9 @@ def analyze_concept_stocks(df_hot_concepts, df_concept_stock, df_zt_pool, df_hot
 def generate_markdown(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concept_stock=None):
     """生成Markdown报告"""
     today = datetime.now().strftime('%Y年%m月%d日')
-    today_date = dates[0] if dates else get_today_str()
+
+    # 找到实际最新的日期（考虑当前时间是否开盘）
+    today_date = get_actual_latest_date(dates)
     today_date_int = int(today_date) if today_date else None
 
     md = f"""# 股票分析报告
@@ -873,10 +895,13 @@ def format_seal_time(t):
 def generate_html(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concept_stock=None, archives=None):
     """生成HTML报告"""
     today = datetime.now().strftime('%Y年%m月%d日')
-    today_date = dates[0] if dates else get_today_str()
-    today_date_int = int(today_date) if today_date else None
-    today_str = datetime.now().strftime('%Y%m%d')
     archives = archives or []
+
+    # 找到实际最新的日期（考虑当前时间是否开盘）
+    today_date = get_actual_latest_date(dates)
+    today_date_int = int(today_date) if today_date else None
+    # 用于归档过滤的今日日期
+    today_str = datetime.now().strftime('%Y%m%d')
 
     # 共享数据
     code_to_concepts = analysis_result.get('code_to_concepts', {})
