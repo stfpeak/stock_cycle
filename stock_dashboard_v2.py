@@ -155,21 +155,13 @@ def get_trading_dates_2026(days=15):
 
 def get_actual_latest_date(dates):
     """获取实际最新的日期（考虑当前时间是否开盘）
-    如果当前时间在9:25之前，说明市场尚未开盘，
-    dates[0]的数据实际上是上一个交易日的（aksahre的quirk），
-    应该使用dates[1]
+    如果当前时间在9:25之前，返回dates[0]（已修正为实际数据的最新日期）
     """
     beijing_now = get_beijing_now()
     today_str = beijing_now.strftime('%Y%m%d')
     hour, minute = beijing_now.hour, beijing_now.minute
 
-    # 如果当前时间在9:25之前，说明市场尚未开盘
-    # dates[0]的数据虽然是今天的日期，但实际是上一交易日的数据
-    if hour < 9 or (hour == 9 and minute < 25):
-        # 使用dates[1]作为实际最新日期
-        return dates[1] if len(dates) > 1 else (dates[0] if dates else today_str)
-
-    # 否则返回dates的第一个（最新的）
+    # dates已经是实际数据日期列表，dates[0]是最新日期
     return dates[0] if dates else today_str
 
 
@@ -203,6 +195,8 @@ def load_zt_pool_from_files(dates):
             try:
                 df = pd.read_csv(file_path)
                 if len(df) > 0:
+                    # 用文件名日期覆盖交易日期，确保一致性
+                    df['交易日期'] = int(date)
                     all_data.append(df)
             except Exception as e:
                 print(f"  ⚠ 读取 {date} 数据失败: {e}")
@@ -216,7 +210,7 @@ def load_zt_pool_from_files(dates):
     return None
 
 
-def get_zt_pool(dates, force_refresh_today=False, today_str=None):
+def get_zt_pool(dates, force_refresh_today=False, today_str=None, skip_fetch=False):
     """
     获取涨停股池 - 从分日期文件加载
 
@@ -224,6 +218,7 @@ def get_zt_pool(dates, force_refresh_today=False, today_str=None):
         dates: 需要获取的日期列表
         force_refresh_today: 是否强制刷新今日数据（交易日盘中/收盘后）
         today_str: 今日日期字符串（用于强制刷新判断）
+        skip_fetch: 是否跳过获取缺失数据（市场未开盘时为True）
     """
     print("获取涨停股池...")
 
@@ -247,22 +242,27 @@ def get_zt_pool(dates, force_refresh_today=False, today_str=None):
     if df_existing is not None:
         print(f"  ✓ 已有数据: {len(df_existing)} 条记录 ({len(existing_dates)} 个交易日)")
 
+    # 如果市场未开盘，跳过获取缺失数据
+    if skip_fetch and missing_dates:
+        print(f"  ℹ 市场未开盘，跳过获取 {len(missing_dates)} 个缺失日期")
+
     # 获取缺失的数据
     all_data = []
     if df_existing is not None:
         all_data.append(df_existing)
 
-    for date in missing_dates:
-        try:
-            df = ak.stock_zt_pool_em(date=date)
-            df['交易日期'] = int(date)
-            # 保存到单独文件
-            file_path = os.path.join(ZT_POOL_DIR, f"{date}.csv")
-            df.to_csv(file_path, index=False, encoding='utf-8-sig')
-            print(f"  ✓ {date}: {len(df)} 只 (已保存)")
-            all_data.append(df)
-        except Exception as e:
-            print(f"  ✗ {date}: 获取失败 ({e})")
+    if not skip_fetch:
+        for date in missing_dates:
+            try:
+                df = ak.stock_zt_pool_em(date=date)
+                df['交易日期'] = int(date)
+                # 保存到单独文件
+                file_path = os.path.join(ZT_POOL_DIR, f"{date}.csv")
+                df.to_csv(file_path, index=False, encoding='utf-8-sig')
+                print(f"  ✓ {date}: {len(df)} 只 (已保存)")
+                all_data.append(df)
+            except Exception as e:
+                print(f"  ✗ {date}: 获取失败 ({e})")
 
     if all_data:
         df_all = pd.concat(all_data, ignore_index=True)
@@ -1799,7 +1799,15 @@ def main():
 
     # 检查是否需要自动更新今日涨停数据
     auto_update, today_str = should_auto_update_zt()
-    df_zt_pool = get_zt_pool(dates, force_refresh_today=auto_update, today_str=today_str)
+    df_zt_pool = get_zt_pool(dates, force_refresh_today=auto_update, today_str=today_str, skip_fetch=not auto_update)
+
+    # 从实际数据中获取日期列表（排除没有数据的日期）
+    if df_zt_pool is not None and len(df_zt_pool) > 0:
+        actual_dates = sorted(df_zt_pool['交易日期'].dropna().unique().tolist(), reverse=True)
+        actual_dates = [str(int(d)) for d in actual_dates]
+        if len(actual_dates) > 0:
+            dates = actual_dates
+            print(f"  ✓ 实际数据日期: {dates[-1]} 至 {dates[0]}")
 
     # 概念股票数据使用缓存（不自动更新，需手动触发 update_data.py --concepts）
     df_concept_stock = load_concept_stock_list()
