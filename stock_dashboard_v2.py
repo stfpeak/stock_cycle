@@ -1179,18 +1179,34 @@ def generate_html(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concep
             </tr>"""
 
         # 构建趋势看板数据 (按日期ASC + 首封ASC排序)
-        board_stocks = []
+        # 先收集每个股票的所有涨停日期和最大连板数
+        stock_zt_info = {}  # {code: {'dates': set(), 'max_lianban': int}}
         for d in dates:
             stocks_on_date = date_rhythm.get(d, [])
             for name, lb, code, first_seal in stocks_on_date:
-                board_stocks.append({
-                    'name': name,
-                    'code': code,
-                    'lianban': lb,
-                    'date': d,
-                    'first_seal': first_seal,
-                    'seal_display': format_seal_time(first_seal)
-                })
+                if code not in stock_zt_info:
+                    stock_zt_info[code] = {'name': name, 'dates': [], 'max_lianban': 0, 'first_seals': {}}
+                stock_zt_info[code]['dates'].append(d)
+                if lb > stock_zt_info[code]['max_lianban']:
+                    stock_zt_info[code]['max_lianban'] = lb
+                # 记录首次封板时间用于排序
+                if d not in stock_zt_info[code]['first_seals']:
+                    stock_zt_info[code]['first_seals'][d] = first_seal
+
+        # 构建看板数据，按日期ASC + 首封ASC排序
+        board_stocks = []
+        for code, info in stock_zt_info.items():
+            # 按日期和首次封板时间排序
+            info['dates'].sort(key=lambda d: (d, info['first_seals'].get(d) or ''))
+            board_stocks.append({
+                'name': info['name'],
+                'code': code,
+                'lianban': info['max_lianban'],
+                'zt_count': len(info['dates']),
+                'zt_dates': info['dates'],  # 所有涨停日期列表
+                'date': info['dates'][0] if info['dates'] else '',  # 首次涨停日期
+                'first_seal': info['first_seals'].get(info['dates'][0]) if info['dates'] else None
+            })
         board_stocks.sort(key=lambda x: (x['date'], x['first_seal'] or ''))
         board_stocks_json = json.dumps(board_stocks, ensure_ascii=False)
 

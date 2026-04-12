@@ -1104,7 +1104,9 @@
         grid.innerHTML = stocks.map(s => {
             const prefix = s.code.startsWith('6') ? 'sh' : 'sz';
             const ts = Date.now();
-            const dateFormatted = s.date.substring(4, 6) + '月' + s.date.substring(6, 8) + '日';
+            // 格式化所有涨停日期: "04/01, 04/03"
+            const ztDatesStr = (s.zt_dates || []).map(d => d.substring(4, 6) + '/' + d.substring(6, 8)).join(', ');
+            const firstDateFormatted = s.date ? s.date.substring(4, 6) + '月' + s.date.substring(6, 8) + '日' : '';
             return `
                 <div class="trend-stock-card">
                     <img class="trend-kline"
@@ -1113,8 +1115,11 @@
                          alt="${s.name}"
                          onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 200 120%22><rect fill=%22%23f0f0f0%22 width=%22200%22 height=%22120%22/><text x=%2250%22 y=%2260%22 fill=%22%23999%22 font-size=%2212%22>加载失败</text></svg>'">
                     <div class="trend-stock-info">
-                        <span class="stock-name">${s.name}</span>
-                        <span class="stock-date">${dateFormatted}</span>
+                        <div class="stock-name">${s.name} <span style="color:#666;font-weight:normal;">(${s.code})</span></div>
+                        <div class="zt-info">
+                            <span class="zt-count">${s.zt_count}次涨停</span>
+                            ${s.zt_count > 1 ? `<div class="zt-dates">${ztDatesStr}</div>` : ''}
+                        </div>
                     </div>
                 </div>
             `;
