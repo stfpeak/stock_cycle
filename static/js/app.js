@@ -1106,7 +1106,6 @@
             const ts = Date.now();
             // 格式化所有涨停日期: "04/01, 04/03"
             const ztDatesStr = (s.zt_dates || []).map(d => d.substring(4, 6) + '/' + d.substring(6, 8)).join(', ');
-            const firstDateFormatted = s.date ? s.date.substring(4, 6) + '月' + s.date.substring(6, 8) + '日' : '';
             return `
                 <div class="trend-stock-card">
                     <img class="trend-kline"
@@ -1118,7 +1117,7 @@
                         <div class="stock-name">${s.name} <span style="color:#666;font-weight:normal;">(${s.code})</span></div>
                         <div class="zt-info">
                             <span class="zt-count">${s.zt_count}次涨停</span>
-                            ${s.zt_count > 1 ? `<div class="zt-dates">${ztDatesStr}</div>` : ''}
+                            <div class="zt-dates">${ztDatesStr}</div>
                         </div>
                     </div>
                 </div>
