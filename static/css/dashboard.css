@@ -1411,45 +1411,39 @@ body {
 .trend-board-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 15px;
+  gap: 12px;
+  padding: 10px 0;
 }
 .trend-stock-card {
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 12px;
+  background: #fafafa;
+  border-radius: 6px;
+  overflow: hidden;
   text-align: center;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-}
-.trend-stock-card:hover {
-  box-shadow: 0 4px 12px rgba(0,0,0,0.12);
-  border-color: #4299e1;
 }
 .trend-kline {
   width: 100%;
-  height: 120px;
+  height: 160px;
   cursor: pointer;
-  border: 1px solid #e2e8f0;
-  border-radius: 4px;
   background: #fff;
-  object-fit: contain;
+  display: block;
 }
 .trend-kline:hover {
-  border-color: #4299e1;
+  opacity: 0.9;
 }
 .trend-stock-info {
-  margin-top: 8px;
-  font-size: 0.9em;
+  padding: 6px 8px;
+  font-size: 0.85em;
   color: #4a5568;
+  background: #f8fafc;
 }
 .trend-stock-info .stock-name {
   font-weight: 600;
   color: #2d3748;
 }
 .trend-stock-info .zt-info {
-  margin-top: 4px;
-  font-size: 0.85em;
+  font-size: 0.8em;
   color: #718096;
+  margin-top: 2px;
 }
 .trend-stock-info .zt-count {
   color: #e53e3e;
@@ -1457,6 +1451,5 @@ body {
 }
 .trend-stock-info .zt-dates {
   color: #a0aec0;
-  font-size: 0.8em;
-  margin-top: 2px;
+  font-size: 0.75em;
 }
