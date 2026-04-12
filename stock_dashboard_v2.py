@@ -339,7 +339,7 @@ def analyze_concept_stocks(df_hot_concepts, df_concept_stock, df_zt_pool, df_hot
     code_to_concepts = {}
     if df_concept_stock is not None:
         for _, row in df_concept_stock.iterrows():
-            code = str(row['股票代码'])
+            code = str(row['股票代码']).zfill(6)
             concept_code = str(row['概念代码'])
             if code not in code_to_concepts:
                 code_to_concepts[code] = set()
@@ -348,26 +348,28 @@ def analyze_concept_stocks(df_hot_concepts, df_concept_stock, df_zt_pool, df_hot
 
     # 辅助函数：在函数开头定义，确保在整个函数内可见
     def get_hot_rank(code):
+        code_str = str(code).zfill(6)
         if df_hot_stocks is not None:
-            match = df_hot_stocks[df_hot_stocks['stock_code'].astype(str) == str(code)]
+            match = df_hot_stocks[df_hot_stocks['stock_code'].astype(str).str.zfill(6) == code_str]
             if not match.empty:
                 return int(match.iloc[0]['rank'])
         return 999
 
     def get_hot_value(code):
+        code_str = str(code).zfill(6)
         if df_hot_stocks is not None:
-            match = df_hot_stocks[df_hot_stocks['stock_code'].astype(str) == str(code)]
+            match = df_hot_stocks[df_hot_stocks['stock_code'].astype(str).str.zfill(6) == code_str]
             if not match.empty:
                 return float(match.iloc[0]['hot_value'])
         return 0
 
     results = []
     other_stocks = []  # 不在TOP20的涨停股
-    hot_stocks_set = set(df_hot_stocks['stock_code'].astype(str).tolist()) if df_hot_stocks is not None else set()
+    hot_stocks_set = set(df_hot_stocks['stock_code'].astype(str).str.zfill(6).tolist()) if df_hot_stocks is not None else set()
 
-    # 修复：涨停池代码是float类型，需要先转为整数再转字符串，避免 '.0' 后缀问题
+    # 修复：涨停池代码是float类型，需要先转为整数再转字符串，避免 '.0' 后缀问题，并zfill(6)保留前导零
     if df_zt_pool is not None:
-        df_zt_pool['代码_str'] = df_zt_pool['代码'].apply(lambda x: str(int(x)) if pd.notna(x) else '')
+        df_zt_pool['代码_str'] = df_zt_pool['代码'].apply(lambda x: str(int(x)).zfill(6) if pd.notna(x) else '')
         zt_stock_codes = set(df_zt_pool['代码_str'].tolist())
     else:
         zt_stock_codes = set()
@@ -376,7 +378,7 @@ def analyze_concept_stocks(df_hot_concepts, df_concept_stock, df_zt_pool, df_hot
     not_zt_hot_stocks = []
 
     for _, stock in df_hot_stocks.iterrows() if df_hot_stocks is not None else []:
-        code = str(stock['stock_code'])
+        code = str(stock['stock_code']).zfill(6)
         if code not in zt_stock_codes:
             not_zt_hot_stocks.append(stock)
 
@@ -392,8 +394,8 @@ def analyze_concept_stocks(df_hot_concepts, df_concept_stock, df_zt_pool, df_hot
         if stocks_in_concept.empty:
             continue
 
-        stock_codes = set(stocks_in_concept['股票代码'].astype(str).tolist())
-        stock_name_map = dict(zip(stocks_in_concept['股票代码'].astype(str),
+        stock_codes = set(stocks_in_concept['股票代码'].astype(str).apply(lambda x: x.zfill(6)).tolist())
+        stock_name_map = dict(zip(stocks_in_concept['股票代码'].astype(str).apply(lambda x: x.zfill(6)),
                                   stocks_in_concept['股票名称']))
 
         if df_zt_pool is not None:
@@ -416,7 +418,8 @@ def analyze_concept_stocks(df_hot_concepts, df_concept_stock, df_zt_pool, df_hot
         def get_all_concepts(code):
             """获取股票的所有概念板块"""
             if df_concept_stock is not None:
-                stock_concepts = df_concept_stock[df_concept_stock['股票代码'].astype(str) == str(code)]
+                code_str = str(code).zfill(6)
+                stock_concepts = df_concept_stock[df_concept_stock['股票代码'].astype(str).str.zfill(6) == code_str]
                 return '、'.join(stock_concepts['概念名称'].tolist()[:5])  # 最多5个概念
             return '-'
 
@@ -465,7 +468,7 @@ def analyze_concept_stocks(df_hot_concepts, df_concept_stock, df_zt_pool, df_hot
     # 处理其他概念的涨停股
     if df_zt_pool is not None:
         for _, row in df_zt_pool.iterrows():
-            code = str(row['代码_str'])  # 使用已转换的代码字符串
+            code = str(row['代码_str'])  # 使用已转换的代码字符串（已zfill(6)）
             # 检查是否在TOP20概念中
             concepts = code_to_concepts.get(code, set())
             if not concepts:
@@ -478,7 +481,7 @@ def analyze_concept_stocks(df_hot_concepts, df_concept_stock, df_zt_pool, df_hot
                 all_concepts = []
                 if df_concept_stock is not None:
                     stock_concepts = df_concept_stock[
-                        df_concept_stock['股票代码'].astype(str) == code
+                        df_concept_stock['股票代码'].astype(str).str.zfill(6) == code
                     ]
                     all_concepts = stock_concepts['概念名称'].tolist()[:3]  # 取前3个
 
@@ -547,7 +550,7 @@ def analyze_concept_stocks(df_hot_concepts, df_concept_stock, df_zt_pool, df_hot
                 if not concept_names:
                     # 非TOP20概念
                     if df_concept_stock is not None:
-                        other = df_concept_stock[df_concept_stock['股票代码'].astype(str) == code]
+                        other = df_concept_stock[df_concept_stock['股票代码'].astype(str).str.zfill(6) == code]
                         if not other.empty:
                             concept_names = other['概念名称'].tolist()[:2]
 

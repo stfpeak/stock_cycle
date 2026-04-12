@@ -145,8 +145,7 @@ function renderTrendBoardCards(conceptId) {
   const grid = document.getElementById('grid-' + conceptId);
   if (!grid || grid.children.length > 0) return; // 已渲染则跳过
 
-  // 限制最多30只
-  const limited = stocks.slice(0, 30);
+  // 不限制数量，全部展示
 
   grid.innerHTML = limited.map(s => {
     const prefix = s.code.startsWith('6') ? 'sh' : 'sz';
@@ -199,3 +198,9 @@ function renderTrendBoardCards(conceptId) {
    - 添加"查看走势看板"按钮（id: `btn-{conceptId}`）
    - 预计算并嵌入涨停股票列表数据（JSON script标签）
    - 添加看板HTML结构（id: `board-{conceptId}`, `grid-{conceptId}`）
+
+## 注意事项
+
+- K线图使用日线（daily），展示股票约15日走势
+- 同一股票多次涨停会重复展示
+- 新浪API图片加载失败时显示占位图

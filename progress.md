@@ -1,5 +1,45 @@
 # 进度日志
 
+## 2026-04-13
+
+### 股票代码前导零丢失修复
+
+**问题**：以 `00` 开头的股票代码（如 `000555`）在转换过程中前导零丢失，变成 `555`，导致新浪K线URL无法正确生成。
+
+**修复文件**：`stock_dashboard_v2.py`
+
+**修复内容**：
+
+| 位置 | 修复前 | 修复后 |
+|:-----|:-------|:-------|
+| Line 342 | `code = str(row['股票代码'])` | `code = str(row['股票代码']).zfill(6)` |
+| Line 366 | `hot_stocks_set` 不格式化 | `hot_stocks_set` 使用 `str.zfill(6)` |
+| Line 370 | `str(int(x))` | `str(int(x)).zfill(6)` |
+| Line 379 | `code = str(stock['stock_code'])` | `code = str(stock['stock_code']).zfill(6)` |
+| Line 397-398 | `股票代码` 不格式化 | 使用 `str.zfill(6)` |
+| Line 421 | 比较不格式化 | 使用 `str.zfill(6)` 比较 |
+| Line 484 | 比较不格式化 | 使用 `str.zfill(6)` 比较 |
+| Line 553 | 比较不格式化 | 使用 `str.zfill(6)` 比较 |
+| get_hot_rank | 不格式化比较 | 使用 `str.zfill(6)` 比较 |
+| get_hot_value | 不格式化比较 | 使用 `str.zfill(6)` 比较 |
+| get_all_concepts | 不格式化比较 | 使用 `str.zfill(6)` 比较 |
+
+**效果**：
+- `其他概念涨停股`: 255 → 272（+17，因为00开头股票被正确匹配）
+- `多概念股票`: 158 → 153（-5，因为之前匹配有误）
+
+**新浪K线URL修复**：
+- 修复前：`sz555.png` → 错误
+- 修复后：`sz000555.png` → 正确
+
+### 运行命令
+
+```bash
+python stock_dashboard_v2.py  # 重新生成报告
+```
+
+---
+
 ## 2026-04-11/12
 
 ### 完成内容
