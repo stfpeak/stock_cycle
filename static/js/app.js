@@ -10,6 +10,579 @@
     let currentStockPrefix = '';
 
     // ================================================
+    // JSON报告加载功能
+    // ================================================
+
+    /**
+     * Escape HTML entities to prevent XSS
+     */
+    function escapeHtml(text) {
+        if (!text) return '';
+        var div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    /**
+     * 加载最新报告数据
+     */
+    function loadLatestReport() {
+        // Check if user selected a specific archive date
+        var selectedDate = localStorage.getItem('selectedArchiveDate');
+        if (selectedDate) {
+            localStorage.removeItem('selectedArchiveDate');
+            loadReportData(selectedDate);
+            return;
+        }
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', 'reports/data/', true);
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState === 4 && xhr.status === 200) {
+                var files = parseDirectoryListing(xhr.responseText);
+                var latestDate = findLatestDate(files);
+                if (latestDate) {
+                    loadReportData(latestDate);
+                } else {
+                    showLoadError('未找到报告数据');
+                }
+            } else if (xhr.readyState === 4 && xhr.status !== 200) {
+                showLoadError('无法加载数据目录');
+            }
+        };
+        xhr.send();
+    }
+
+    /**
+     * 解析目录列表HTML
+     */
+    function parseDirectoryListing(html) {
+        var files = [];
+        var matches = html.matchAll(/<a href="(\d{8}\.json)">/g);
+        for (var match of matches) {
+            files.push(match[1]);
+        }
+        return files;
+    }
+
+    /**
+     * 从文件名列表找到最新日期
+     */
+    function findLatestDate(files) {
+        if (!files || files.length === 0) return null;
+        files.sort();
+        return files[files.length - 1].replace('.json', '');
+    }
+
+    /**
+     * 加载指定日期的报告数据
+     */
+    function loadReportData(date) {
+        var jsonPath = 'reports/data/' + date + '.json';
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', jsonPath, true);
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState === 4) {
+                if (xhr.status === 200 || xhr.status === 304) {
+                    try {
+                        var data = JSON.parse(xhr.responseText);
+                        renderReport(data);
+                    } catch (e) {
+                        console.error('JSON解析失败:', e);
+                        showLoadError('数据解析失败');
+                    }
+                } else {
+                    showLoadError('数据加载失败: ' + xhr.status);
+                }
+            }
+        };
+        xhr.send();
+    }
+
+    /**
+     * 显示加载错误
+     */
+    function showLoadError(message) {
+        var footer = document.getElementById('footer');
+        if (footer) {
+            footer.innerHTML = '<p style="color:red;">' + escapeHtml(message) + '</p>';
+        }
+    }
+
+    /**
+     * 根据数据渲染页面
+     */
+    function renderReport(data) {
+        if (!data || !data.date || !data.dates || !data.stats) {
+            showLoadError('数据格式错误');
+            return;
+        }
+        // 1. 渲染头部信息
+        var dateEl = document.getElementById('report-date');
+        if (dateEl) {
+            dateEl.innerHTML = data.date.substring(0,4) + '年' + data.date.substring(4,6) + '月' + data.date.substring(6,8) + '日 | 分析时段: ' +
+                data.dates[data.dates.length-1].substring(0,4) + '年' + data.dates[data.dates.length-1].substring(4,6) + '月' + data.dates[data.dates.length-1].substring(6,8) + '日 至 ' +
+                data.date.substring(0,4) + '年' + data.date.substring(4,6) + '月' + data.date.substring(6,8) + '日';
+        }
+
+        // 2. 渲染统计卡片
+        var statEl = document.getElementById('stat-concepts');
+        if (statEl) statEl.textContent = data.stats.concept_count;
+        statEl = document.getElementById('stat-top20');
+        if (statEl) statEl.textContent = data.stats.top20_zt_count;
+        statEl = document.getElementById('stat-other');
+        if (statEl) statEl.textContent = data.stats.other_zt_count;
+        statEl = document.getElementById('stat-notzt');
+        if (statEl) statEl.textContent = data.stats.not_zt_hot_count;
+        statEl = document.getElementById('stat-todayzt');
+        if (statEl) statEl.textContent = data.stats.today_zt_count;
+
+        // 3. 渲染归档下拉框
+        var archiveSelect = document.getElementById('archive-select');
+        if (archiveSelect) {
+            archiveSelect.innerHTML = '<option value="">选择查看归档...</option><option value="latest">最新报告</option>';
+            (data.archives || []).forEach(function(archiveDate) {
+                var displayDate = archiveDate.substring(0,4) + '-' + archiveDate.substring(4,6) + '-' + archiveDate.substring(6,8);
+                archiveSelect.innerHTML += '<option value="' + archiveDate + '">' + escapeHtml(displayDate) + '</option>';
+            });
+        }
+
+        // 4. 渲染连板天梯
+        renderLadder(data.ladder, data.dates, data.date);
+
+        // 5. 渲染连板矩阵
+        renderMatrix(data.matrix, data.date);
+
+        // 6. 渲染今日涨停看板
+        renderTodayBoard(data.today_board);
+
+        // 7. 渲染涨停简图
+        renderJianxi(data);
+
+        // 8. 渲染热门概念板块一览
+        renderMainThemes(data);
+        renderConceptsGrid(data);
+
+        // 9. 渲染TOP20概念详情
+        renderConceptDetails(data.top20_concepts);
+
+        // 10. 渲染其他章节
+        renderOtherStocks(data.other_stocks);
+        renderNotZtStocks(data.not_zt_hot_stocks);
+        renderMultiConceptStocks(data.multi_concept_stocks);
+
+        // 更新标题
+        document.title = '热门概念板块涨停股分析报告 V2 - ' + data.date.substring(0,4) + '年' + data.date.substring(4,6) + '月' + data.date.substring(6,8) + '日';
+
+        // 隐藏footer加载提示
+        var footer = document.getElementById('footer');
+        if (footer) footer.style.display = 'none';
+    }
+
+    /**
+     * 渲染连板天梯
+     */
+    function renderLadder(ladder, allDates, targetDate) {
+        var container = document.getElementById('ladder-container');
+        if (!container) return;
+        if (!ladder) {
+            container.innerHTML = '<div class="jianxi-summary">暂无数据</div>';
+            return;
+        }
+
+        // 使用所有日期（最多15个交易日）
+        var recentDates = (allDates || []).slice(0, 15);
+        var html = '';
+
+        recentDates.forEach(function(dateStr) {
+            var stocks = ladder[dateStr] || [];
+            var shortDate = dateStr.substring(4, 6) + dateStr.substring(6, 8);
+            html += '<div class="rhythm-date"><div class="rhythm-header">' + shortDate + '日</div><div class="rhythm-content">';
+
+            if (stocks.length === 0) {
+                html += '<div class="jianxi-summary">-</div>';
+            } else {
+                stocks.forEach(function(stock) {
+                    // stock格式: [name, lianban, concepts, rank, code]
+                    var name = stock[0];
+                    var lb = stock[1];
+                    var concepts = stock[2];
+                    var code = stock[4];
+
+                    var lbClass = lb >= 3 ? 'lb-3' : (lb === 2 ? 'lb-2' : 'lb-1');
+                    var lbTag = lb >= 3 ? '3板+' : (lb === 2 ? '2板' : '首板');
+                    // Determine board type for inline tag
+                    var boardTag = '';
+                    if (code.startsWith('60')) {
+                        boardTag = "<span class='board-inline board-zhu'>主</span>";
+                    } else if (code.startsWith('00') || code.startsWith('002') || code.startsWith('003')) {
+                        boardTag = "<span class='board-inline board-chuang'>创</span>";
+                    } else if (code.startsWith('688')) {
+                        boardTag = "<span class='board-inline board-ke'>科</span>";
+                    }
+                    html += '<div class="rhythm-item" data-stock="' + escapeHtml(name) + '">' +
+                        '<div class="stock-block ' + lbClass + '" onclick="openKLineModal(\'' + code + '\', \'' + escapeHtml(name) + '\')">' +
+                        '<span class="name">' + escapeHtml(name) + '</span>' +
+                        '<span class="lb-tag">' + lbTag + ' ' + boardTag + '</span></div></div>';
+                });
+            }
+            html += '</div></div>';
+        });
+
+        container.innerHTML = html;
+
+        // 重新初始化股票高亮
+        initStockHighlight();
+    }
+
+    /**
+     * 渲染连板矩阵
+     */
+    function renderMatrix(matrix, targetDate) {
+        var container = document.getElementById('matrix-container');
+        var table = document.getElementById('matrix-table');
+        if (!container || !table) return;
+        if (!matrix) {
+            table.innerHTML = '<tr><td>暂无数据</td></tr>';
+            return;
+        }
+
+        // 获取所有概念和日期
+        var concepts = Object.keys(matrix).slice(0, 15); // 限制最多15个概念
+        var allDates = [];
+        concepts.forEach(function(concept) {
+            var dates = Object.keys(matrix[concept] || {});
+            dates.forEach(function(d) {
+                if (allDates.indexOf(d) === -1) allDates.push(d);
+            });
+        });
+        // 过滤日期：只显示 <= targetDate 的日期
+        allDates = allDates.filter(function(d) { return d <= targetDate; });
+        allDates.sort().reverse(); // 降序排列
+        var recentDates = allDates.slice(0, 6); // 最多6天
+
+        // 生成表头
+        var html = '<thead><tr><th class="matrix-th">概念</th>';
+        recentDates.forEach(function(dateStr) {
+            html += '<th class="matrix-th">' + dateStr.substring(4,6) + '/' + dateStr.substring(6,8) + '</th>';
+        });
+        html += '</tr></thead><tbody>';
+
+        // 生成数据行
+        concepts.forEach(function(concept) {
+            html += '<tr><td class="matrix-concept">' + escapeHtml(concept) + '</td>';
+            recentDates.forEach(function(dateStr) {
+                var stocks = matrix[concept][dateStr] || [];
+                if (stocks.length > 0) {
+                    var stockHtml = stocks.map(function(s) {
+                        return '<span class="matrix-stock" onclick="openKLineModal(\'' + s.code + '\', \'' + escapeHtml(s.name) + '\')">' +
+                            escapeHtml(s.name) + '<span class="matrix-lb">' + (s.lianban >= 3 ? '3+' : s.lianban) + '板</span></span>';
+                    }).join('');
+                    html += '<td class="matrix-cell">' + stockHtml + '</td>';
+                } else {
+                    html += '<td class="matrix-cell">-</td>';
+                }
+            });
+            html += '</tr>';
+        });
+        html += '</tbody>';
+
+        table.innerHTML = html;
+    }
+
+    /**
+     * 渲染今日涨停看板
+     */
+    function renderTodayBoard(todayBoard) {
+        var container = document.getElementById('today-board-container');
+        var descEl = document.getElementById('today-board-desc');
+        if (!container) return;
+        if (!todayBoard) {
+            container.innerHTML = '<div class="jianxi-summary">暂无数据</div>';
+            return;
+        }
+
+        var totalCount = todayBoard.total_count || todayBoard.count || 0;
+        if (descEl) {
+            descEl.textContent = todayBoard.date ? todayBoard.date.substring(0,4) + '年' + todayBoard.date.substring(4,6) + '月' + todayBoard.date.substring(6,8) + '日 | 共' + totalCount + '只涨停' : '今日涨停概况';
+        }
+
+        var conceptGroups = todayBoard.concept_groups || [];
+        var html = '';
+
+        conceptGroups.forEach(function(group) {
+            var stocks = group.stocks || [];
+            if (stocks.length > 0) {
+                html += '<div class="today-board-concept">';
+                html += '<div class="today-board-header">' + escapeHtml(group.concept_name || group.name || '其他') + ' <span class="today-board-count">' + stocks.length + '只</span></div>';
+                html += '<div class="today-board-stocks">';
+
+                stocks.forEach(function(stock) {
+                    var lb = stock.lianban || 1;
+                    var lbTag = lb >= 3 ? '3+' : (lb === 2 ? '2板' : '首板');
+                    var lbClass = lb >= 3 ? 'lb-3' : (lb === 2 ? 'lb-2' : 'lb-1');
+                    var stockName = stock.name || stock[0] || '';
+                    var stockCode = stock.code || stock[1] || '';
+                    html += '<div class="today-stock-item ' + lbClass + '" onclick="openKLineModal(\'' + stockCode + '\', \'' + escapeHtml(stockName) + '\')">' +
+                        '<span class="today-stock-name">' + escapeHtml(stockName) + '</span>' +
+                        '<span class="today-stock-lb">' + lbTag + '</span></div>';
+                });
+
+                html += '</div></div>';
+            }
+        });
+
+        if (!html) {
+            html = '<div class="jianxi-summary">暂无涨停数据</div>';
+        }
+
+        container.innerHTML = html;
+    }
+
+    /**
+     * 渲染涨停简图
+     */
+    function renderJianxi(data) {
+        var container = document.getElementById('jianxi-container');
+        var descEl = document.getElementById('jianxi-desc');
+        if (!container) return;
+
+        if (data.jianxi_image) {
+            var dateDisplay = data.jianxi_date ? data.jianxi_date.substring(4,6) + '-' + data.jianxi_date.substring(6,8) : '';
+            if (descEl) {
+                descEl.innerHTML = '韭研公社涨停简图 | ' + escapeHtml(dateDisplay) + '日';
+            }
+            container.innerHTML =
+                '<img src="' + data.jianxi_image + '" alt="涨停简图" class="jianxi-image" onerror="this.style.display=\'none\'; this.nextElementSibling.style.display=\'block\';">' +
+                '<div class="jianxi-fallback" style="display:none; text-align:center; padding:40px; color:#999;">图片加载失败，请刷新重试</div>';
+        } else {
+            container.innerHTML = '<div style="text-align:center; padding:40px; color:#999;">暂无简图数据</div>';
+        }
+    }
+
+    /**
+     * 渲染市场主线标签
+     */
+    function renderMainThemes(data) {
+        var container = document.getElementById('main-themes-container');
+        if (!container) return;
+
+        var hotConcepts = data.hot_concepts || [];
+        if (hotConcepts.length === 0) {
+            container.innerHTML = '';
+            return;
+        }
+
+        // 取前5个热门概念作为主线
+        var mainThemes = hotConcepts.slice(0, 5);
+        var html = '<div class="main-themes-tags">';
+        mainThemes.forEach(function(c) {
+            html += '<span class="main-theme-tag">' + escapeHtml(c.name) + '</span>';
+        });
+        html += '</div>';
+        container.innerHTML = html;
+    }
+
+    /**
+     * 渲染热门概念网格
+     */
+    function renderConceptsGrid(data) {
+        var container = document.getElementById('concepts-grid-container');
+        if (!container) return;
+
+        var hotConcepts = data.hot_concepts || [];
+        if (hotConcepts.length === 0) {
+            container.innerHTML = '';
+            return;
+        }
+
+        var html = '<div class="concept-grid-items">';
+        hotConcepts.forEach(function(c) {
+            html += '<div class="concept-grid-item">' +
+                '<span class="concept-grid-name">' + escapeHtml(c.name) + '</span>' +
+                '<span class="concept-grid-value">热度: ' + Math.round(c.hot_value) + '</span></div>';
+        });
+        html += '</div>';
+        container.innerHTML = html;
+    }
+
+    /**
+     * 渲染TOP20概念详情
+     */
+    function renderConceptDetails(top20Concepts) {
+        var container = document.getElementById('concept-details-container');
+        if (!container) return;
+
+        if (!top20Concepts || top20Concepts.length === 0) {
+            container.innerHTML = '<div class="jianxi-summary">暂无数据</div>';
+            return;
+        }
+
+        var html = '';
+
+        top20Concepts.forEach(function(concept, index) {
+            var conceptId = 'concept-' + index;
+            var stocks = concept.stocks || [];
+            var stats = concept.stats || {};
+
+            html += '<div class="concept-accordion-item">';
+            html += '<div class="concept-header" id="concept-header-' + conceptId + '" onclick="toggleConcept(\'' + conceptId + '\')">';
+            html += '<span class="expand-icon" id="icon-' + conceptId + '">▼</span>';
+            html += '<span class="concept-name">' + escapeHtml(concept.concept_name) + '</span>';
+            html += '<span class="concept-stats">今日涨停:' + (stats.today_zt_count || 0) + ' | 15日涨停:' + (stats.days_15_zt_count || 0) + ' | 最强:' + (stats.max_lianban_10d || 0) + '板</span>';
+            html += '<span class="concept-hot-value">热度:' + Math.round(concept.hot_value) + '</span>';
+            html += '</div>';
+
+            html += '<div class="concept-content" id="concept-content-' + conceptId + '">';
+
+            // 渲染股票列表
+            if (stocks.length > 0) {
+                html += '<div class="concept-stocks-list">';
+                stocks.forEach(function(stock) {
+                    var ztDatesStr = stock.zt_dates ? stock.zt_dates.map(function(d) { return d.substring(4,6) + '/' + d.substring(6,8); }).join(', ') : '';
+                    html += '<div class="concept-stock-item" onclick="openKLineModal(\'' + stock.code + '\', \'' + escapeHtml(stock.name) + '\')">';
+                    html += '<div class="concept-stock-main">';
+                    html += '<span class="concept-stock-name">' + escapeHtml(stock.name) + '</span>';
+                    html += '<span class="concept-stock-lb">' + (stock.max_lianban >= 3 ? '3+' : stock.max_lianban) + '板</span>';
+                    html += '<span class="concept-stock-ztcount">' + stock.zt_count + '次涨停</span>';
+                    html += '</div>';
+                    html += '<div class="concept-stock-meta">';
+                    html += '<span class="concept-stock-concepts">' + escapeHtml((stock.concepts || '').substring(0, 50)) + '</span>';
+                    html += '</div>';
+                    html += '</div>';
+                });
+                html += '</div>';
+            } else {
+                html += '<div class="jianxi-summary">暂无涨停数据</div>';
+            }
+
+            // 走势看板
+            html += '<div class="concept-trend-board" id="board-' + conceptId + '" style="display:none;">';
+            html += '<button id="btn-' + conceptId + '" class="toggle-trend-btn tab-btn" onclick="toggleTrendBoard(\'' + conceptId + '\')" style="background:#38a169;color:#fff;border-radius:6px;padding:6px 12px;margin:10px 0;">📈 查看走势看板</button>';
+            html += '<div class="concept-trend-grid" id="grid-' + conceptId + '"></div>';
+            html += '<div class="concept-stocks-data" id="concept-stocks-' + conceptId + '" style="display:none;">' + JSON.stringify(stocks) + '</div>';
+            html += '</div>';
+
+            html += '</div></div>';
+        });
+
+        container.innerHTML = html;
+    }
+
+    /**
+     * 渲染其他概念涨停股
+     */
+    function renderOtherStocks(stocks) {
+        var container = document.getElementById('other-stocks-container');
+        if (!container) return;
+
+        if (!stocks || stocks.length === 0) {
+            container.innerHTML = '<div class="jianxi-summary">暂无数据</div>';
+            return;
+        }
+
+        // 按概念分组
+        var grouped = {};
+        stocks.forEach(function(stock) {
+            var concepts = stock.concepts || [];
+            var mainConcept = concepts[0] || '其他';
+            if (!grouped[mainConcept]) grouped[mainConcept] = [];
+            grouped[mainConcept].push(stock);
+        });
+
+        var html = '';
+        Object.keys(grouped).forEach(function(concept) {
+            var conceptStocks = grouped[concept];
+            html += '<div class="other-concept-group">';
+            html += '<div class="other-concept-header">' + escapeHtml(concept) + ' <span class="other-concept-count">' + conceptStocks.length + '只</span></div>';
+            html += '<div class="other-concept-stocks">';
+
+            conceptStocks.forEach(function(stock) {
+                var lbTag = stock.lianban >= 3 ? '3+' : (stock.lianban === 2 ? '2板' : '首板');
+                var lbClass = stock.lianban >= 3 ? 'lb-3' : (stock.lianban === 2 ? 'lb-2' : 'lb-1');
+                html += '<div class="other-stock-item ' + lbClass + '" onclick="openKLineModal(\'' + stock.code + '\', \'' + escapeHtml(stock.name) + '\')">';
+                html += '<span class="other-stock-name">' + escapeHtml(stock.name) + '</span>';
+                html += '<span class="other-stock-lb">' + lbTag + '</span></div>';
+            });
+
+            html += '</div></div>';
+        });
+
+        container.innerHTML = html;
+    }
+
+    /**
+     * 渲染未涨停热股
+     */
+    function renderNotZtStocks(stocks) {
+        var container = document.getElementById('not-zt-container');
+        if (!container) return;
+
+        if (!stocks || stocks.length === 0) {
+            container.innerHTML = '<div class="jianxi-summary">暂无数据</div>';
+            return;
+        }
+
+        var html = '<div class="not-zt-list">';
+        stocks.forEach(function(stock) {
+            var changeClass = stock.change_pct >= 0 ? 'up' : 'down';
+            var changeSign = stock.change_pct >= 0 ? '+' : '';
+            html += '<div class="not-zt-item" onclick="openKLineModal(\'' + stock.stock_code + '\', \'' + escapeHtml(stock.short_name) + '\')">';
+            html += '<div class="not-zt-main">';
+            html += '<span class="not-zt-rank">#' + stock.rank + '</span>';
+            html += '<span class="not-zt-name">' + escapeHtml(stock.short_name) + '</span>';
+            html += '<span class="not-zt-code">' + stock.stock_code + '</span>';
+            html += '<span class="not-zt-change ' + changeClass + '">' + changeSign + stock.change_pct.toFixed(2) + '%</span>';
+            html += '</div>';
+            html += '<div class="not-zt-meta">';
+            html += '<span class="not-zt-hot">热度:' + Math.round(stock.hot_value) + '</span>';
+            html += '<span class="not-zt-concepts">' + escapeHtml((stock.concept_tag || '').replace(/;/g, ' | ')) + '</span>';
+            html += '</div>';
+            html += '</div>';
+        });
+        html += '</div>';
+
+        container.innerHTML = html;
+    }
+
+    /**
+     * 渲染多概念股票
+     */
+    function renderMultiConceptStocks(stocks) {
+        var container = document.getElementById('multi-concept-container');
+        if (!container) return;
+
+        if (!stocks || stocks.length === 0) {
+            container.innerHTML = '<div class="jianxi-summary">暂无数据</div>';
+            return;
+        }
+
+        var html = '<div class="multi-concept-list">';
+        stocks.forEach(function(stock) {
+            var concepts = stock.concepts || [];
+            html += '<div class="multi-concept-item" onclick="openKLineModal(\'' + stock.code + '\', \'' + escapeHtml(stock.name) + '\')">';
+            html += '<div class="multi-concept-main">';
+            html += '<span class="multi-concept-name">' + escapeHtml(stock.name) + '</span>';
+            html += '<span class="multi-concept-code">' + stock.code + '</span>';
+            html += '<span class="multi-concept-lb">' + stock.max_lianban + '板</span>';
+            html += '<span class="multi-concept-ztcount">' + stock.zt_count + '次涨停</span>';
+            html += '</div>';
+            html += '<div class="multi-concept-tags">';
+            concepts.slice(0, 6).forEach(function(c) {
+                html += '<span class="multi-concept-tag">' + escapeHtml(c) + '</span>';
+            });
+            if (concepts.length > 6) {
+                html += '<span class="multi-concept-tag more">+' + (concepts.length - 6) + '</span>';
+            }
+            html += '</div>';
+            html += '</div>';
+        });
+        html += '</div>';
+
+        container.innerHTML = html;
+    }
+
+    // ================================================
     // K线图功能
     // ================================================
 
@@ -164,11 +737,11 @@
     function switchReport(date) {
         if (!date) return;
         if (date === 'latest') {
-            window.location.href = 'report_latest.html';
+            loadLatestReport();
             return;
         }
-        // 跳转到指定日期的报告
-        window.location.href = date + '/report.html';
+        // 加载指定日期
+        loadReportData(date);
     }
 
     // ================================================
@@ -185,11 +758,177 @@
             if (content.classList.contains('show')) {
                 content.classList.remove('show');
                 icon.classList.remove('expanded');
+                icon.textContent = '▼';
             } else {
                 content.classList.add('show');
                 icon.classList.add('expanded');
+                icon.textContent = '▲';
             }
         }
+    }
+
+    // 全局状态：记录当前是否已展开所有
+    var allConceptsExpanded = false;
+
+    /**
+     * 一键展开/收起所有概念板块和走势看板
+     */
+    function toggleAllConcepts() {
+        allConceptsExpanded = !allConceptsExpanded;
+
+        if (allConceptsExpanded) {
+            // 展开所有
+            document.querySelectorAll('.concept-content').forEach(function(content) {
+                content.classList.add('show');
+            });
+            document.querySelectorAll('.expand-icon').forEach(function(icon) {
+                icon.classList.add('expanded');
+                icon.textContent = '▲';
+            });
+            // 收起所有走势看板（不加载K线图）
+            document.querySelectorAll('.concept-trend-board').forEach(function(board) {
+                board.style.display = 'none';
+            });
+            document.querySelectorAll('[id^="btn-"]').forEach(function(btn) {
+                if (btn && btn.textContent && btn.textContent.includes('收起走势看板')) {
+                    btn.textContent = '📈 查看走势看板';
+                }
+            });
+            // 更新按钮状态
+            document.querySelectorAll('.toggle-all-btn').forEach(function(btn) {
+                btn.textContent = '📕 一键收起全部';
+                btn.style.background = '#718096';
+            });
+        } else {
+            // 收起所有
+            document.querySelectorAll('.concept-content').forEach(function(content) {
+                content.classList.remove('show');
+            });
+            document.querySelectorAll('.expand-icon').forEach(function(icon) {
+                icon.classList.remove('expanded');
+                icon.textContent = '▼';
+            });
+            document.querySelectorAll('.toggle-all-btn').forEach(function(btn) {
+                btn.textContent = '📖 一键展开全部';
+                btn.style.background = '#4299e1';
+            });
+        }
+    }
+
+    /**
+     * 渲染走势看板股票卡片（带缓存）
+     */
+    var trendBoardRendered = {};  // 缓存已渲染的概念ID
+
+    // 全局状态：记录当前是否已展开所有走势看板
+    var allTrendBoardsExpanded = false;
+
+    /**
+     * 一键展开/收起所有走势看板
+     */
+    function toggleAllTrendBoards() {
+        allTrendBoardsExpanded = !allTrendBoardsExpanded;
+
+        if (allTrendBoardsExpanded) {
+            // 先展开所有板块内容
+            document.querySelectorAll('.concept-content').forEach(function(content) {
+                content.classList.add('show');
+            });
+            document.querySelectorAll('.expand-icon').forEach(function(icon) {
+                icon.classList.add('expanded');
+                icon.textContent = '▲';
+            });
+            // 展开所有走势看板并渲染卡片
+            document.querySelectorAll('.concept-trend-board').forEach(function(board) {
+                board.style.display = 'block';
+            });
+            // 渲染所有走势看板的K线卡片
+            document.querySelectorAll('.concept-trend-board').forEach(function(board) {
+                var conceptId = board.id.replace('board-', '');
+                renderTrendBoardCards(conceptId);
+            });
+            // 更新所有"查看走势看板"按钮为"收起走势看板"
+            document.querySelectorAll('[id^="btn-"]').forEach(function(btn) {
+                if (btn && btn.textContent && btn.textContent.includes('查看走势看板')) {
+                    btn.textContent = '📉 收起走势看板';
+                }
+            });
+            // 更新按钮状态
+            document.querySelectorAll('.toggle-all-btn').forEach(function(btn) {
+                btn.textContent = '📕 一键收起全部';
+                btn.style.background = '#718096';
+            });
+            document.querySelectorAll('.toggle-trend-btn').forEach(function(btn) {
+                btn.textContent = '📉 一键收起走势看板';
+                btn.style.background = '#718096';
+            });
+        } else {
+            // 收起所有走势看板
+            document.querySelectorAll('.concept-trend-board').forEach(function(board) {
+                board.style.display = 'none';
+            });
+            // 更新所有"收起走势看板"按钮为"查看走势看板"
+            document.querySelectorAll('[id^="btn-"]').forEach(function(btn) {
+                if (btn && btn.textContent && btn.textContent.includes('收起走势看板')) {
+                    btn.textContent = '📈 查看走势看板';
+                }
+            });
+            // 更新按钮状态
+            document.querySelectorAll('.toggle-trend-btn').forEach(function(btn) {
+                btn.textContent = '📈 一键展开走势看板';
+                btn.style.background = '#38a169';
+            });
+        }
+    }
+
+    function renderTrendBoardCards(conceptId) {
+        // 如果已经渲染过，直接返回（使用缓存）
+        if (trendBoardRendered[conceptId]) {
+            return true;  // 返回true表示已缓存
+        }
+
+        var dataEl = document.getElementById('concept-stocks-' + conceptId);
+        if (!dataEl) return false;
+        var grid = document.getElementById('grid-' + conceptId);
+        if (!grid) return false;
+
+        grid.innerHTML = '';
+
+        var stocks;
+        try {
+            stocks = JSON.parse(dataEl.textContent);
+        } catch (e) {
+            console.error('Failed to parse concept stocks data:', e);
+            return false;
+        }
+
+        if (!stocks || stocks.length === 0) {
+            grid.innerHTML = '<div class="jianxi-summary">暂无涨停数据</div>';
+            trendBoardRendered[conceptId] = true;  // 标记为已渲染（即使为空）
+            return true;
+        }
+
+        grid.innerHTML = stocks.map(function(s) {
+            var prefix = s.code.startsWith('6') ? 'sh' : 'sz';
+            var ts = Date.now();
+            var ztDatesStr = (s.zt_dates || []).map(function(d) { return d.substring(4, 6) + '/' + d.substring(6, 8); }).join(', ');
+            return '<div class="trend-stock-card">' +
+                '<img class="trend-kline" ' +
+                'src="http://image.sinajs.cn/newchart/daily/n/' + prefix + s.code + '.png?_t=' + ts + '" ' +
+                'onclick="openKLineModal(\'' + s.code + '\', \'' + escapeHtml(s.name) + '\')" ' +
+                'alt="' + escapeHtml(s.name) + '" ' +
+                'onerror="this.src=\'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 200 120%22><rect fill=%22%23f0f0f0%22 width=%22200%22 height=%22120%22/><text x=%2250%22 y=%2260%22 fill=%22%23999%22 font-size=%2212%22>加载失败</text></svg>\'"> ' +
+                '<div class="trend-stock-info">' +
+                '<div class="stock-name">' + escapeHtml(s.name) + ' <span style="color:#666;font-weight:normal;">(' + s.code + ')</span></div>' +
+                '<div class="zt-info">' +
+                '<span class="zt-count">' + s.zt_count + '次涨停</span>' +
+                '<div class="zt-dates">' + ztDatesStr + '</div>' +
+                '</div></div></div>';
+        }).join('');
+
+        // 标记为已渲染
+        trendBoardRendered[conceptId] = true;
+        return true;
     }
 
     // ================================================
@@ -239,8 +978,13 @@
             window.location.reload();
             return;
         }
-        // 跳转到归档文件
-        window.location.href = 'archive/' + filename;
+        // If it's a date (8 digits), load the static HTML file from archive
+        if (/^\d{8}$/.test(filename)) {
+            window.location.href = 'reports/archive/' + filename + '/report_' + filename + '.html';
+            return;
+        }
+        // For other filenames, try to load via AJAX
+        switchReport(filename);
     }
 
     // ================================================
@@ -285,27 +1029,62 @@
         // 初始化侧边栏
         initSidebar();
 
+        // 加载侧边栏归档列表
+        if (document.getElementById('sidebar-content')) {
+            // 从页面提取当前日期（取分析时段的结束日期）
+            var reportDateEl = document.getElementById('report-date') || document.querySelector('.header-subtitle');
+            if (reportDateEl) {
+                var matches = reportDateEl.textContent.match(/(\d{4})(\d{2})(\d{2})/g);
+                if (matches && matches.length > 0) {
+                    // 使用最后一个匹配（分析时段结束日期）
+                    var lastMatch = matches[matches.length - 1];
+                    var match = lastMatch.match(/(\d{4})(\d{2})(\d{2})/);
+                    if (match) {
+                        currentReportDate = match[1] + match[2] + match[3];
+                    }
+                }
+            }
+            loadSidebarArchives();
+        }
+
         // 从 localStorage 恢复上次查看的 section
         const savedSection = localStorage.getItem('currentSection') || 'trend';
         showSection(savedSection);
 
         // 绑定导航栏点击事件（使用事件委托）
-        document.querySelector('.sidebar').addEventListener('click', function(e) {
-            const navLink = e.target.closest('.nav-link');
-            if (navLink) {
-                e.preventDefault();
-                const sectionId = navLink.getAttribute('data-section');
-                if (sectionId) {
-                    showSection(sectionId);
+        var sidebarEl = document.querySelector('.sidebar');
+        if (sidebarEl) {
+            sidebarEl.addEventListener('click', function(e) {
+                const navLink = e.target.closest('.nav-link');
+                if (navLink) {
+                    e.preventDefault();
+                    const sectionId = navLink.getAttribute('data-section');
+                    if (sectionId) {
+                        showSection(sectionId);
+                    }
                 }
-            }
-        });
+            });
+        }
 
         // 绑定侧边栏折叠按钮
         const toggleBtn = document.querySelector('.sidebar-toggle');
         if (toggleBtn) {
             toggleBtn.addEventListener('click', toggleSidebar);
         }
+
+        // 全局事件委托：确保一键展开按钮始终可用
+        document.addEventListener('click', function(e) {
+            var target = e.target.closest('button');
+            if (target) {
+                if (target.classList.contains('toggle-all-btn') || target.dataset.action === 'toggle-all') {
+                    e.preventDefault();
+                    toggleAllConcepts();
+                } else if (target.classList.contains('toggle-trend-btn') || target.dataset.action === 'toggle-trend') {
+                    e.preventDefault();
+                    toggleAllTrendBoards();
+                }
+            }
+        });
 
         // 初始化股票高亮
         initStockHighlight();
@@ -516,7 +1295,7 @@
         } catch (error) {
             console.error('分析失败:', error);
             if (treeDiv) {
-                treeDiv.innerHTML = '<p style="color:#e53e3e;">分析失败: ' + error.message + '</p>';
+                treeDiv.innerHTML = '<p style="color:#e53e3e;">分析失败: ' + escapeHtml(error.message) + '</p>';
             }
         } finally {
             if (btn) {
@@ -1063,9 +1842,20 @@
     function toggleTrendBoard(conceptId) {
         const board = document.getElementById('board-' + conceptId);
         const btn = document.getElementById('btn-' + conceptId);
+        const content = document.getElementById('concept-content-' + conceptId);
         if (!board || !btn) return;
 
         if (board.style.display === 'none' || board.style.display === '') {
+            // 如果父级板块内容是收起状态，先展开它
+            if (content && !content.classList.contains('show')) {
+                content.classList.add('show');
+                // 更新展开图标
+                const icon = document.querySelector('#concept-header-' + conceptId + ' .expand-icon');
+                if (icon) {
+                    icon.classList.add('expanded');
+                    icon.textContent = '▲';
+                }
+            }
             board.style.display = 'block';
             btn.textContent = '📈 收起走势看板';
             // 首次展开时渲染卡片
@@ -1125,6 +1915,133 @@
         }).join('');
     }
 
+    // ================================================
+    // 侧边栏功能
+    // ================================================
+
+    /**
+     * 切换侧边栏显示/隐藏
+     */
+    function toggleSidebar() {
+        var sidebar = document.getElementById('sidebar');
+        var container = document.getElementById('main-container');
+        if (sidebar) {
+            sidebar.classList.toggle('collapsed');
+            if (container) {
+                container.classList.toggle('sidebar-collapsed');
+            }
+        }
+    }
+
+    /**
+     * 加载侧边栏归档列表
+     */
+    function loadSidebarArchives() {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', 'reports/data/', true);
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState === 4 && xhr.status === 200) {
+                var files = parseDirectoryListing(xhr.responseText);
+                buildSidebarHTML(files, currentReportDate);
+            }
+        };
+        xhr.send();
+    }
+
+    var currentReportDate = '';
+
+    /**
+     * 构建侧边栏HTML
+     */
+    function buildSidebarHTML(dates, activeDate) {
+        if (!dates || dates.length === 0) {
+            var content = document.getElementById('sidebar-content');
+            if (content) content.innerHTML = '<div style="padding: 20px; text-align: center; color: #718096; font-size: 0.85em;">暂无归档</div>';
+            return;
+        }
+
+        // 按月份分组
+        var months = {};
+        dates.forEach(function(f) {
+            var d = f.replace('.json', '');
+            var year = d.substring(0, 4);
+            var month = d.substring(4, 6);
+            var key = year + '-' + month;
+            if (!months[key]) months[key] = [];
+            months[key].push(d);
+        });
+
+        // 排序月份（降序）
+        var sortedMonths = Object.keys(months).sort().reverse();
+
+        // 展开当前日期所在月份
+        var activeMonth = activeDate ? activeDate.substring(0, 7) : '';
+
+        var html = '';
+        sortedMonths.forEach(function(month) {
+            var isOpen = month === activeMonth;
+            var monthLabel = month.substring(0, 4) + '年' + month.substring(5, 7) + '月';
+            var days = months[month].sort().reverse(); // 每天降序
+
+            html += '<div class="sidebar-section">';
+            html += '<div class="sidebar-month' + (isOpen ? ' open' : '') + '" onclick="toggleSidebarMonth(this)">';
+            html += '<span>' + monthLabel + '</span>';
+            html += '<span class="arrow">▶</span>';
+            html += '</div>';
+            html += '<div class="sidebar-days">';
+            days.forEach(function(d) {
+                var displayDate = d.substring(4, 6) + d.substring(6, 8);
+                var isActive = d === activeDate;
+                html += '<div class="sidebar-day' + (isActive ? ' active' : '') + '" onclick="selectArchiveDate(\'' + d + '\', this)">' + displayDate + '</div>';
+            });
+            html += '</div>';
+            html += '</div>';
+        });
+
+        var content = document.getElementById('sidebar-content');
+        if (content) content.innerHTML = html;
+    }
+
+    /**
+     * 切换侧边栏月份展开/收起
+     */
+    function toggleSidebarMonth(el) {
+        el.classList.toggle('open');
+    }
+
+    /**
+     * 选择归档日期
+     */
+    function selectArchiveDate(date, el) {
+        // 高亮当前选中
+        document.querySelectorAll('.sidebar-day').forEach(function(el) {
+            el.classList.remove('active');
+        });
+        if (el) {
+            el.classList.add('active');
+        } else {
+            // 直接调用时通过日期查找元素
+            document.querySelectorAll('.sidebar-day').forEach(function(item) {
+                if (item.textContent === date.substring(4, 6) + '-' + date.substring(6, 8) + '日') {
+                    item.classList.add('active');
+                }
+            });
+        }
+
+        // 切换报告
+        loadReportData(date);
+    }
+
+    /**
+     * 渲染报告后更新侧边栏
+     */
+    var originalRenderReport = renderReport;
+    renderReport = function(data) {
+        currentReportDate = data.date;
+        originalRenderReport(data);
+        loadSidebarArchives();
+    };
+
     // 暴露全局函数
     window.getSinaCode = getSinaCode;
     window.openKLineModal = openKLineModal;
@@ -1134,6 +2051,8 @@
     window.showSection = showSection;
     window.switchReport = switchReport;
     window.toggleConcept = toggleConcept;
+    window.toggleAllConcepts = toggleAllConcepts;
+    window.toggleAllTrendBoards = toggleAllTrendBoards;
     window.toggleTrendBoard = toggleTrendBoard;
     window.loadArchive = loadArchive;
     window.refreshJianxi = refreshJianxi;
@@ -1145,5 +2064,23 @@
     window.fetchIndustryList = fetchIndustryList;
     window.fetchTimelineList = fetchTimelineList;
     window.updateAllData = updateAllData;
+    window.loadLatestReport = loadLatestReport;
+    window.loadReportData = loadReportData;
+    window.showLoadError = showLoadError;
+    window.renderReport = renderReport;
+    window.toggleSidebarMonth = toggleSidebarMonth;
+    window.selectArchiveDate = selectArchiveDate;
+    window.renderLadder = renderLadder;
+    window.renderMatrix = renderMatrix;
+    window.renderTodayBoard = renderTodayBoard;
+    window.renderJianxi = renderJianxi;
+    window.renderMainThemes = renderMainThemes;
+    window.renderConceptsGrid = renderConceptsGrid;
+    window.renderConceptDetails = renderConceptDetails;
+    window.renderOtherStocks = renderOtherStocks;
+    window.renderNotZtStocks = renderNotZtStocks;
+    window.renderMultiConceptStocks = renderMultiConceptStocks;
+    window.parseDirectoryListing = parseDirectoryListing;
+    window.findLatestDate = findLatestDate;
 
 })();

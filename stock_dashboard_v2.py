@@ -36,6 +36,9 @@ from datetime import datetime, timedelta, timezone
 import warnings
 import os
 import json
+import math
+import glob
+import argparse
 
 warnings.filterwarnings('ignore')
 
@@ -74,29 +77,76 @@ def get_beijing_now():
 
 def is_trading_day(date_str=None):
     """检查指定日期是否为A股交易日
-    
+
     Args:
         date_str: 日期字符串 YYYYMMDD，默认为今天（北京时间）
-    
+
     Returns:
         bool: 是否为交易日
     """
     if date_str is None:
         date_str = get_beijing_now().strftime('%Y%m%d')
-    
+
+    # 1. 尝试从本地缓存读取
+    cache_file = os.path.join(DATA_DIR, 'trade_calendar_2026.json')
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r') as f:
+                trading_dates = json.load(f)
+            trading_dates = set([d.replace('-', '') for d in trading_dates])
+            return date_str in trading_dates
+        except Exception:
+            pass
+
+    # 2. 尝试从API获取
     try:
         year = int(date_str[:4])
         df = adata.stock.info.trade_calendar(year=year)
-        trading_dates = set(df['日期'].astype(str).tolist())
+        df_trading = df[df['trade_status'] == 1]
+        trading_dates = set(df_trading['trade_date'].astype(str).tolist())
+        # 保存到本地缓存
+        with open(cache_file, 'w') as f:
+            json.dump(df_trading['trade_date'].astype(str).tolist(), f)
         return date_str in trading_dates
     except Exception as e:
         print(f"  ⚠ 获取交易日历失败: {e}，使用工作日判断")
-        # 备用：工作日判断（不含节假日）
+        # 3. 备用：工作日判断（不含节假日）
         try:
             dt = datetime.strptime(date_str, '%Y%m%d')
             return dt.weekday() < 5
         except:
             return False
+
+
+def get_latest_jianxi_image(static_path="static"):
+    """获取最新的韭研公社涨停简图
+
+    Returns:
+        tuple: (image_path, image_date) or (None, None) if no image found
+    """
+    jianxi_dir = "data/jianxi"
+    if not os.path.exists(jianxi_dir):
+        return None, None
+
+    # 找到所有png文件
+    png_files = glob.glob(os.path.join(jianxi_dir, "*.png"))
+    if not png_files:
+        return None, None
+
+    # 按文件名（日期）排序，找到最新的
+    png_files.sort(key=lambda x: os.path.basename(x), reverse=True)
+    latest_file = png_files[0]
+    date_str = os.path.basename(latest_file).replace('.png', '')
+
+    # 根据static_path确定图片路径
+    # static_path="static" (最新报告在根目录): 图片在 data/jianxi/ -> "data/jianxi/"
+    # static_path="../../static" (归档报告在reports/YYYYMMDD/): 图片在 ../../../data/jianxi/
+    if static_path == "static":
+        image_path = "data/jianxi/" + date_str + ".png"
+    else:
+        image_path = "../../../data/jianxi/" + date_str + ".png"
+
+    return image_path, date_str
 
 
 def should_auto_update_zt():
@@ -135,15 +185,40 @@ def should_auto_update_zt():
 
 
 def get_trading_dates_2026(days=15):
-    """获取2026年近N个交易日期（使用交易日历）"""
+    """获取近N个交易日期（从今天往前数，优先使用本地缓存）"""
+    today_str = get_beijing_now().strftime('%Y%m%d')
+
+    # 1. 尝试从本地缓存读取
+    cache_file = os.path.join(DATA_DIR, 'trade_calendar_2026.json')
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r') as f:
+                trading_dates = json.load(f)
+            trading_dates = [d.replace('-', '') for d in trading_dates]
+            # 只取今天及之前的日期，并反转（从最新开始）
+            trading_dates = [d for d in trading_dates if d <= today_str][::-1]
+            if len(trading_dates) >= days:
+                return trading_dates[:days]
+            return trading_dates
+        except Exception:
+            pass
+
+    # 2. 尝试从API获取
     try:
         df = adata.stock.info.trade_calendar(year=2026)
-        trading_dates = df['日期'].astype(str).tolist()
-        # 取最新的N个
-        return trading_dates[-days:] if len(trading_dates) >= days else trading_dates
+        df_trading = df[df['trade_status'] == 1]
+        trading_dates = df_trading['trade_date'].astype(str).tolist()
+        trading_dates = [d.replace('-', '') for d in trading_dates]
+        # 只取今天及之前的日期，并反转（从最新开始）
+        trading_dates = [d for d in trading_dates if d <= today_str][::-1]
+        # 保存到本地缓存（保存原始顺序）
+        cache_data = [d for d in df_trading['trade_date'].astype(str).tolist()]
+        with open(cache_file, 'w') as f:
+            json.dump(cache_data, f)
+        return trading_dates[:days] if len(trading_dates) >= days else trading_dates
     except Exception as e:
         print(f"  获取2026年交易日历失败: {e}，使用备用逻辑")
-        # 备用逻辑
+        # 3. 备用逻辑
         dates = []
         current = datetime.now()
         while len(dates) < days:
@@ -892,8 +967,11 @@ def format_seal_time(t):
         return ''
 
 
-def generate_html(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concept_stock=None, archives=None):
-    """生成HTML报告"""
+def generate_html(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concept_stock=None, archives=None, static_path="static"):
+    """生成HTML报告
+    Args:
+        static_path: CSS/JS静态资源路径，相对于HTML文件位置
+    """
     today = datetime.now().strftime('%Y年%m月%d日')
     archives = archives or []
 
@@ -906,6 +984,9 @@ def generate_html(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concep
     # 共享数据
     code_to_concepts = analysis_result.get('code_to_concepts', {})
     top20_names = dict(zip(df_hot_concepts['concept_code'].astype(str), df_hot_concepts['concept_name'])) if df_hot_concepts is not None else {}
+
+    # 获取最新韭研公社涨停简图
+    jianxi_image_path, jianxi_image_date = get_latest_jianxi_image(static_path)
 
     # ========== 1. 连板天梯（第一章节，日期横排）==========
     ladder_html = ""
@@ -937,15 +1018,11 @@ def generate_html(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concep
                 <div class="rhythm-content">{stocks_html}</div>
             </div>"""
 
-    ladder_section = f"""<div class="section">
-            <h2 class="section-title">连板天梯</h2>
-            <p class="section-desc">近15交易日2板及以上涨停，按日期横向展示</p>
-            <div class="rhythm-grid">{ladder_html}</div>
-            <div class="legend">
-                <span class="item"><span class="dot lb-1"></span>首板</span>
-                <span class="item"><span class="dot lb-2"></span>2板</span>
-                <span class="item"><span class="dot lb-3"></span>3板+</span>
-            </div>
+    ladder_section = f"""<div class="rhythm-grid">{ladder_html}</div>
+        <div class="legend">
+            <span class="item"><span class="dot lb-1"></span>首板</span>
+            <span class="item"><span class="dot lb-2"></span>2板</span>
+            <span class="item"><span class="dot lb-3"></span>3板+</span>
         </div>"""
 
     # ========== 1.5 连板矩阵表（近6交易日 x 概念）==========
@@ -991,11 +1068,7 @@ def generate_html(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concep
             matrix_html += f"<td class='matrix-cell'>{cell_content}</td>"
         matrix_html += "</tr>"
 
-    matrix_section = f"""<div class="section">
-            <h2 class="section-title">连板矩阵</h2>
-            <p class="section-desc">近6交易日2板及以上涨停，概念x日期分布</p>
-            <table class="matrix-table">{matrix_html}</table>
-        </div>"""
+    matrix_section = f"""<table class="matrix-table">{matrix_html}</table>"""
 
     # ========== 2. 今日涨停看板（按概念分组）==========
     today_zt_df = df_zt_pool[df_zt_pool['交易日期'] == today_date_int] if df_zt_pool is not None else pd.DataFrame()
@@ -1073,11 +1146,7 @@ def generate_html(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concep
             <div class="today-concept-stocks">{stock_items}</div>
         </div>"""
 
-    today_board_section = f"""<div class="section">
-            <h2 class="section-title">今日涨停看板</h2>
-            <p class="section-desc">{today_date[4:]}日 | 共 {today_zt_count} 只涨停</p>
-            <div class="today-board">{today_board_items}</div>
-        </div>"""
+    today_board_section = f"""<div class="today-board">{today_board_items}</div>"""
 
     # ========== 3. 热门概念板块一览（2列10行，按热度值排序）==========
     df_hot_concepts['hot_value_num'] = pd.to_numeric(df_hot_concepts['hot_value'], errors='coerce')
@@ -1301,14 +1370,10 @@ def generate_html(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concep
                 lb_text = "首板"
             code = format_code(stock['code'])
             other_rows += f"<tr><td>{code}</td><td class='clickable-name' onclick=\"openKLineModal('{code}', '{stock['name']}')\">{stock['name']}</td><td>{stock['date'][4:]}日</td><td>{lb_text}</td><td>{concepts_str}</td></tr>"
-        other_section = f"""<div class="section">
-            <h2 class="section-title">其他概念涨停股</h2>
-            <p class="section-desc">不在TOP20热门板块中的涨停股</p>
-            <table class="data-table">
-                <thead><tr><th>股票代码</th><th>股票名称</th><th>涨停日期</th><th>连板</th><th>所有概念</th></tr></thead>
-                <tbody>{other_rows}</tbody>
-            </table>
-        </div>"""
+        other_section = f"""<table class="data-table">
+            <thead><tr><th>股票代码</th><th>股票名称</th><th>涨停日期</th><th>连板</th><th>所有概念</th></tr></thead>
+            <tbody>{other_rows}</tbody>
+        </table>"""
 
     # ========== 6. 未涨停热股 ==========
     not_zt_section = ""
@@ -1318,14 +1383,10 @@ def generate_html(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concep
             hot_val = float(stock['hot_value']) if isinstance(stock['hot_value'], (int, float)) else 0
             code = format_code(stock['stock_code'])
             not_zt_rows += f"<tr><td>{stock['rank']}</td><td>{code}</td><td class='clickable-name' onclick=\"openKLineModal('{code}', '{stock['short_name']}')\">{stock['short_name']}</td><td>{hot_val:,.0f}</td><td>{stock['pop_tag']}</td></tr>"
-        not_zt_section = f"""<div class="section">
-            <h2 class="section-title">未涨停热股</h2>
-            <p class="section-desc">同花顺热股TOP100中，15日内未涨停的股票</p>
-            <table class="data-table">
-                <thead><tr><th>排名</th><th>股票代码</th><th>股票名称</th><th>热度值</th><th>人气标签</th></tr></thead>
-                <tbody>{not_zt_rows}</tbody>
-            </table>
-        </div>"""
+        not_zt_section = f"""<table class="data-table">
+            <thead><tr><th>排名</th><th>股票代码</th><th>股票名称</th><th>热度值</th><th>人气标签</th></tr></thead>
+            <tbody>{not_zt_rows}</tbody>
+        </table>"""
 
     # ========== 7. 多概念股票 ==========
     multi_section = ""
@@ -1337,13 +1398,22 @@ def generate_html(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concep
             concepts_str = ','.join(stock['concepts'][:5])
             code = format_code(stock['code'])
             multi_rows += f"<tr><td>{code}</td><td class='clickable-name' onclick=\"openKLineModal('{code}', '{stock['name']}')\">{stock['name']}</td><td>{stock['zt_count']}</td><td>{stock['max_lianban']}</td><td>{rank_display}</td><td>{hot_display}</td><td>{concepts_str}</td></tr>"
-        multi_section = f"""<div class="section">
-            <h2 class="section-title">多概念股票</h2>
-            <p class="section-desc">涵盖TOP20热门板块3个及以上概念的股票</p>
-            <table class="data-table">
-                <thead><tr><th>股票代码</th><th>股票名称</th><th>涨停次数</th><th>最大连板</th><th>热度排名</th><th>热度值</th><th>涵盖概念</th></tr></thead>
-                <tbody>{multi_rows}</tbody>
-            </table>
+        multi_section = f"""<table class="data-table">
+            <thead><tr><th>股票代码</th><th>股票名称</th><th>涨停次数</th><th>最大连板</th><th>热度排名</th><th>热度值</th><th>涵盖概念</th></tr></thead>
+            <tbody>{multi_rows}</tbody>
+        </table>"""
+
+    # ========== 8. 韭研公社涨停简图 ==========
+    jianxi_section = ""
+    if jianxi_image_path and jianxi_image_date:
+        date_display = f"{jianxi_image_date[4:6]}-{jianxi_image_date[6:8]}"
+        jianxi_section = f"""<div class="section-block">
+            <h2 class="section-title">🔥 涨停简图</h2>
+            <p class="section-desc">韭研公社涨停简图 | {date_display}日</p>
+            <div class="jianxi-image-wrapper">
+                <img src="{jianxi_image_path}" alt="涨停简图 {date_display}" class="jianxi-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                <div class="jianxi-fallback" style="display:none; text-align:center; padding:40px; color:#999;">图片加载失败，请刷新重试</div>
+            </div>
         </div>"""
 
     total_zt = sum(len(r['stocks']) for r in analysis_result['top20_concepts'])
@@ -1362,290 +1432,119 @@ def generate_html(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concep
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="referrer" content="no-referrer">
     <title>热门概念板块涨停股分析报告 V2 - {today}</title>
-    <link rel="stylesheet" href="static/css/dashboard.css">
+    <link rel="stylesheet" href="{static_path}/css/dashboard.css">
     <style>
-        /* Minimal inline styles - main styles moved to static/css/dashboard.css */
-        body {{ padding: 30px; }}
-        .container {{ padding: 30px; }}
-        .header-controls {{ margin: 15px 0; }}
+        body {{ padding: 0; margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f6fa; }}
+        .container {{ max-width: 1400px; margin: 0 auto; padding: 20px 30px; }}
+        .header {{ background: #fff; border-radius: 12px; padding: 20px 25px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }}
+        .header-title {{ font-size: 1.6em; color: #1a365d; margin-bottom: 8px; font-weight: 600; }}
+        .header-subtitle {{ color: #718096; font-size: 0.95em; margin-bottom: 15px; }}
+        .header-controls {{ display: flex; gap: 12px; align-items: center; }}
         #archive-select {{ padding: 8px 12px; font-size: 0.95em; border: 1px solid #e2e8f0; border-radius: 6px; background: #fff; color: #2d3748; cursor: pointer; min-width: 180px; }}
         #archive-select:hover {{ border-color: #4299e1; }}
-        .stats {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; margin-bottom: 30px; }}
-        .stat-card {{ background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 20px; text-align: center; }}
-        .stat-value {{ font-size: 2em; font-weight: bold; color: #2b6cb0; }}
-        .stat-label {{ color: #718096; font-size: 0.9em; margin-top: 5px; }}
-        .section-title {{ font-size: 1.4em; color: #2d3748; margin: 30px 0 15px; padding-left: 12px; border-left: 4px solid #4299e1; font-weight: 600; }}
+        .stats {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; margin-bottom: 25px; }}
+        .stat-card {{ background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 18px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.04); }}
+        .stat-value {{ font-size: 1.8em; font-weight: bold; color: #2b6cb0; }}
+        .stat-label {{ color: #718096; font-size: 0.85em; margin-top: 5px; }}
+        .section-block {{ background: #fff; border-radius: 12px; padding: 20px 25px; margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }}
+        .section-title {{ font-size: 1.3em; color: #2d3748; margin: 0 0 15px 0; padding-left: 12px; border-left: 4px solid #4299e1; font-weight: 600; }}
         .section-desc {{ color: #718096; font-size: 0.9em; margin-bottom: 15px; }}
-        .concept-section {{ border: 1px solid #e2e8f0; border-radius: 10px; margin: 15px 0; padding: 20px; }}
-        .concept-title {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; padding-bottom: 10px; border-bottom: 2px solid #e2e8f0; }}
-        .concept-title .name {{ font-size: 1.3em; color: #2b6cb0; font-weight: 600; }}
+        .footer {{ text-align: center; padding: 20px; color: #a0aec0; font-size: 0.85em; }}
     </style>
-    <script src="static/js/app.js"></script>
+    <script src="{static_path}/js/app.js?v=2026041802"></script>
 </head>
 <body>
-    <!-- 侧边栏折叠按钮 -->
-    <button class="sidebar-toggle" onclick="toggleSidebar()">◀</button>
-    <!-- 左侧导航栏 -->
-    <nav class="sidebar">
-        <div class="sidebar-header">
-            <h1>股票分析报告</h1>
-            <div class="sidebar-date">{today}</div>
-            <div class="sidebar-date-selector">
-                <select id="report-date-select" onchange="switchReport(this.value)">
-                    <option value="latest">最新报告</option>
+    <div class="container">
+        <!-- 头部信息 -->
+        <div class="header">
+            <div class="header-title">📈 股票走势分析</div>
+            <div class="header-subtitle">{today} | 分析时段: {dates[-1]} 至 {dates[0]}</div>
+            <div class="header-controls">
+                <select id="archive-select" onchange="loadArchive(this.value)">
+                    <option value="">选择查看归档...</option>
+                    <option value="report_latest.html" selected>最新报告</option>
                     {archive_options}
                 </select>
             </div>
         </div>
-        <ul class="nav-list">
-            <!-- 主导航 Tab -->
-            <li class="nav-header">📈 股票走势分析</li>
-            <li class="nav-item">
-                <a href="#" class="nav-link active" data-section="trend">
-                    <span class="nav-icon">📊</span>
-                    <span>概览</span>
-                </a>
-            </li>
-            <li class="nav-divider"></li>
-            <!-- Tab 2: 概念深度 -->
-            <li class="nav-header">🔍 概念深度分析</li>
-            <li class="nav-item">
-                <a href="#" class="nav-link" data-section="concept-detail">
-                    <span class="nav-icon">📋</span>
-                    <span>概念详情</span>
-                </a>
-            </li>
-            <li class="nav-divider"></li>
-            <!-- Tab 3: 投资舆情 -->
-            <li class="nav-header">📰 投资舆情</li>
-            <li class="nav-item">
-                <a href="#" class="nav-link" data-section="sentiment">
-                    <span class="nav-icon">🔥</span>
-                    <span>异动监控</span>
-                </a>
-            </li>
-        </ul>
-        <div class="sidebar-footer">
-            {dates[-1]} ~ {dates[0]}
+
+        <!-- 统计卡片 -->
+        <div class="stats">
+            <div class="stat-card"><div class="stat-value">{len(analysis_result['top20_concepts'])}</div><div class="stat-label">热门概念板块</div></div>
+            <div class="stat-card"><div class="stat-value">{total_zt}</div><div class="stat-label">TOP20涨停股</div></div>
+            <div class="stat-card"><div class="stat-value">{len(analysis_result['other_stocks'])}</div><div class="stat-label">其他概念涨停</div></div>
+            <div class="stat-card"><div class="stat-value">{len(analysis_result['not_zt_hot_stocks'])}</div><div class="stat-label">未涨停热股</div></div>
+            <div class="stat-card"><div class="stat-value">{today_zt_count}</div><div class="stat-label">今日涨停</div></div>
         </div>
-    </nav>
 
-    <!-- 主体内容区 -->
-    <div class="main-content">
-    <div class="container">
-        <!-- ========== Tab 1: 股票走势分析 ========== -->
-        <section id="section-trend" class="page-section active">
-            <div class="tab-header">
-                <h1>📈 股票走势分析</h1>
+        <!-- 连板天梯 -->
+        <div class="section-block">
+            <h2 class="section-title">🏆 连板天梯</h2>
+            <p class="section-desc">近15交易日2板及以上涨停，按日期横向展示</p>
+            {ladder_section}
+        </div>
+
+        <!-- 连板矩阵 -->
+        <div class="section-block">
+            <h2 class="section-title">📈 连板矩阵</h2>
+            <p class="section-desc">近6交易日2板及以上涨停，概念x日期分布</p>
+            {matrix_section}
+        </div>
+
+        <!-- 今日涨停看板 -->
+        <div class="section-block">
+            <h2 class="section-title">⚡ 今日涨停看板</h2>
+            <p class="section-desc">{today_date[4:]}日 | 共 {today_zt_count} 只涨停</p>
+            {today_board_section}
+        </div>
+
+        <!-- 韭研公社涨停简图 -->
+        {jianxi_section}
+
+        <!-- 热门概念板块一览 -->
+        <div class="section-block">
+            <h2 class="section-title">🔥 热门概念板块一览</h2>
+            {main_themes_html}
+            <div class="concept-grid">
+                {concepts_html}
             </div>
+        </div>
 
-            <!-- 总览统计 -->
-            <div class="header">
-                <div class="header-controls">
-                    <select id="archive-select" onchange="loadArchive(this.value)">
-                        <option value="">选择查看归档...</option>
-                        <option value="report_latest.html" selected>最新报告</option>
-                        {archive_options}
-                    </select>
-                    <button class="global-update-btn" onclick="updateAllData()">🔄 全部更新</button>
-                </div>
-                <div id="global-update-status" class="jianxi-update-status" style="display: none;"></div>
-                <div class="subtitle">{today} | 分析时段: {dates[-1]} 至 {dates[0]}</div>
+        <!-- TOP20概念题材详情 -->
+        <div class="section-block">
+            <h2 class="section-title">📋 TOP20概念题材</h2>
+            <p class="section-desc">点击展开各概念详情 | 按热度值排序</p>
+            <div style="margin-bottom: 15px; display: flex; gap: 10px;">
+                <button class="toggle-all-btn tab-btn" data-action="toggle-all" style="background: #4299e1; color: #fff; border-radius: 6px; padding: 8px 16px;">📖 一键展开全部</button>
+                <button class="toggle-trend-btn tab-btn" data-action="toggle-trend" style="background: #38a169; color: #fff; border-radius: 6px; padding: 8px 16px;">📈 一键展开走势看板</button>
             </div>
+            {concept_details}
+        </div>
 
-            <div class="stats">
-                <div class="stat-card"><div class="stat-value">{len(analysis_result['top20_concepts'])}</div><div class="stat-label">热门概念板块</div></div>
-                <div class="stat-card"><div class="stat-value">{total_zt}</div><div class="stat-label">TOP20涨停股</div></div>
-                <div class="stat-card"><div class="stat-value">{len(analysis_result['other_stocks'])}</div><div class="stat-label">其他概念涨停</div></div>
-                <div class="stat-card"><div class="stat-value">{len(analysis_result['not_zt_hot_stocks'])}</div><div class="stat-label">未涨停热股</div></div>
-                <div class="stat-card"><div class="stat-value">{today_zt_count}</div><div class="stat-label">今日涨停</div></div>
-            </div>
+        <!-- 其他概念涨停股 -->
+        <div class="section-block">
+            <h2 class="section-title">📦 其他概念涨停股</h2>
+            <p class="section-desc">不在TOP20热门板块中的涨停股</p>
+            {other_section}
+        </div>
 
-            <!-- 连板天梯 -->
-            <div class="section-block" id="block-ladder">
-                <h2 class="section-title">🏆 连板天梯</h2>
-                <p class="section-desc">查看近15日2板及以上涨停</p>
-                {ladder_section}
-            </div>
+        <!-- 未涨停热股 -->
+        <div class="section-block">
+            <h2 class="section-title">❄️ 未涨停热股</h2>
+            <p class="section-desc">同花顺热股TOP100中，15日内未涨停的股票</p>
+            {not_zt_section}
+        </div>
 
-            <!-- 连板矩阵 -->
-            <div class="section-block" id="block-matrix">
-                <h2 class="section-title">📈 连板矩阵</h2>
-                <p class="section-desc">概念x日期分布</p>
-                {matrix_section}
-            </div>
+        <!-- 多概念股票 -->
+        <div class="section-block">
+            <h2 class="section-title">🎯 多概念股票</h2>
+            <p class="section-desc">涵盖TOP20热门板块3个及以上概念的股票</p>
+            {multi_section}
+        </div>
 
-            <!-- 今日涨停看板 -->
-            <div class="section-block" id="block-today">
-                <h2 class="section-title">⚡ 今日涨停</h2>
-                <p class="section-desc">查看今日涨停详情</p>
-                {today_board_section}
-            </div>
-
-            <!-- 热门概念板块一览 -->
-            <div class="section-block" id="block-concepts">
-                <h2 class="section-title">🔥 热门概念板块一览</h2>
-                {main_themes_html}
-                <div class="concept-grid">
-                    {concepts_html}
-                </div>
-            </div>
-
-            <!-- 市场投资逻辑 -->
-            <div class="section-block" id="block-market-logic">
-                <h2 class="section-title">🧠 市场投资逻辑</h2>
-                <p class="section-desc">韭研公社异动板块题材解析</p>
-                {market_logic_html}
-            </div>
-
-            <div class="footer">
-                <p>报告由股票分析系统自动生成 | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-            </div>
-        </section>
-
-        <!-- ========== Tab 2: 概念深度分析 ========== -->
-        <section id="section-concept-detail" class="page-section">
-            <div class="tab-header">
-                <h1>🔍 概念深度分析</h1>
-            </div>
-
-            <!-- TOP20概念题材 -->
-            <div class="section-block" id="block-details">
-                <h2 class="section-title">📋 TOP20概念题材</h2>
-                <p class="section-desc">点击展开各概念详情 | 按热度值排序</p>
-                {concept_details}
-            </div>
-
-            <!-- 其他概念涨停股 -->
-            <div class="section-block" id="block-other">
-                <h2 class="section-title">📦 其他概念涨停股</h2>
-                {other_section}
-            </div>
-
-            <!-- 未涨停热股 -->
-            <div class="section-block" id="block-notzt">
-                <h2 class="section-title">❄️ 未涨停热股</h2>
-                {not_zt_section}
-            </div>
-
-            <!-- 多概念股票 -->
-            <div class="section-block" id="block-multi">
-                <h2 class="section-title">🎯 多概念股票</h2>
-                {multi_section}
-            </div>
-        </section>
-
-        <!-- ========== Tab 3: 投资舆情 ========== -->
-        <section id="section-sentiment" class="page-section">
-            <div class="tab-header">
-                <h1>📰 投资舆情分析</h1>
-            </div>
-
-            <div class="sentiment-section">
-                <h2 class="section-title">🔥 涨停简图</h2>
-                <p class="section-desc">韭研公社全天涨停简图 - 识别市场主线热点</p>
-
-                <!-- 涨停简图展示区 -->
-                <div class="jianxi-container">
-                    <div class="jianxi-controls">
-                        <select id="jianxi-date" class="jianxi-date-select">
-                            <option value="2026-04-10" selected>04月10日</option>
-                        </select>
-                        <button id="jianxi-update-btn" class="jianxi-update-btn" onclick="updateJianxiData()">
-                            📥 更新数据
-                        </button>
-                        <button id="jianxi-analyze-btn" class="jianxi-analyze-btn" onclick="analyzeJianxi()">
-                            🤖 AI分析
-                        </button>
-                        <button id="jianxi-refresh-btn" class="jianxi-refresh-btn" onclick="refreshJianxi()">
-                            🔄 刷新
-                        </button>
-                    </div>
-                    <div id="jianxi-update-status" class="jianxi-update-status" style="display: none;"></div>
-                    <div class="jianxi-image-wrapper">
-                        <img id="jianxi-image" class="jianxi-image"
-                             src=""
-                             alt="涨停简图加载中..."
-                             onload="onJianxiLoad()"
-                             onerror="onJianxiError()">
-                        <div id="jianxi-loading" class="jianxi-loading">
-                            <div class="loading-spinner"></div>
-                            <span>加载中...</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 全部异动解析区 -->
-                <div class="action-list-section">
-                    <div class="action-list-header">
-                        <h3 class="section-title">📋 全部异动解析</h3>
-                        <button id="action-fetch-btn" class="jianxi-update-btn" onclick="fetchActionList()">
-                            🌐 从韭研公社获取
-                        </button>
-                    </div>
-                    <div id="action-list-status" class="jianxi-update-status" style="display: none;"></div>
-                    <div id="action-list-content" class="action-list-content">
-                        <p class="action-list-hint">点击上方按钮从韭研公社获取当日异动解析数据</p>
-                    </div>
-                </div>
-
-                <!-- AI分析结果区 -->
-                <div id="jianxi-result" class="jianxi-result" style="display: none;">
-                    <h3 class="result-title">📊 AI分析结果</h3>
-                    <div id="jianxi-tree" class="jianxi-tree"></div>
-                    <div id="jianxi-summary" class="jianxi-summary"></div>
-                </div>
-
-                <!-- 原始iframe (可选) -->
-                <details class="iframe-original">
-                    <summary>📱 打开韭研公社原站（需登录）</summary>
-                    <div class="iframe-container">
-                        <iframe
-                            src="https://www.jiuyangongshe.com/action"
-                            class="sentiment-iframe"
-                            frameborder="0"
-                            allow="accelerometer; clipboard-read; clipboard-write; geolocation; microphone; autoplay"
-                            allowfullscreen
-                            sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
-                        ></iframe>
-                    </div>
-                </details>
-
-                <!-- 产业库 -->
-                <div class="section-block" id="block-industry">
-                    <div class="section-header-row">
-                        <h3 class="section-title">🏭 产业库</h3>
-                        <div class="section-actions">
-                            <button class="jianxi-update-btn" onclick="fetchIndustryList()">📥 获取数据</button>
-                            <a href="https://www.jiuyangongshe.com/industryChain" target="_blank" class="jianxi-update-btn">🔗 韭研公社</a>
-                        </div>
-                    </div>
-                    <p class="section-desc">按热度排序的产业主题</p>
-                    <div id="industry-list-status" class="jianxi-update-status" style="display: none;"></div>
-                    <div id="industry-list-content" class="industry-list-content">
-                        <p class="action-list-hint">点击"获取数据"按钮加载产业库</p>
-                    </div>
-                </div>
-
-                <!-- 时间轴 -->
-                <div class="section-block" id="block-timeline">
-                    <div class="section-header-row">
-                        <h3 class="section-title">📅 时间轴</h3>
-                        <div class="section-actions">
-                            <button class="jianxi-update-btn" onclick="fetchTimelineList()">📥 获取数据</button>
-                            <a href="https://www.jiuyangongshe.com/timeline" target="_blank" class="jianxi-update-btn">🔗 韭研公社</a>
-                        </div>
-                    </div>
-                    <p class="section-desc">每日重要事件时间轴</p>
-                    <div id="timeline-list-status" class="jianxi-update-status" style="display: none;"></div>
-                    <div id="timeline-list-content" class="timeline-list-content">
-                        <p class="action-list-hint">点击"获取数据"按钮加载时间轴</p>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-    </div>
+        <div class="footer">
+            <p>报告由股票分析系统自动生成 | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+        </div>
     </div>
 
     <!-- K线图弹窗 -->
@@ -1658,8 +1557,6 @@ def generate_html(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concep
             <div class="modal-tabs">
                 <button class="tab-btn active" onclick="switchKLineTab('min', this)">分时</button>
                 <button class="tab-btn" onclick="switchKLineTab('daily', this)">日K</button>
-                <button class="tab-btn" onclick="switchKLineTab('weekly', this)">周K</button>
-                <button class="tab-btn" onclick="switchKLineTab('monthly', this)">月K</button>
             </div>
             <div class="modal-body">
                 <img id="kline-img" src="" alt="K线图加载中...">
@@ -1672,7 +1569,7 @@ def generate_html(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concep
     return html
 
 
-def save_report(markdown_content, html_content, dates):
+def save_report(markdown_content, html_content_archive, html_content_latest, dates):
     """保存报告并归档"""
     today = datetime.now().strftime('%Y%m%d')
 
@@ -1691,7 +1588,7 @@ def save_report(markdown_content, html_content, dates):
     print(f"  ✓ Markdown报告: {md_file}")
 
     with open(html_file, 'w', encoding='utf-8') as f:
-        f.write(html_content)
+        f.write(html_content_archive)
     print(f"  ✓ HTML报告: {html_file}")
 
     # 最新报告（兼容旧链接）
@@ -1701,7 +1598,7 @@ def save_report(markdown_content, html_content, dates):
     with open(latest_md, 'w', encoding='utf-8') as f:
         f.write(markdown_content)
     with open(latest_html, 'w', encoding='utf-8') as f:
-        f.write(html_content)
+        f.write(html_content_latest)
     print(f"  ✓ 最新报告已更新")
 
     # 生成索引页面
@@ -1719,6 +1616,19 @@ def get_available_archives():
             date_dir = os.path.join(REPORTS_DIR, d)
             if os.path.isdir(date_dir) and d.isdigit() and len(d) == 8:
                 archives.append(d)
+    archives.sort(reverse=True)
+    return archives
+
+
+def get_available_json_archives():
+    """获取已有JSON文件的归档列表"""
+    json_dir = os.path.join(REPORTS_DIR, "data")
+    if not os.path.exists(json_dir):
+        return []
+    archives = []
+    for f in os.listdir(json_dir):
+        if f.endswith('.json') and f[:8].isdigit() and len(f) == 13:
+            archives.append(f[:8])
     archives.sort(reverse=True)
     return archives
 
@@ -1781,8 +1691,235 @@ def _generate_index_page(archives):
     print(f"  ✓ 报告索引页已更新: {index_path}")
 
 
+def convert_nan_to_none(obj):
+    """Recursively convert NaN and infinity values to None for JSON serialization"""
+    if isinstance(obj, dict):
+        return {k: convert_nan_to_none(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_nan_to_none(item) for item in obj]
+    elif isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    return obj
+
+
+def save_report_json(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concept_stock,
+                     today_str, today_zt_count, jianxi_image_path, jianxi_image_date, archives):
+    """生成JSON数据文件"""
+
+    # 构建 hot_concepts 列表
+    hot_concepts_list = []
+    if df_hot_concepts is not None:
+        for _, row in df_hot_concepts.iterrows():
+            hot_concepts_list.append({
+                'code': str(row['concept_code']),
+                'name': row['concept_name'],
+                'hot_value': float(row['hot_value']) if pd.notna(row['hot_value']) else 0
+            })
+
+    # 构建 top20_concepts 结构
+    top20_concepts = []
+    for result in analysis_result['top20_concepts']:
+        # 从 date_rhythm 计算 zt_dates
+        date_rhythm = result.get('date_rhythm', {})
+        zt_dates = [d for d, stocks in date_rhythm.items() if stocks]
+
+        # 将 stocks DataFrame 转换为列表
+        stocks_list = []
+        if not result['stocks'].empty:
+            for _, stock in result['stocks'].iterrows():
+                stocks_list.append({
+                    'code': str(stock['代码']),
+                    'name': stock['名称'],
+                    'max_lianban': int(stock['最大连板数']) if pd.notna(stock['最大连板数']) else 1,
+                    'zt_count': int(stock['涨停次数']) if pd.notna(stock['涨停次数']) else 1,
+                    'hot_rank': int(stock['热度排名']) if '热度排名' in stock and pd.notna(stock['热度排名']) else 999,
+                    'hot_value': float(stock['热度值']) if '热度值' in stock and pd.notna(stock['热度值']) else 0,
+                    'concepts': stock['所属概念'] if '所属概念' in stock else '-'
+                })
+
+        concept_data = {
+            'concept_code': result['concept_code'],
+            'concept_name': result['concept_name'],
+            'hot_value': float(result['hot_value']) if result['hot_value'] else 0,
+            'stats': result.get('stats', {}),
+            'stocks': stocks_list,
+            'zt_dates': zt_dates
+        }
+        top20_concepts.append(concept_data)
+
+    # ladder 数据直接来自 analysis_result['ladder_data']
+    ladder_data = analysis_result.get('ladder_data', {})
+
+    # 构建 matrix 数据（近6交易日 x 概念）
+    top20_concept_names = [r['concept_name'] for r in analysis_result['top20_concepts']]
+    dates_with_ladder = [d for d in dates if ladder_data.get(d, [])]
+    recent_6_dates = dates_with_ladder[:6] if dates_with_ladder else dates[:6]
+
+    code_to_concepts = analysis_result.get('code_to_concepts', {})
+    top20_names = dict(zip(df_hot_concepts['concept_code'].astype(str), df_hot_concepts['concept_name'])) if df_hot_concepts is not None else {}
+
+    matrix_data = {}
+    for concept in top20_concept_names:
+        matrix_data[concept] = {}
+        for d in recent_6_dates:
+            matrix_data[concept][d] = []
+
+    for d in recent_6_dates:
+        date_stocks = ladder_data.get(d, [])
+        for name, lb, concepts_str, hot_rank, code in date_stocks:
+            # Convert numpy types to native Python types for JSON serialization
+            name = str(name) if hasattr(name, 'item') else name
+            lb = int(lb) if hasattr(lb, 'item') else lb
+            stock_concepts = code_to_concepts.get(code, set())
+            for concept in top20_concept_names:
+                if concept in concepts_str or any(top20_names.get(c) == concept for c in stock_concepts):
+                    all_concepts = []
+                    if df_concept_stock is not None:
+                        stock_rows = df_concept_stock[df_concept_stock['股票代码'].astype(str).str.zfill(6) == code]
+                        all_concepts = stock_rows['概念名称'].tolist()[:3]
+                    matrix_data[concept][d].append({
+                        'name': name,
+                        'code': code,
+                        'lianban': lb,
+                        'concepts': ','.join(all_concepts)
+                    })
+
+    # 构建 today_board 数据
+    today_date = get_actual_latest_date(dates)
+    today_date_int = int(today_date) if today_date else None
+
+    today_zt_df = df_zt_pool[df_zt_pool['交易日期'] == today_date_int] if df_zt_pool is not None else pd.DataFrame()
+
+    today_board_data = {
+        'date': today_date,
+        'count': len(today_zt_df),
+        'concepts': {}
+    }
+
+    if not today_zt_df.empty:
+        concept_stocks_map = {}
+        no_concept_stocks = []
+
+        for _, row in today_zt_df.iterrows():
+            code = str(row['代码_str'])
+            name = row['名称']
+            lianban = int(row['连板数']) if pd.notna(row['连板数']) else 1
+
+            stock_concepts = code_to_concepts.get(code, set())
+            concept_names = [top20_names.get(c, c) for c in stock_concepts if c in top20_names]
+
+            if concept_names:
+                for cn in concept_names[:3]:
+                    if cn not in concept_stocks_map:
+                        concept_stocks_map[cn] = []
+                    concept_stocks_map[cn].append({'name': name, 'code': code, 'lianban': lianban})
+            else:
+                no_concept_stocks.append({'name': name, 'code': code, 'lianban': lianban})
+
+        # 按概念内股票数排序
+        sorted_concepts = sorted(concept_stocks_map.items(), key=lambda x: -len(x[1]))
+        for concept_name, stocks in sorted_concepts:
+            today_board_data['concepts'][concept_name] = stocks
+
+        if no_concept_stocks:
+            today_board_data['concepts']['其他'] = no_concept_stocks
+
+    # 转换 not_zt_hot_stocks (pandas Series 列表) 为普通列表
+    not_zt_hot_stocks_serializable = []
+    for stock in analysis_result['not_zt_hot_stocks']:
+        if hasattr(stock, 'to_dict'):
+            not_zt_hot_stocks_serializable.append(stock.to_dict())
+        else:
+            not_zt_hot_stocks_serializable.append(stock)
+
+    # 转换 multi_concept_stocks 中的 numpy 类型
+    multi_concept_stocks_serializable = []
+    for stock in analysis_result['multi_concept_stocks']:
+        stock_dict = {}
+        for k, v in stock.items():
+            if hasattr(v, 'item'):  # numpy type
+                stock_dict[k] = v.item()
+            else:
+                stock_dict[k] = v
+        multi_concept_stocks_serializable.append(stock_dict)
+
+    # 转换 other_stocks 中的 numpy 类型
+    other_stocks_serializable = []
+    for stock in analysis_result['other_stocks']:
+        stock_dict = {}
+        for k, v in stock.items():
+            if hasattr(v, 'item'):  # numpy type
+                stock_dict[k] = v.item()
+            else:
+                stock_dict[k] = v
+        other_stocks_serializable.append(stock_dict)
+
+    data = {
+        "date": today_str,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "stats": {
+            "concept_count": len(analysis_result['top20_concepts']),
+            "top20_zt_count": sum(len(r['stocks']) for r in analysis_result['top20_concepts']),
+            "other_zt_count": len(other_stocks_serializable),
+            "not_zt_hot_count": len(not_zt_hot_stocks_serializable),
+            "today_zt_count": today_zt_count
+        },
+        "dates": dates,
+        "hot_concepts": hot_concepts_list,
+        "top20_concepts": top20_concepts,
+        "other_stocks": other_stocks_serializable,
+        "not_zt_hot_stocks": not_zt_hot_stocks_serializable,
+        "multi_concept_stocks": multi_concept_stocks_serializable,
+        "today_board": today_board_data,
+        "ladder": ladder_data,
+        "matrix": matrix_data,
+        "jianxi_image": jianxi_image_path,
+        "jianxi_date": jianxi_image_date,
+        "archives": [a for a in archives if a != today_str]  # 排除当前日期
+    }
+
+    # 保存到 reports/data/YYYYMMDD.json
+    json_dir = os.path.join(REPORTS_DIR, "data")
+    os.makedirs(json_dir, exist_ok=True)
+    json_path = os.path.join(json_dir, f"{today_str}.json")
+
+    try:
+        # Convert NaN and infinity values to None for valid JSON
+        data = convert_nan_to_none(data)
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        print(f"  ✓ JSON数据: {json_path}")
+        return json_path
+    except Exception as e:
+        print(f"  ✗ JSON保存失败: {e}")
+        return None
+
+
+def generate_template_html():
+    """生成静态模板HTML（从report_latest.html提取）"""
+    import shutil
+    src = os.path.join(SCRIPT_DIR, "report_latest.html")
+    dst = os.path.join(SCRIPT_DIR, "report_template.html")
+    if os.path.exists(src):
+        shutil.copy(src, dst)
+        print(f"  ✓ 模板已生成: {dst}")
+    else:
+        print(f"  ✗ 源文件不存在: {src}")
+
+
 def main():
     """主函数"""
+    parser = argparse.ArgumentParser(description='股票分析报告看板 V2')
+    parser.add_argument('--html', action='store_true', help='生成完整HTML报告（代替JSON）')
+    parser.add_argument('--template', action='store_true', help='生成静态模板HTML')
+    args = parser.parse_args()
+
+    if args.template:
+        generate_template_html()
+        return
+
     print("\n" + "=" * 60)
     print("股票分析报告看板 V2")
     print("=" * 60)
@@ -1825,14 +1962,36 @@ def main():
     # Step 3: 生成报告
     print("\n--- Step 3: 生成报告 ---")
 
-    # 获取现有归档列表
-    archives = get_available_archives()
+    # 获取现有归档列表（只包含有JSON文件的日期）
+    archives = get_available_json_archives()
 
-    markdown_content = generate_markdown(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concept_stock)
-    html_content = generate_html(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concept_stock, archives)
+    # 计算今日涨停数量
+    today_date = get_actual_latest_date(dates)
+    today_date_int = int(today_date) if today_date else None
+    today_zt_df = df_zt_pool[df_zt_pool['交易日期'] == today_date_int] if df_zt_pool is not None else pd.DataFrame()
+    today_zt_count = len(today_zt_df)
 
-    archives = save_report(markdown_content, html_content, dates)
-    print(f"  ✓ 共有 {len(archives)} 个归档文件")
+    # 获取韭研公社简图
+    jianxi_image_path, jianxi_image_date = get_latest_jianxi_image("static")
+
+    if args.html:
+        # 生成完整HTML报告
+        print("模式: 生成HTML报告")
+        markdown_content = generate_markdown(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concept_stock)
+        html_content_archive = generate_html(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concept_stock, archives, static_path="../../static")
+        html_content_latest = generate_html(analysis_result, df_hot_concepts, df_zt_pool, dates, df_concept_stock, archives, static_path="static")
+        archives = save_report(markdown_content, html_content_archive, html_content_latest, dates)
+        print(f"  ✓ 共有 {len(archives)} 个归档文件")
+    else:
+        # 默认生成JSON数据文件
+        print("模式: 生成JSON数据")
+        # 使用实际最新交易日（而非"今天"的日期）
+        latest_trading_date = dates[0] if dates else today_str
+        json_path = save_report_json(
+            analysis_result, df_hot_concepts, df_zt_pool, dates, df_concept_stock,
+            latest_trading_date, today_zt_count, jianxi_image_path, jianxi_image_date, archives
+        )
+        print(f"  ✓ 共有 {len(archives)} 个归档文件")
 
     print("\n" + "=" * 60)
     print("处理完成!")

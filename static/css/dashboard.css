@@ -1378,11 +1378,10 @@ body {
 
 /* 概念走势看板 */
 .concept-trend-board {
-  margin-top: 20px;
-  padding: 15px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
+  margin-top: 15px;
+  padding: 10px;
+  background: #fafafa;
+  border-radius: 6px;
 }
 .trend-board-header {
   display: flex;
@@ -1411,30 +1410,34 @@ body {
 .trend-board-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  padding: 10px 0;
+  gap: 10px;
 }
 .trend-stock-card {
-  background: #fafafa;
-  border-radius: 6px;
-  overflow: hidden;
+  background: #fff;
+  border-radius: 4px;
   text-align: center;
+  padding: 0;
+  overflow: hidden;
+}
+.trend-stock-card:hover {
+  background: #f0f7ff;
 }
 .trend-kline {
   width: 100%;
-  height: 160px;
+  height: 200px;
   cursor: pointer;
   background: #fff;
+  object-fit: contain;
   display: block;
 }
 .trend-kline:hover {
   opacity: 0.9;
 }
 .trend-stock-info {
-  padding: 6px 8px;
+  padding: 6px 4px;
   font-size: 0.85em;
   color: #4a5568;
-  background: #f8fafc;
+  background: #fff;
 }
 .trend-stock-info .stock-name {
   font-weight: 600;
@@ -1443,7 +1446,6 @@ body {
 .trend-stock-info .zt-info {
   font-size: 0.8em;
   color: #718096;
-  margin-top: 2px;
 }
 .trend-stock-info .zt-count {
   color: #e53e3e;
@@ -1451,5 +1453,6 @@ body {
 }
 .trend-stock-info .zt-dates {
   color: #a0aec0;
-  font-size: 0.75em;
+  font-size: 0.8em;
+  margin-top: 2px;
 }

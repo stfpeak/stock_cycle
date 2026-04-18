@@ -1,0 +1,251 @@
+[
+  {
+    "date": "2026-04-01",
+    "list": [
+      {"title": "第十四届储能国际峰会暨展览会（ESIE2026）", "timeline": {"grade": 5, "theme_list": [{"name": "储能"}]}},
+      {"title": "英国取消33项风电组件进口关税", "timeline": {"grade": 3, "theme_list": [{"name": "风电"}]}},
+      {"title": "三菱对覆铜板、预浸料及背胶铜箔价格统一上调30%", "timeline": {"grade": 3, "theme_list": [{"name": "PCB"}]}},
+      {"title": "中国台湾联电、世界先进、力积电等调升报价", "timeline": {"grade": 3, "theme_list": []}},
+      {"title": "国内取消光伏等产品增值税出口退税", "timeline": {"grade": 3, "theme_list": [{"name": "光伏"}]}},
+      {"title": "国巨第三次调涨钽电容产品价格", "timeline": {"grade": 3, "theme_list": [{"name": "钽电容"}]}},
+      {"title": "全国海关推广跨境电商零售出口商品跨关区退货模式", "timeline": {"grade": 2, "theme_list": [{"name": "跨境电商"}]}},
+      {"title": "三井金泽对全线载体极薄铜箔价格上调12%", "timeline": {"grade": 3, "theme_list": [{"name": "铜箔"}]}},
+      {"title": "英飞凌对部分产品价格进行上调", "timeline": {"grade": 3, "theme_list": [{"name": "功率半导体"}]}},
+      {"title": "德州仪器启动第二次全面涨价", "timeline": {"grade": 3, "theme_list": [{"name": "模拟芯片"}]}},
+      {"title": "宝钢股份、鞍钢股份等多家钢企提价200元/吨", "timeline": {"grade": 2, "theme_list": [{"name": "钢铁"}]}},
+      {"title": "欧洲云服务商OVHcloud提价5%-10%", "timeline": {"grade": 2, "theme_list": [{"name": "云计算"}]}},
+      {"title": "陶氏化学上调HDPE/LLDPE/DPE树脂价格", "timeline": {"grade": 2, "theme_list": []}},
+      {"title": "《新能源汽车废旧动力电池回收和综合利用管理暂行办法》正式实施", "timeline": {"grade": 2, "theme_list": [{"name": "新能源汽车"}]}},
+      {"title": "文远知行新加坡Robotaxi GXR试运营", "timeline": {"grade": 3, "theme_list": [{"name": "文远知行"}]}},
+      {"title": "科慕对亚太地区所有牌号Ti-PureT钛白粉产品价格上调150美元/吨", "timeline": {"grade": 2, "theme_list": [{"name": "钛白粉"}]}},
+      {"title": "恩智浦半导体部分产品组合价格上调", "timeline": {"grade": 2, "theme_list": []}},
+      {"title": "日均增产20.6万桶（欧佩克+）", "timeline": {"grade": 2, "theme_list": [{"name": "石油"}]}},
+      {"title": "岳阳林纸、晨鸣纸业涨价200元/吨", "timeline": {"grade": 2, "theme_list": [{"name": "造纸"}]}},
+      {"title": "太力科技新材料战略发布暨投资者交流会", "timeline": {"grade": 2, "theme_list": []}},
+      {"title": "航发动力：2025Q4净利润约2.26亿元，同比+107%", "timeline": {"grade": 2, "theme_list": [{"name": "公告"}]}},
+      {"title": "博汇股份：2026Q1净利润4000-5000万元，同比增长184%-205%", "timeline": {"grade": 2, "theme_list": [{"name": "公告"}]}}
+    ]
+  },
+  {
+    "date": "2026-04-02",
+    "list": [
+      {"title": "阿尔式弥斯2号发射", "timeline": {"grade": 5, "theme_list": [{"name": "商业航天"}]}},
+      {"title": "民航机场规划设计大会", "timeline": {"grade": 3, "theme_list": []}},
+      {"title": "2026赛迪论坛在北京召开", "timeline": {"grade": 3, "theme_list": [{"name": "新质生产力"}]}},
+      {"title": "松霖科技：一季度净利同比预增100%-142%", "timeline": {"grade": 2, "theme_list": [{"name": "公告"}]}}
+    ]
+  },
+  {
+    "date": "2026-04-03",
+    "list": [
+      {"title": "天龙三号首飞", "timeline": {"grade": 5, "theme_list": [{"name": "天兵科技"}]}},
+      {"title": "2026 太空算力产业大会（北京）", "timeline": {"grade": 4, "theme_list": [{"name": "太空算力"}]}},
+      {"title": "美国3月非农就业数据公布", "timeline": {"grade": 3, "theme_list": []}}
+    ]
+  },
+  {
+    "date": "2026-04-04",
+    "list": [
+      {"title": "清明节", "timeline": {"grade": 1, "theme_list": []}}
+    ]
+  },
+  {
+    "date": "2026-04-07",
+    "list": [
+      {"title": "长征八号系列运载火箭发射", "timeline": {"grade": 5, "theme_list": [{"name": "商业航天"}]}},
+      {"title": "迪拜太阳能光伏展", "timeline": {"grade": 4, "theme_list": [{"name": "储能"}, {"name": "光伏"}]}}
+    ]
+  },
+  {
+    "date": "2026-04-08",
+    "list": [
+      {"title": "中恒电气：宁德时代拟41亿元战略入股控股股东", "timeline": {"grade": 5, "theme_list": [{"name": "公告"}]}},
+      {"title": "天华新能：一季度净利同比预增27517%-32120%", "timeline": {"grade": 3, "theme_list": [{"name": "公告"}]}}
+    ]
+  },
+  {
+    "date": "2026-04-09",
+    "list": [
+      {"title": "2026 第十四届深圳国际半导体产业展览会", "timeline": {"grade": 5, "theme_list": [{"name": "半导体"}]}},
+      {"title": "2026第三届AI算力产业大会暨展览会", "timeline": {"grade": 5, "theme_list": [{"name": "算力"}]}},
+      {"title": "首届中国AI+新材料大会（2026）", "timeline": {"grade": 4, "theme_list": []}},
+      {"title": "第十五届中国水泥产业峰会", "timeline": {"grade": 3, "theme_list": [{"name": "水泥"}]}},
+      {"title": "2026顶点金融峰会", "timeline": {"grade": 3, "theme_list": [{"name": "金融"}]}},
+      {"title": "第93届中国国际医疗器械博览会", "timeline": {"grade": 3, "theme_list": [{"name": "医疗器械"}]}},
+      {"title": "第十四届中国电子信息博览会", "timeline": {"grade": 3, "theme_list": []}},
+      {"title": "中钨高新：一季度净利同比预增256%-276%", "timeline": {"grade": 2, "theme_list": [{"name": "公告"}]}},
+      {"title": "全志科技：一季度净利同比预增113%-140%", "timeline": {"grade": 2, "theme_list": [{"name": "公告"}]}}
+    ]
+  },
+  {
+    "date": "2026-04-10",
+    "list": [
+      {"title": "全国可穿戴技术发展与脑机接口开发研讨会", "timeline": {"grade": 5, "theme_list": [{"name": "脑机接口"}]}},
+      {"title": "《王者荣耀世界》正式上线", "timeline": {"grade": 3, "theme_list": [{"name": "王者荣耀"}]}},
+      {"title": "3月CPI/PPI", "timeline": {"grade": 2, "theme_list": []}}
+    ]
+  },
+  {
+    "date": "2026-04-11",
+    "list": [
+      {"title": "2026江苏省城市足球联赛（苏超）", "timeline": {"grade": 2, "theme_list": [{"name": "足球"}]}}
+    ]
+  },
+  {
+    "date": "2026-04-12",
+    "list": [
+      {"title": "2026年湖北省城市足球联赛", "timeline": {"grade": 2, "theme_list": [{"name": "足球"}]}}
+    ]
+  },
+  {
+    "date": "2026-04-13",
+    "list": [
+      {"title": "海南自贸港全球产业招商大会", "timeline": {"grade": 4, "theme_list": [{"name": "海南自贸"}]}},
+      {"title": "2026 钙钛矿电池技术与应用交流会", "timeline": {"grade": 3, "theme_list": [{"name": "钙钛矿"}]}},
+      {"title": "2026年世界互联网大会亚太峰会", "timeline": {"grade": 3, "theme_list": []}}
+    ]
+  },
+  {
+    "date": "2026-04-14",
+    "list": [
+      {"title": "第37届国际阿尔茨海默病协会全球大会", "timeline": {"grade": 4, "theme_list": [{"name": "阿尔茨海默"}]}},
+      {"title": "越南国家主席苏林访华", "timeline": {"grade": 3, "theme_list": [{"name": "越南"}]}}
+    ]
+  },
+  {
+    "date": "2026-04-15",
+    "list": [
+      {"title": "2026（第八届）涡轮技术大会暨民用航空发动机与燃气轮机展", "timeline": {"grade": 4, "theme_list": [{"name": "燃气轮机"}, {"name": "发动机"}]}},
+      {"title": "第139届广交会", "timeline": {"grade": 3, "theme_list": []}},
+      {"title": "普冉股份旗下通用 MCU 全系列产品价格上调", "timeline": {"grade": 2, "theme_list": []}},
+      {"title": "森麒麟：产品价格上调3%-5%", "timeline": {"grade": 2, "theme_list": []}},
+      {"title": "第二十五届中国国际染料工业及有机颜料、纺织化学品展览会", "timeline": {"grade": 2, "theme_list": [{"name": "染料"}]}},
+      {"title": "2026国际气体工业博览会", "timeline": {"grade": 2, "theme_list": []}}
+    ]
+  },
+  {
+    "date": "2026-04-16",
+    "list": [
+      {"title": "2026第四届数据中心液冷技术大会", "timeline": {"grade": 4, "theme_list": [{"name": "液冷"}]}},
+      {"title": "国民经济运行情况新闻发布会", "timeline": {"grade": 3, "theme_list": []}},
+      {"title": "第十四届全国磁约束聚变理论与模拟会议", "timeline": {"grade": 3, "theme_list": [{"name": "可控核聚变"}]}},
+      {"title": "上海国际汽车工业展览会", "timeline": {"grade": 4, "theme_list": [{"name": "智能驾驶"}]}},
+      {"title": "2026 第三届数据要素创新发展大会", "timeline": {"grade": 3, "theme_list": [{"name": "数据要素"}]}},
+      {"title": "恺英网络《三国:天下归心》手游全平台公测", "timeline": {"grade": 2, "theme_list": [{"name": "游戏"}]}},
+      {"title": "第十六届北京国际电影节", "timeline": {"grade": 2, "theme_list": [{"name": "电影"}]}},
+      {"title": "2026 上海干细胞产业大会", "timeline": {"grade": 3, "theme_list": [{"name": "干细胞"}]}}
+    ]
+  },
+  {
+    "date": "2026-04-17",
+    "list": [
+      {"title": "美国癌症研究协会（AACR）年会", "timeline": {"grade": 5, "theme_list": [{"name": "创新药"}]}},
+      {"title": "2026中国人形机器人生态大会", "timeline": {"grade": 5, "theme_list": [{"name": "人形机器人"}]}},
+      {"title": "群核科技港股上市", "timeline": {"grade": 4, "theme_list": [{"name": "群核科技"}]}},
+      {"title": "2026年可持续农业与环境国际研讨会", "timeline": {"grade": 2, "theme_list": []}},
+      {"title": "2026智元全球合作伙伴大会共启具身智能生产力新时代", "timeline": {"grade": 3, "theme_list": [{"name": "智元"}]}}
+    ]
+  },
+  {
+    "date": "2026-04-18",
+    "list": [
+      {"title": "2026第六届雷达未来大会", "timeline": {"grade": 3, "theme_list": []}},
+      {"title": "百度算力价格调涨实施日", "timeline": {"grade": 3, "theme_list": [{"name": "百度"}]}},
+      {"title": "2026山东省齐鲁足球超级联赛", "timeline": {"grade": 2, "theme_list": [{"name": "足球"}]}}
+    ]
+  },
+  {
+    "date": "2026-04-19",
+    "list": [
+      {"title": "2026北京亦庄半程马拉松暨人形机器人半程马拉松赛", "timeline": {"grade": 4, "theme_list": [{"name": "人形机器人"}]}}
+    ]
+  },
+  {
+    "date": "2026-04-20",
+    "list": [
+      {"title": "2026香港Web3嘉年华", "timeline": {"grade": 4, "theme_list": [{"name": "RWA"}]}},
+      {"title": "中国LPR报价", "timeline": {"grade": 3, "theme_list": []}},
+      {"title": "大疆Osmo Pocket 4全球发布", "timeline": {"grade": 3, "theme_list": []}}
+    ]
+  },
+  {
+    "date": "2026-04-21",
+    "list": [
+      {"title": "第十四届中国数控机床展览会（CCMT2026）", "timeline": {"grade": 4, "theme_list": [{"name": "工业母机"}]}},
+      {"title": "2026全球 6G 技术与产业生态大会", "timeline": {"grade": 4, "theme_list": [{"name": "6G"}]}},
+      {"title": "速腾聚创2026 技术开放日", "timeline": {"grade": 3, "theme_list": [{"name": "激光雷达"}]}},
+      {"title": "第三十八届中国国际塑料橡胶工业展览会", "timeline": {"grade": 3, "theme_list": []}}
+    ]
+  },
+  {
+    "date": "2026-04-22",
+    "list": [
+      {"title": "谷歌云2026 年度旗舰技术大会", "timeline": {"grade": 5, "theme_list": [{"name": "谷歌"}]}},
+      {"title": "第五届半导体生态创新大会", "timeline": {"grade": 4, "theme_list": [{"name": "半导体"}]}},
+      {"title": "第一届催化剂技术创新大会", "timeline": {"grade": 2, "theme_list": []}},
+      {"title": "2026 第二十届消费经济发展论坛（春季）", "timeline": {"grade": 2, "theme_list": [{"name": "消费"}]}}
+    ]
+  },
+  {
+    "date": "2026-04-23",
+    "list": [
+      {"title": "完美世界《异环》全平台公测", "timeline": {"grade": 3, "theme_list": [{"name": "游戏"}]}},
+      {"title": "华为乾崑技术大会（华为智能汽车年度技术峰会）", "timeline": {"grade": 5, "theme_list": [{"name": "鸿蒙"}, {"name": "华为"}]}},
+      {"title": "2026第十三届世界健康产业大会（WHIC）", "timeline": {"grade": 2, "theme_list": []}},
+      {"title": "第四届通用航空与无人机发展大会", "timeline": {"grade": 3, "theme_list": [{"name": "无人机"}]}},
+      {"title": "第 35 届中国国际健康产业博览会（CIHIE健博会）", "timeline": {"grade": 2, "theme_list": []}},
+      {"title": "2026（第五届）中国国际矿业投资与发展高峰会议", "timeline": {"grade": 2, "theme_list": []}},
+      {"title": "青岛空天地智能巡检大会", "timeline": {"grade": 2, "theme_list": [{"name": "电力"}, {"name": "卫星"}, {"name": "无人机"}]}}
+    ]
+  },
+  {
+    "date": "2026-04-24",
+    "list": [
+      {"title": "第十九届北京国际汽车展览会", "timeline": {"grade": 5, "theme_list": [{"name": "智能驾驶"}]}},
+      {"title": "能源新质生产力研讨会", "timeline": {"grade": 3, "theme_list": [{"name": "新质生产力"}]}},
+      {"title": "电影《登月》（第一部）上映", "timeline": {"grade": 2, "theme_list": [{"name": "电影"}]}}
+    ]
+  },
+  {
+    "date": "2026-04-25",
+    "list": [
+      {"title": "2026福建省城市足球联赛", "timeline": {"grade": 2, "theme_list": [{"name": "足球"}]}},
+      {"title": "2026广东省城市足球超级联赛", "timeline": {"grade": 2, "theme_list": [{"name": "足球"}]}},
+      {"title": "特朗普在海湖庄园举行会议和盛大午宴", "timeline": {"grade": 3, "theme_list": []}}
+    ]
+  },
+  {
+    "date": "2026-04-26",
+    "list": [
+      {"title": "第四届科交会", "timeline": {"grade": 2, "theme_list": []}},
+      {"title": "意法半导体多个产品线价格上调", "timeline": {"grade": 3, "theme_list": []}}
+    ]
+  },
+  {
+    "date": "2026-04-27",
+    "list": [
+      {"title": "2026石化产业发展大会", "timeline": {"grade": 3, "theme_list": []}}
+    ]
+  },
+  {
+    "date": "2026-04-28",
+    "list": [
+      {"title": "长征十号乙大型可回收火箭发射", "timeline": {"grade": 5, "theme_list": [{"name": "海上回收"}, {"name": "长征"}]}}
+    ]
+  },
+  {
+    "date": "2026-04-29",
+    "list": [
+      {"title": "数字中国建设峰会", "timeline": {"grade": 4, "theme_list": []}}
+    ]
+  },
+  {
+    "date": "2026-04-30",
+    "list": [
+      {"title": "年报和一季报正式报告的披露截止日期", "timeline": {"grade": 3, "theme_list": []}},
+      {"title": "美联储利率决议", "timeline": {"grade": 5, "theme_list": []}},
+      {"title": "中国4月PMI", "timeline": {"grade": 4, "theme_list": []}},
+      {"title": "华为企业级智能体开发平台AgentArts公测", "timeline": {"grade": 3, "theme_list": [{"name": "华为"}]}}
+    ]
+  }
+]
