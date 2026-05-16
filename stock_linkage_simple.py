@@ -9,6 +9,8 @@
 import os
 import sys
 import json
+import threading
+import time
 from urllib.parse import parse_qs, urlparse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -20,6 +22,30 @@ from stock_linkage_finder import StockLinkageFinder
 print("正在初始化股票联动查找器 V5 ...")
 finder = StockLinkageFinder()
 print("初始化完成!")
+
+# 数据更新状态
+_update_in_progress = False
+_update_progress_msg = ""
+
+def _do_data_update():
+    """后台线程：更新K线数据 + 重载finder内存数据"""
+    global _update_in_progress, _update_progress_msg
+    try:
+        _update_progress_msg = "正在获取最新K线数据..."
+        from update_zt_kline import update_zt_stocks_kline
+        result = update_zt_stocks_kline(full_update=False, delay=0.3)
+        _update_progress_msg = "正在重载涨停数据..."
+        # 重新加载在内存的数据
+        finder._load_zt_pool_data()
+        finder._load_zt_from_db()
+        finder._merge_zt_data()
+        _update_progress_msg = f"更新完成 ({result.get('updated', 0)}条新记录)"
+    except Exception as e:
+        import traceback
+        _update_progress_msg = f"更新失败: {e}"
+        traceback.print_exc()
+    finally:
+        _update_in_progress = False
 
 HTML_PAGE = '''<!DOCTYPE html>
 <html lang="zh-CN">
@@ -676,7 +702,10 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 </head>
 <body>
 <div class="container">
-    <h1>📊 A股题材轮动分析系统</h1>
+    <div style="display:flex;align-items:center;justify-content:center;gap:16px;flex-wrap:wrap;">
+        <h1 style="margin:20px 0 5px 0;">📊 A股题材轮动分析系统</h1>
+        <button id="updateDataBtn" onclick="updateAllData()" style="padding:6px 16px;font-size:0.82em;background:linear-gradient(135deg,#ff6b6b,#ee5a24);border:none;border-radius:6px;color:#fff;cursor:pointer;white-space:nowrap;">🔄 更新数据</button>
+    </div>
     <p class="sub">N字战法·涨停回调 | T+0同日联动 | 双源涨停检测 | 方向性分析 | 概念轮动</p>
     <p class="sub" style="font-size:0.75em;color:#555;margin-top:2px;">K线数据: 2026-01-05 ~ 2026-05-15 | 涨停池: 45个交易日 | 概念: 358个题材</p>
 
@@ -2927,6 +2956,49 @@ if (!window._topConceptListener) {
         }
     });
 }
+// ===== 更新数据 =====
+function updateAllData() {
+    var btn = document.getElementById('updateDataBtn');
+    if (!btn) return;
+    btn.disabled = true;
+    btn.textContent = '⏳ 更新中...';
+    btn.style.opacity = '0.6';
+
+    fetch('/api/update_data').then(function(r) { return r.json(); }).then(function(data) {
+        if (data.status === 'running') {
+            pollUpdateStatus(btn);
+        } else if (data.status === 'started') {
+            pollUpdateStatus(btn);
+        } else {
+            btn.disabled = false;
+            btn.textContent = '🔄 更新数据';
+            btn.style.opacity = '1';
+        }
+    }).catch(function(e) {
+        btn.disabled = false;
+        btn.textContent = '🔄 更新数据';
+        btn.style.opacity = '1';
+        console.error('更新数据失败:', e);
+    });
+}
+
+function pollUpdateStatus(btn) {
+    var check = function() {
+        fetch('/api/update_status').then(function(r) { return r.json(); }).then(function(data) {
+            if (data.status === 'running') {
+                btn.textContent = '⏳ ' + (data.msg || '更新中...');
+                setTimeout(check, 2000);
+            } else {
+                btn.textContent = '✅ 更新完成';
+                btn.style.opacity = '1';
+                setTimeout(function() { location.reload(); }, 2000);
+            }
+        }).catch(function() {
+            setTimeout(check, 2000);
+        });
+    };
+    setTimeout(check, 1000);
+}
 loadNPattern();
 </script>
 </body>
@@ -3093,6 +3165,22 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._respond_json({'error': str(e)}, cors_headers)
 
+        elif path == '/api/update_data':
+            global _update_in_progress
+            if _update_in_progress:
+                self._respond_json({'status': 'running', 'msg': _update_progress_msg}, cors_headers)
+            else:
+                _update_in_progress = True
+                thread = threading.Thread(target=_do_data_update, daemon=True)
+                thread.start()
+                self._respond_json({'status': 'started', 'msg': '正在更新数据...'}, cors_headers)
+
+        elif path == '/api/update_status':
+            if _update_in_progress:
+                self._respond_json({'status': 'running', 'msg': _update_progress_msg}, cors_headers)
+            else:
+                self._respond_json({'status': 'done', 'msg': _update_progress_msg}, cors_headers)
+
         else:
             self.send_response(404)
             self.end_headers()
@@ -3116,12 +3204,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    port = 5001
+    port = 6688
     server = HTTPServer(('0.0.0.0', port), Handler)
 
+    hostname = os.uname().nodename if hasattr(os, 'uname') else 'localhost'
     print('=' * 50)
     print('股票联动查询 Web服务 V5')
-    print('访问地址: http://localhost:5001')
+    print(f'本地访问: http://localhost:{port}')
+    print(f'手机访问: http://{hostname}:{port}')
     print('新增: T+0同日联动 | 方向性分析 | 去重')
     print('按 Ctrl+C 停止服务')
     print('=' * 50)
