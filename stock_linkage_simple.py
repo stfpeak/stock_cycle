@@ -702,12 +702,12 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 </head>
 <body>
 <div class="container">
-    <div style="display:flex;align-items:center;justify-content:center;gap:16px;flex-wrap:wrap;">
-        <h1 style="margin:20px 0 5px 0;">📊 A股题材轮动分析系统</h1>
-        <button id="updateDataBtn" onclick="updateAllData()" style="padding:6px 16px;font-size:0.82em;background:linear-gradient(135deg,#ff6b6b,#ee5a24);border:none;border-radius:6px;color:#fff;cursor:pointer;white-space:nowrap;">🔄 更新数据</button>
-    </div>
+    <h1 style="margin:20px 0 5px 0;text-align:center;">📊 A股题材轮动分析系统</h1>
     <p class="sub">N字战法·涨停回调 | T+0同日联动 | 双源涨停检测 | 方向性分析 | 概念轮动</p>
-    <p class="sub" style="font-size:0.75em;color:#555;margin-top:2px;">K线数据: 2026-01-05 ~ 2026-05-15 | 涨停池: 45个交易日 | 概念: 358个题材</p>
+    <p class="sub" style="font-size:0.75em;color:#555;margin-top:2px;">
+        K线数据: 2026-01-05 ~ 2026-05-15 | 涨停池: 45个交易日 | 概念: 358个题材
+        <span id="updateDataBtn" onclick="updateAllData()" style="margin-left:12px;color:#888;cursor:pointer;border:1px solid #444;border-radius:10px;padding:1px 10px;font-size:0.9em;transition:all 0.2s;" onmouseover="this.style.color='#00d4ff';this.style.borderColor='#00d4ff';" onmouseout="this.style.color='#888';this.style.borderColor='#444';">🔄 更新</span>
+    </p>
 
     <div class="search-box">
         <div class="input-row">
