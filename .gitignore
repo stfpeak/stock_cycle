@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 数据库 (大文件)
+data/stocks_kline.db
+data/*.xlsx
+data/*.png
+
+# 数据目录中的自动生成文件
+data/hot/
+data/kline_data/
+data/JYGS_ZT/
+
+# 报告/截图
+reports/dashboard.html
+
+# DS_Store
+.DS_Store
+data/.DS_Store
+reports/.DS_Store
