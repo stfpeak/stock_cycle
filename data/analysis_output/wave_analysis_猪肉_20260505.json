@@ -1,0 +1,61 @@
+{
+  "analysis_date": "20260505",
+  "generated_at": "22:02:03",
+  "concept_name": "猪肉",
+  "total_waves": 1,
+  "waves": [
+    {
+      "wave_id": 1,
+      "start_date": "2026-03-30",
+      "end_date": "2026-03-30",
+      "duration_days": 1,
+      "stock_count": 1,
+      "stocks": [
+        "000048"
+      ],
+      "zt_dates": [
+        "2026-03-30"
+      ],
+      "wave_stocks": [
+        {
+          "stock_code": "000048",
+          "first_zt_date": "2026-03-30",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-03-30"
+          ],
+          "lag_days": 0,
+          "role": "龙头"
+        }
+      ],
+      "summary": {
+        "total_stocks": 1,
+        "dragon_count": 1,
+        "follow_count": 0,
+        "supplementary_count": 0,
+        "dragon_codes": [
+          "000048"
+        ],
+        "follow_codes": [],
+        "supplementary_codes": []
+      }
+    }
+  ],
+  "linkage_matrix": [],
+  "echelon": {
+    "dragon_tier": [
+      {
+        "stock_code": "000048",
+        "first_zt_date": "2026-03-30",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-03-30"
+        ],
+        "lag_days": 0,
+        "role": "龙头"
+      }
+    ],
+    "follow_tier": [],
+    "supplementary_tier": []
+  }
+}

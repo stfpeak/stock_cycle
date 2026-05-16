@@ -1,0 +1,4973 @@
+{
+  "stock_code": "600396",
+  "stock_name": "华电辽能",
+  "concepts": [
+    "海工装备",
+    "国企改革",
+    "风电",
+    "氢能源",
+    "碳中和",
+    "绿色电力",
+    "央企国企改革",
+    "超超临界发电",
+    "碳交易"
+  ],
+  "base_zt_count": 17,
+  "base_zt_dates": [
+    "20260306",
+    "20260316",
+    "20260317",
+    "20260318",
+    "20260319",
+    "20260320",
+    "20260323",
+    "20260324",
+    "20260325",
+    "20260413",
+    "20260414",
+    "20260421",
+    "20260422",
+    "20260423",
+    "20260427",
+    "20260506",
+    "20260507"
+  ],
+  "data_source": {
+    "zt_pool_count": 15,
+    "db_count": 17
+  },
+  "linkages": [
+    {
+      "linked_stock": "600726",
+      "linked_name": "华电能源",
+      "shared_concepts": [
+        "国企改革",
+        "风电",
+        "绿色电力",
+        "央企国企改革",
+        "超超临界发电"
+      ],
+      "prob_t0": 0.353,
+      "prob_t1": 0.5,
+      "prob_t2": 0.533,
+      "prob_t3": 0.571,
+      "strength": 0.489,
+      "total_zt_count": 17,
+      "linked_zt_count": 13,
+      "linkage_events": [
+        {
+          "base_date": "20260319",
+          "lag": 0,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 0,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 0,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 0,
+          "linked_date": "20260427"
+        },
+        {
+          "base_date": "20260507",
+          "lag": 0,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 1,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 1,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 1,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 1,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 1,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 1,
+          "linked_date": "20260428"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 1,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 2,
+          "linked_date": "20260310"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 2,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 2,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 2,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 2,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 2,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 2,
+          "linked_date": "20260427"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 3,
+          "linked_date": "20260311"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 3,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 3,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 3,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 3,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 3,
+          "linked_date": "20260427"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 3,
+          "linked_date": "20260428"
+        }
+      ],
+      "reverse_prob_t0": 0.462,
+      "reverse_prob_t1": 0.333,
+      "reverse_prob_t2": 0.455,
+      "reverse_prob_t3": 0.6,
+      "reverse_strength": 0.463
+    },
+    {
+      "linked_stock": "000601",
+      "linked_name": "韶能股份",
+      "shared_concepts": [
+        "绿色电力"
+      ],
+      "prob_t0": 0.353,
+      "prob_t1": 0.375,
+      "prob_t2": 0.333,
+      "prob_t3": 0.286,
+      "strength": 0.337,
+      "total_zt_count": 17,
+      "linked_zt_count": 7,
+      "linkage_events": [
+        {
+          "base_date": "20260306",
+          "lag": 0,
+          "linked_date": "20260306"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 0,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 0,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 0,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 1,
+          "linked_date": "20260309"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 1,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 1,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 1,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 2,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 2,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 2,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 3,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 3,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        }
+      ],
+      "reverse_prob_t0": 0.857,
+      "reverse_prob_t1": 0.667,
+      "reverse_prob_t2": 0.6,
+      "reverse_prob_t3": 0.75,
+      "reverse_strength": 0.719
+    },
+    {
+      "linked_stock": "603618",
+      "linked_name": "杭电股份",
+      "shared_concepts": [
+        "风电"
+      ],
+      "prob_t0": 0.353,
+      "prob_t1": 0.312,
+      "prob_t2": 0.267,
+      "prob_t3": 0.214,
+      "strength": 0.287,
+      "total_zt_count": 17,
+      "linked_zt_count": 16,
+      "linkage_events": [
+        {
+          "base_date": "20260318",
+          "lag": 0,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 0,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 0,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 0,
+          "linked_date": "20260506"
+        },
+        {
+          "base_date": "20260507",
+          "lag": 0,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 1,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 1,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 1,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 1,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 2,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 2,
+          "linked_date": "20260327"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 2,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 3,
+          "linked_date": "20260327"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 3,
+          "linked_date": "20260330"
+        }
+      ],
+      "reverse_prob_t0": 0.375,
+      "reverse_prob_t1": 0.2,
+      "reverse_prob_t2": 0.214,
+      "reverse_prob_t3": 0.154,
+      "reverse_strength": 0.236
+    },
+    {
+      "linked_stock": "002309",
+      "linked_name": "中利集团",
+      "shared_concepts": [
+        "海工装备",
+        "国企改革",
+        "风电",
+        "碳中和",
+        "绿色电力"
+      ],
+      "prob_t0": 0.235,
+      "prob_t1": 0.25,
+      "prob_t2": 0.267,
+      "prob_t3": 0.357,
+      "strength": 0.277,
+      "total_zt_count": 17,
+      "linked_zt_count": 8,
+      "linkage_events": [
+        {
+          "base_date": "20260320",
+          "lag": 0,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 0,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 1,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 1,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 2,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 2,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 3,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 3,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 3,
+          "linked_date": "20260330"
+        }
+      ],
+      "reverse_prob_t0": 0.5,
+      "reverse_prob_t1": 0.571,
+      "reverse_prob_t2": 0.5,
+      "reverse_prob_t3": 0.4,
+      "reverse_strength": 0.493
+    },
+    {
+      "linked_stock": "000720",
+      "linked_name": "新能泰山",
+      "shared_concepts": [
+        "国企改革",
+        "央企国企改革"
+      ],
+      "prob_t0": 0.235,
+      "prob_t1": 0.25,
+      "prob_t2": 0.267,
+      "prob_t3": 0.286,
+      "strength": 0.26,
+      "total_zt_count": 17,
+      "linked_zt_count": 12,
+      "linkage_events": [
+        {
+          "base_date": "20260306",
+          "lag": 0,
+          "linked_date": "20260306"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260507",
+          "lag": 0,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 1,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 1,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 2,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 2,
+          "linked_date": "20260327"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 3,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 3,
+          "linked_date": "20260327"
+        }
+      ],
+      "reverse_prob_t0": 0.333,
+      "reverse_prob_t1": 0.091,
+      "reverse_prob_t2": 0.0,
+      "reverse_prob_t3": 0.0,
+      "reverse_strength": 0.106
+    },
+    {
+      "linked_stock": "688268",
+      "linked_name": "华特气体",
+      "shared_concepts": [
+        "氢能源"
+      ],
+      "prob_t0": 0.235,
+      "prob_t1": 0.312,
+      "prob_t2": 0.2,
+      "prob_t3": 0.286,
+      "strength": 0.258,
+      "total_zt_count": 17,
+      "linked_zt_count": 7,
+      "linkage_events": [
+        {
+          "base_date": "20260319",
+          "lag": 0,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 0,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 0,
+          "linked_date": "20260421"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 0,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 1,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 1,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 1,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 1,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 1,
+          "linked_date": "20260428"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 2,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 2,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 2,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 3,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 3,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 3,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 3,
+          "linked_date": "20260428"
+        }
+      ],
+      "reverse_prob_t0": 0.571,
+      "reverse_prob_t1": 0.833,
+      "reverse_prob_t2": 0.6,
+      "reverse_prob_t3": 0.75,
+      "reverse_strength": 0.689
+    },
+    {
+      "linked_stock": "000539",
+      "linked_name": "粤电力Ａ",
+      "shared_concepts": [
+        "海工装备",
+        "国企改革",
+        "风电",
+        "绿色电力",
+        "超超临界发电"
+      ],
+      "prob_t0": 0.294,
+      "prob_t1": 0.25,
+      "prob_t2": 0.267,
+      "prob_t3": 0.214,
+      "strength": 0.256,
+      "total_zt_count": 17,
+      "linked_zt_count": 5,
+      "linkage_events": [
+        {
+          "base_date": "20260318",
+          "lag": 0,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 0,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 0,
+          "linked_date": "20260421"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 1,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 1,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 2,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 2,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 3,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        }
+      ],
+      "reverse_prob_t0": 1.0,
+      "reverse_prob_t1": 1.0,
+      "reverse_prob_t2": 1.0,
+      "reverse_prob_t3": 1.0,
+      "reverse_strength": 1.0
+    },
+    {
+      "linked_stock": "002310",
+      "linked_name": "东方园林",
+      "shared_concepts": [
+        "国企改革",
+        "风电",
+        "绿色电力"
+      ],
+      "prob_t0": 0.235,
+      "prob_t1": 0.188,
+      "prob_t2": 0.267,
+      "prob_t3": 0.286,
+      "strength": 0.244,
+      "total_zt_count": 17,
+      "linked_zt_count": 7,
+      "linkage_events": [
+        {
+          "base_date": "20260316",
+          "lag": 0,
+          "linked_date": "20260316"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 0,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 0,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 0,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 1,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 1,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 1,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 2,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 2,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 2,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 2,
+          "linked_date": "20260327"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 3,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 3,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 3,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 3,
+          "linked_date": "20260327"
+        }
+      ],
+      "reverse_prob_t0": 0.571,
+      "reverse_prob_t1": 0.667,
+      "reverse_prob_t2": 0.8,
+      "reverse_prob_t3": 0.75,
+      "reverse_strength": 0.697
+    },
+    {
+      "linked_stock": "601016",
+      "linked_name": "节能风电",
+      "shared_concepts": [
+        "国企改革",
+        "风电",
+        "绿色电力",
+        "央企国企改革"
+      ],
+      "prob_t0": 0.294,
+      "prob_t1": 0.25,
+      "prob_t2": 0.2,
+      "prob_t3": 0.214,
+      "strength": 0.239,
+      "total_zt_count": 17,
+      "linked_zt_count": 7,
+      "linkage_events": [
+        {
+          "base_date": "20260317",
+          "lag": 0,
+          "linked_date": "20260317"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 0,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 0,
+          "linked_date": "20260506"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 1,
+          "linked_date": "20260317"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 1,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 2,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 3,
+          "linked_date": "20260311"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        }
+      ],
+      "reverse_prob_t0": 0.714,
+      "reverse_prob_t1": 0.5,
+      "reverse_prob_t2": 0.6,
+      "reverse_prob_t3": 0.75,
+      "reverse_strength": 0.641
+    },
+    {
+      "linked_stock": "300385",
+      "linked_name": "雪浪环境",
+      "shared_concepts": [
+        "国企改革"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.188,
+      "prob_t2": 0.2,
+      "prob_t3": 0.357,
+      "strength": 0.23,
+      "total_zt_count": 17,
+      "linked_zt_count": 8,
+      "linkage_events": [
+        {
+          "base_date": "20260323",
+          "lag": 0,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 1,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 2,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 3,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 3,
+          "linked_date": "20260330"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 3,
+          "linked_date": "20260417"
+        }
+      ],
+      "reverse_prob_t0": 0.375,
+      "reverse_prob_t1": 0.286,
+      "reverse_prob_t2": 0.333,
+      "reverse_prob_t3": 0.2,
+      "reverse_strength": 0.298
+    },
+    {
+      "linked_stock": "600683",
+      "linked_name": "京投发展",
+      "shared_concepts": [
+        "国企改革"
+      ],
+      "prob_t0": 0.235,
+      "prob_t1": 0.25,
+      "prob_t2": 0.2,
+      "prob_t3": 0.214,
+      "strength": 0.225,
+      "total_zt_count": 17,
+      "linked_zt_count": 12,
+      "linkage_events": [
+        {
+          "base_date": "20260316",
+          "lag": 0,
+          "linked_date": "20260316"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 0,
+          "linked_date": "20260317"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 0,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 0,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 1,
+          "linked_date": "20260317"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 1,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 1,
+          "linked_date": "20260415"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 1,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 2,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 2,
+          "linked_date": "20260415"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 2,
+          "linked_date": "20260416"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 3,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 3,
+          "linked_date": "20260416"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 3,
+          "linked_date": "20260417"
+        }
+      ],
+      "reverse_prob_t0": 0.333,
+      "reverse_prob_t1": 0.455,
+      "reverse_prob_t2": 0.5,
+      "reverse_prob_t3": 0.778,
+      "reverse_strength": 0.516
+    },
+    {
+      "linked_stock": "600032",
+      "linked_name": "浙江新能",
+      "shared_concepts": [
+        "国企改革",
+        "风电",
+        "氢能源",
+        "绿色电力"
+      ],
+      "prob_t0": 0.294,
+      "prob_t1": 0.188,
+      "prob_t2": 0.2,
+      "prob_t3": 0.214,
+      "strength": 0.224,
+      "total_zt_count": 17,
+      "linked_zt_count": 5,
+      "linkage_events": [
+        {
+          "base_date": "20260323",
+          "lag": 0,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 0,
+          "linked_date": "20260413"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 0,
+          "linked_date": "20260421"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 1,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 2,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 3,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        }
+      ],
+      "reverse_prob_t0": 1.0,
+      "reverse_prob_t1": 1.0,
+      "reverse_prob_t2": 0.667,
+      "reverse_prob_t3": 0.0,
+      "reverse_strength": 0.667
+    },
+    {
+      "linked_stock": "603318",
+      "linked_name": "水发燃气",
+      "shared_concepts": [
+        "国企改革",
+        "氢能源"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.25,
+      "prob_t2": 0.2,
+      "prob_t3": 0.214,
+      "strength": 0.21,
+      "total_zt_count": 17,
+      "linked_zt_count": 10,
+      "linkage_events": [
+        {
+          "base_date": "20260422",
+          "lag": 0,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 0,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 0,
+          "linked_date": "20260427"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 1,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 1,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 1,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 1,
+          "linked_date": "20260428"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 2,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 2,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 2,
+          "linked_date": "20260427"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 3,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 3,
+          "linked_date": "20260427"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 3,
+          "linked_date": "20260428"
+        }
+      ],
+      "reverse_prob_t0": 0.3,
+      "reverse_prob_t1": 0.333,
+      "reverse_prob_t2": 0.375,
+      "reverse_prob_t3": 0.571,
+      "reverse_strength": 0.395
+    },
+    {
+      "linked_stock": "002445",
+      "linked_name": "中南文化",
+      "shared_concepts": [
+        "海工装备",
+        "国企改革",
+        "绿色电力"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.188,
+      "prob_t2": 0.267,
+      "prob_t3": 0.214,
+      "strength": 0.197,
+      "total_zt_count": 17,
+      "linked_zt_count": 8,
+      "linkage_events": [
+        {
+          "base_date": "20260318",
+          "lag": 0,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 1,
+          "linked_date": "20260309"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 1,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 2,
+          "linked_date": "20260310"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 2,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 2,
+          "linked_date": "20260327"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 3,
+          "linked_date": "20260311"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 3,
+          "linked_date": "20260327"
+        }
+      ],
+      "reverse_prob_t0": 0.25,
+      "reverse_prob_t1": 0.429,
+      "reverse_prob_t2": 0.5,
+      "reverse_prob_t3": 0.8,
+      "reverse_strength": 0.495
+    },
+    {
+      "linked_stock": "600310",
+      "linked_name": "广西能源",
+      "shared_concepts": [
+        "国企改革",
+        "风电",
+        "绿色电力",
+        "超超临界发电"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.188,
+      "prob_t2": 0.267,
+      "prob_t3": 0.214,
+      "strength": 0.197,
+      "total_zt_count": 17,
+      "linked_zt_count": 4,
+      "linkage_events": [
+        {
+          "base_date": "20260320",
+          "lag": 0,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 0,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 1,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 1,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 1,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 2,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 2,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 2,
+          "linked_date": "20260327"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 2,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 3,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 3,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 3,
+          "linked_date": "20260327"
+        }
+      ],
+      "reverse_prob_t0": 0.5,
+      "reverse_prob_t1": 0.333,
+      "reverse_prob_t2": 1.0,
+      "reverse_prob_t3": 1.0,
+      "reverse_strength": 0.708
+    },
+    {
+      "linked_stock": "603026",
+      "linked_name": "石大胜华",
+      "shared_concepts": [
+        "国企改革"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.188,
+      "prob_t2": 0.267,
+      "prob_t3": 0.214,
+      "strength": 0.197,
+      "total_zt_count": 17,
+      "linked_zt_count": 6,
+      "linkage_events": [
+        {
+          "base_date": "20260320",
+          "lag": 0,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 0,
+          "linked_date": "20260414"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 1,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 1,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 1,
+          "linked_date": "20260414"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 2,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 2,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 2,
+          "linked_date": "20260327"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 2,
+          "linked_date": "20260429"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 3,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 3,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 3,
+          "linked_date": "20260327"
+        }
+      ],
+      "reverse_prob_t0": 0.333,
+      "reverse_prob_t1": 0.4,
+      "reverse_prob_t2": 0.75,
+      "reverse_prob_t3": 0.667,
+      "reverse_strength": 0.538
+    },
+    {
+      "linked_stock": "603016",
+      "linked_name": "新宏泰",
+      "shared_concepts": [
+        "国企改革"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.188,
+      "prob_t2": 0.2,
+      "prob_t3": 0.214,
+      "strength": 0.195,
+      "total_zt_count": 17,
+      "linked_zt_count": 5,
+      "linkage_events": [
+        {
+          "base_date": "20260318",
+          "lag": 0,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 0,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 0,
+          "linked_date": "20260421"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 1,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 1,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 1,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 2,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 2,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 2,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 3,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 3,
+          "linked_date": "20260330"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 3,
+          "linked_date": "20260424"
+        }
+      ],
+      "reverse_prob_t0": 0.6,
+      "reverse_prob_t1": 1.0,
+      "reverse_prob_t2": 1.0,
+      "reverse_prob_t3": 0.5,
+      "reverse_strength": 0.775
+    },
+    {
+      "linked_stock": "002580",
+      "linked_name": "圣阳股份",
+      "shared_concepts": [
+        "国企改革"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.188,
+      "prob_t2": 0.2,
+      "prob_t3": 0.214,
+      "strength": 0.195,
+      "total_zt_count": 17,
+      "linked_zt_count": 9,
+      "linkage_events": [
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 0,
+          "linked_date": "20260413"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 0,
+          "linked_date": "20260414"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 1,
+          "linked_date": "20260414"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 1,
+          "linked_date": "20260415"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 2,
+          "linked_date": "20260415"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 2,
+          "linked_date": "20260416"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 3,
+          "linked_date": "20260416"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 3,
+          "linked_date": "20260417"
+        }
+      ],
+      "reverse_prob_t0": 0.333,
+      "reverse_prob_t1": 0.25,
+      "reverse_prob_t2": 0.429,
+      "reverse_prob_t3": 0.5,
+      "reverse_strength": 0.378
+    },
+    {
+      "linked_stock": "600758",
+      "linked_name": "辽宁能源",
+      "shared_concepts": [
+        "国企改革",
+        "风电"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.188,
+      "prob_t2": 0.2,
+      "prob_t3": 0.214,
+      "strength": 0.195,
+      "total_zt_count": 17,
+      "linked_zt_count": 3,
+      "linkage_events": [
+        {
+          "base_date": "20260323",
+          "lag": 0,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 1,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 2,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 3,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        }
+      ],
+      "reverse_prob_t0": 1.0,
+      "reverse_prob_t1": 1.0,
+      "reverse_prob_t2": 1.0,
+      "reverse_prob_t3": 0.0,
+      "reverse_strength": 0.75
+    },
+    {
+      "linked_stock": "000815",
+      "linked_name": "美利云",
+      "shared_concepts": [
+        "国企改革",
+        "绿色电力",
+        "央企国企改革"
+      ],
+      "prob_t0": 0.235,
+      "prob_t1": 0.188,
+      "prob_t2": 0.2,
+      "prob_t3": 0.143,
+      "strength": 0.192,
+      "total_zt_count": 17,
+      "linked_zt_count": 11,
+      "linkage_events": [
+        {
+          "base_date": "20260306",
+          "lag": 0,
+          "linked_date": "20260306"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 0,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 0,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 0,
+          "linked_date": "20260506"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 1,
+          "linked_date": "20260309"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 1,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 1,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 2,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 2,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 2,
+          "linked_date": "20260416"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 3,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 3,
+          "linked_date": "20260416"
+        }
+      ],
+      "reverse_prob_t0": 0.364,
+      "reverse_prob_t1": 0.4,
+      "reverse_prob_t2": 0.222,
+      "reverse_prob_t3": 0.375,
+      "reverse_strength": 0.34
+    },
+    {
+      "linked_stock": "600815",
+      "linked_name": "厦工股份",
+      "shared_concepts": [
+        "国企改革"
+      ],
+      "prob_t0": 0.294,
+      "prob_t1": 0.188,
+      "prob_t2": 0.133,
+      "prob_t3": 0.143,
+      "strength": 0.19,
+      "total_zt_count": 17,
+      "linked_zt_count": 6,
+      "linkage_events": [
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 0,
+          "linked_date": "20260413"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 0,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 0,
+          "linked_date": "20260427"
+        },
+        {
+          "base_date": "20260507",
+          "lag": 0,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 1,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 1,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 2,
+          "linked_date": "20260427"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 3,
+          "linked_date": "20260427"
+        }
+      ],
+      "reverse_prob_t0": 0.833,
+      "reverse_prob_t1": 0.4,
+      "reverse_prob_t2": 0.0,
+      "reverse_prob_t3": 0.667,
+      "reverse_strength": 0.475
+    },
+    {
+      "linked_stock": "000722",
+      "linked_name": "湖南发展",
+      "shared_concepts": [
+        "国企改革",
+        "绿色电力",
+        "碳交易"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.188,
+      "prob_t2": 0.2,
+      "prob_t3": 0.214,
+      "strength": 0.18,
+      "total_zt_count": 17,
+      "linked_zt_count": 3,
+      "linkage_events": [
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 1,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 2,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 3,
+          "linked_date": "20260326"
+        }
+      ],
+      "reverse_prob_t0": 0.667,
+      "reverse_prob_t1": 0.5,
+      "reverse_prob_t2": 0.0,
+      "reverse_prob_t3": 0.0,
+      "reverse_strength": 0.292
+    },
+    {
+      "linked_stock": "600982",
+      "linked_name": "宁波能源",
+      "shared_concepts": [
+        "国企改革",
+        "风电",
+        "碳中和",
+        "绿色电力"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.125,
+      "prob_t2": 0.2,
+      "prob_t3": 0.214,
+      "strength": 0.179,
+      "total_zt_count": 17,
+      "linked_zt_count": 4,
+      "linkage_events": [
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 0,
+          "linked_date": "20260413"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 2,
+          "linked_date": "20260327"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 3,
+          "linked_date": "20260327"
+        }
+      ],
+      "reverse_prob_t0": 0.75,
+      "reverse_prob_t1": 0.667,
+      "reverse_prob_t2": 0.0,
+      "reverse_prob_t3": 0.0,
+      "reverse_strength": 0.354
+    },
+    {
+      "linked_stock": "001400",
+      "linked_name": "江顺科技",
+      "shared_concepts": [
+        "风电"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.125,
+      "prob_t2": 0.2,
+      "prob_t3": 0.214,
+      "strength": 0.179,
+      "total_zt_count": 17,
+      "linked_zt_count": 16,
+      "linkage_events": [
+        {
+          "base_date": "20260306",
+          "lag": 0,
+          "linked_date": "20260306"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 0,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 1,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 2,
+          "linked_date": "20260310"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 2,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 3,
+          "linked_date": "20260330"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 3,
+          "linked_date": "20260417"
+        }
+      ],
+      "reverse_prob_t0": 0.188,
+      "reverse_prob_t1": 0.133,
+      "reverse_prob_t2": 0.214,
+      "reverse_prob_t3": 0.231,
+      "reverse_strength": 0.192
+    },
+    {
+      "linked_stock": "002150",
+      "linked_name": "正泰电源",
+      "shared_concepts": [
+        "风电"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.188,
+      "prob_t2": 0.133,
+      "prob_t3": 0.214,
+      "strength": 0.178,
+      "total_zt_count": 17,
+      "linked_zt_count": 9,
+      "linkage_events": [
+        {
+          "base_date": "20260317",
+          "lag": 0,
+          "linked_date": "20260317"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 0,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 0,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 1,
+          "linked_date": "20260317"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 1,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 1,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 2,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 2,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 3,
+          "linked_date": "20260311"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 3,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 3,
+          "linked_date": "20260323"
+        }
+      ],
+      "reverse_prob_t0": 0.333,
+      "reverse_prob_t1": 0.375,
+      "reverse_prob_t2": 0.714,
+      "reverse_prob_t3": 0.833,
+      "reverse_strength": 0.564
+    },
+    {
+      "linked_stock": "000509",
+      "linked_name": "华塑控股",
+      "shared_concepts": [
+        "国企改革",
+        "碳中和",
+        "碳交易"
+      ],
+      "prob_t0": 0.235,
+      "prob_t1": 0.188,
+      "prob_t2": 0.133,
+      "prob_t3": 0.143,
+      "strength": 0.175,
+      "total_zt_count": 17,
+      "linked_zt_count": 5,
+      "linkage_events": [
+        {
+          "base_date": "20260306",
+          "lag": 0,
+          "linked_date": "20260306"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 0,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260507",
+          "lag": 0,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 1,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 1,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 2,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 3,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        }
+      ],
+      "reverse_prob_t0": 0.8,
+      "reverse_prob_t1": 0.75,
+      "reverse_prob_t2": 0.333,
+      "reverse_prob_t3": 0.5,
+      "reverse_strength": 0.596
+    },
+    {
+      "linked_stock": "300895",
+      "linked_name": "铜牛信息",
+      "shared_concepts": [
+        "国企改革"
+      ],
+      "prob_t0": 0.235,
+      "prob_t1": 0.188,
+      "prob_t2": 0.2,
+      "prob_t3": 0.071,
+      "strength": 0.173,
+      "total_zt_count": 17,
+      "linked_zt_count": 5,
+      "linkage_events": [
+        {
+          "base_date": "20260318",
+          "lag": 0,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 0,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 0,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 0,
+          "linked_date": "20260506"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 1,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 1,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 1,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 2,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 2,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 2,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 3,
+          "linked_date": "20260319"
+        }
+      ],
+      "reverse_prob_t0": 0.8,
+      "reverse_prob_t1": 1.0,
+      "reverse_prob_t2": 1.0,
+      "reverse_prob_t3": 1.0,
+      "reverse_strength": 0.95
+    },
+    {
+      "linked_stock": "601869",
+      "linked_name": "长飞光纤",
+      "shared_concepts": [
+        "海工装备",
+        "风电"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.125,
+      "prob_t2": 0.2,
+      "prob_t3": 0.214,
+      "strength": 0.164,
+      "total_zt_count": 17,
+      "linked_zt_count": 10,
+      "linkage_events": [
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 2,
+          "linked_date": "20260310"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 3,
+          "linked_date": "20260330"
+        }
+      ],
+      "reverse_prob_t0": 0.2,
+      "reverse_prob_t1": 0.111,
+      "reverse_prob_t2": 0.125,
+      "reverse_prob_t3": 0.143,
+      "reverse_strength": 0.145
+    },
+    {
+      "linked_stock": "002771",
+      "linked_name": "真视通",
+      "shared_concepts": [
+        "风电"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.125,
+      "prob_t2": 0.2,
+      "prob_t3": 0.214,
+      "strength": 0.164,
+      "total_zt_count": 17,
+      "linked_zt_count": 3,
+      "linkage_events": [
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 2,
+          "linked_date": "20260416"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 3,
+          "linked_date": "20260416"
+        }
+      ],
+      "reverse_prob_t0": 0.667,
+      "reverse_prob_t1": 0.5,
+      "reverse_prob_t2": 0.0,
+      "reverse_prob_t3": 1.0,
+      "reverse_strength": 0.542
+    },
+    {
+      "linked_stock": "000593",
+      "linked_name": "德龙汇能",
+      "shared_concepts": [
+        "氢能源",
+        "碳中和"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.125,
+      "prob_t2": 0.2,
+      "prob_t3": 0.214,
+      "strength": 0.164,
+      "total_zt_count": 17,
+      "linked_zt_count": 12,
+      "linkage_events": [
+        {
+          "base_date": "20260423",
+          "lag": 0,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 0,
+          "linked_date": "20260427"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 1,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 1,
+          "linked_date": "20260428"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 2,
+          "linked_date": "20260416"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 2,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 2,
+          "linked_date": "20260427"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 3,
+          "linked_date": "20260416"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 3,
+          "linked_date": "20260427"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 3,
+          "linked_date": "20260428"
+        }
+      ],
+      "reverse_prob_t0": 0.167,
+      "reverse_prob_t1": 0.0,
+      "reverse_prob_t2": 0.2,
+      "reverse_prob_t3": 0.333,
+      "reverse_strength": 0.175
+    },
+    {
+      "linked_stock": "002297",
+      "linked_name": "博云新材",
+      "shared_concepts": [
+        "国企改革"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.188,
+      "prob_t2": 0.133,
+      "prob_t3": 0.214,
+      "strength": 0.163,
+      "total_zt_count": 17,
+      "linked_zt_count": 8,
+      "linkage_events": [
+        {
+          "base_date": "20260413",
+          "lag": 0,
+          "linked_date": "20260413"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 0,
+          "linked_date": "20260414"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 1,
+          "linked_date": "20260414"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 1,
+          "linked_date": "20260415"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 1,
+          "linked_date": "20260428"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 2,
+          "linked_date": "20260415"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 2,
+          "linked_date": "20260416"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 3,
+          "linked_date": "20260416"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 3,
+          "linked_date": "20260417"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 3,
+          "linked_date": "20260428"
+        }
+      ],
+      "reverse_prob_t0": 0.25,
+      "reverse_prob_t1": 0.286,
+      "reverse_prob_t2": 0.333,
+      "reverse_prob_t3": 0.8,
+      "reverse_strength": 0.417
+    },
+    {
+      "linked_stock": "002218",
+      "linked_name": "拓日新能",
+      "shared_concepts": [
+        "绿色电力"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.188,
+      "prob_t2": 0.133,
+      "prob_t3": 0.214,
+      "strength": 0.163,
+      "total_zt_count": 17,
+      "linked_zt_count": 11,
+      "linkage_events": [
+        {
+          "base_date": "20260323",
+          "lag": 0,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 1,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 1,
+          "linked_date": "20260428"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 2,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 3,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 3,
+          "linked_date": "20260428"
+        }
+      ],
+      "reverse_prob_t0": 0.182,
+      "reverse_prob_t1": 0.2,
+      "reverse_prob_t2": 0.111,
+      "reverse_prob_t3": 0.125,
+      "reverse_strength": 0.154
+    },
+    {
+      "linked_stock": "300489",
+      "linked_name": "光智科技",
+      "shared_concepts": [
+        "氢能源"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.188,
+      "prob_t2": 0.133,
+      "prob_t3": 0.143,
+      "strength": 0.16,
+      "total_zt_count": 17,
+      "linked_zt_count": 6,
+      "linkage_events": [
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 0,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 0,
+          "linked_date": "20260506"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 1,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 1,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 2,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 3,
+          "linked_date": "20260424"
+        }
+      ],
+      "reverse_prob_t0": 0.5,
+      "reverse_prob_t1": 1.0,
+      "reverse_prob_t2": 0.5,
+      "reverse_prob_t3": 0.667,
+      "reverse_strength": 0.667
+    },
+    {
+      "linked_stock": "600433",
+      "linked_name": "冠豪高新",
+      "shared_concepts": [
+        "国企改革",
+        "氢能源",
+        "央企国企改革"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.062,
+      "prob_t2": 0.133,
+      "prob_t3": 0.286,
+      "strength": 0.15,
+      "total_zt_count": 17,
+      "linked_zt_count": 5,
+      "linkage_events": [
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 0,
+          "linked_date": "20260427"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 2,
+          "linked_date": "20260427"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 3,
+          "linked_date": "20260311"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 3,
+          "linked_date": "20260427"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 3,
+          "linked_date": "20260430"
+        }
+      ],
+      "reverse_prob_t0": 0.4,
+      "reverse_prob_t1": 0.5,
+      "reverse_prob_t2": 0.667,
+      "reverse_prob_t3": 1.0,
+      "reverse_strength": 0.642
+    },
+    {
+      "linked_stock": "002361",
+      "linked_name": "神剑股份",
+      "shared_concepts": [
+        "国企改革"
+      ],
+      "prob_t0": 0.059,
+      "prob_t1": 0.125,
+      "prob_t2": 0.2,
+      "prob_t3": 0.214,
+      "strength": 0.149,
+      "total_zt_count": 17,
+      "linked_zt_count": 13,
+      "linkage_events": [
+        {
+          "base_date": "20260421",
+          "lag": 0,
+          "linked_date": "20260421"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 1,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 1,
+          "linked_date": "20260415"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 2,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 2,
+          "linked_date": "20260327"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 2,
+          "linked_date": "20260415"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 3,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 3,
+          "linked_date": "20260327"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 3,
+          "linked_date": "20260330"
+        }
+      ],
+      "reverse_prob_t0": 0.077,
+      "reverse_prob_t1": 0.167,
+      "reverse_prob_t2": 0.182,
+      "reverse_prob_t3": 0.2,
+      "reverse_strength": 0.157
+    },
+    {
+      "linked_stock": "688021",
+      "linked_name": "奥福科技",
+      "shared_concepts": [
+        "氢能源"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.125,
+      "prob_t2": 0.133,
+      "prob_t3": 0.214,
+      "strength": 0.147,
+      "total_zt_count": 17,
+      "linked_zt_count": 3,
+      "linkage_events": [
+        {
+          "base_date": "20260319",
+          "lag": 0,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 1,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 2,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 3,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 3,
+          "linked_date": "20260430"
+        }
+      ],
+      "reverse_prob_t0": 0.667,
+      "reverse_prob_t1": 1.0,
+      "reverse_prob_t2": 2.0,
+      "reverse_prob_t3": 1.0,
+      "reverse_strength": 1.167
+    },
+    {
+      "linked_stock": "000537",
+      "linked_name": "绿发电力",
+      "shared_concepts": [
+        "国企改革",
+        "风电",
+        "绿色电力",
+        "央企国企改革"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.125,
+      "prob_t2": 0.2,
+      "prob_t3": 0.143,
+      "strength": 0.146,
+      "total_zt_count": 17,
+      "linked_zt_count": 5,
+      "linkage_events": [
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 0,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 1,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 2,
+          "linked_date": "20260310"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 2,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 3,
+          "linked_date": "20260311"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        }
+      ],
+      "reverse_prob_t0": 0.4,
+      "reverse_prob_t1": 0.25,
+      "reverse_prob_t2": 0.667,
+      "reverse_prob_t3": 1.0,
+      "reverse_strength": 0.579
+    },
+    {
+      "linked_stock": "300317",
+      "linked_name": "珈伟新能",
+      "shared_concepts": [
+        "国企改革",
+        "风电",
+        "绿色电力"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.188,
+      "prob_t2": 0.133,
+      "prob_t3": 0.143,
+      "strength": 0.145,
+      "total_zt_count": 17,
+      "linked_zt_count": 4,
+      "linkage_events": [
+        {
+          "base_date": "20260318",
+          "lag": 0,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 0,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 1,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 1,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 1,
+          "linked_date": "20260428"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 2,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 2,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 3,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 3,
+          "linked_date": "20260428"
+        }
+      ],
+      "reverse_prob_t0": 0.5,
+      "reverse_prob_t1": 0.667,
+      "reverse_prob_t2": 1.0,
+      "reverse_prob_t3": 3.0,
+      "reverse_strength": 1.292
+    },
+    {
+      "linked_stock": "001258",
+      "linked_name": "立新能源",
+      "shared_concepts": [
+        "国企改革",
+        "风电",
+        "碳中和",
+        "绿色电力"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.188,
+      "prob_t2": 0.133,
+      "prob_t3": 0.143,
+      "strength": 0.145,
+      "total_zt_count": 17,
+      "linked_zt_count": 3,
+      "linkage_events": [
+        {
+          "base_date": "20260319",
+          "lag": 0,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 0,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 1,
+          "linked_date": "20260309"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 1,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 1,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 2,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 2,
+          "linked_date": "20260323"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 3,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 3,
+          "linked_date": "20260323"
+        }
+      ],
+      "reverse_prob_t0": 0.667,
+      "reverse_prob_t1": 1.0,
+      "reverse_prob_t2": 2.0,
+      "reverse_prob_t3": 1.0,
+      "reverse_strength": 1.167
+    },
+    {
+      "linked_stock": "600770",
+      "linked_name": "综艺股份",
+      "shared_concepts": [
+        "绿色电力"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.188,
+      "prob_t2": 0.133,
+      "prob_t3": 0.143,
+      "strength": 0.145,
+      "total_zt_count": 17,
+      "linked_zt_count": 6,
+      "linkage_events": [
+        {
+          "base_date": "20260423",
+          "lag": 0,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 0,
+          "linked_date": "20260506"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 1,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 1,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 1,
+          "linked_date": "20260428"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 2,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 2,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 3,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 3,
+          "linked_date": "20260428"
+        }
+      ],
+      "reverse_prob_t0": 0.333,
+      "reverse_prob_t1": 0.4,
+      "reverse_prob_t2": 0.25,
+      "reverse_prob_t3": 0.333,
+      "reverse_strength": 0.329
+    },
+    {
+      "linked_stock": "601778",
+      "linked_name": "晶科科技",
+      "shared_concepts": [
+        "风电",
+        "氢能源",
+        "碳中和",
+        "绿色电力",
+        "碳交易"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.125,
+      "prob_t2": 0.2,
+      "prob_t3": 0.071,
+      "strength": 0.143,
+      "total_zt_count": 17,
+      "linked_zt_count": 5,
+      "linkage_events": [
+        {
+          "base_date": "20260414",
+          "lag": 0,
+          "linked_date": "20260414"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 0,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 0,
+          "linked_date": "20260506"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 1,
+          "linked_date": "20260414"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 1,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 2,
+          "linked_date": "20260310"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 2,
+          "linked_date": "20260416"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 2,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 3,
+          "linked_date": "20260416"
+        }
+      ],
+      "reverse_prob_t0": 0.6,
+      "reverse_prob_t1": 0.25,
+      "reverse_prob_t2": 0.333,
+      "reverse_prob_t3": 0.5,
+      "reverse_strength": 0.421
+    },
+    {
+      "linked_stock": "002323",
+      "linked_name": "雅博股份",
+      "shared_concepts": [
+        "国企改革",
+        "绿色电力"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.188,
+      "prob_t2": 0.133,
+      "prob_t3": 0.071,
+      "strength": 0.142,
+      "total_zt_count": 17,
+      "linked_zt_count": 9,
+      "linkage_events": [
+        {
+          "base_date": "20260317",
+          "lag": 0,
+          "linked_date": "20260317"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 0,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 1,
+          "linked_date": "20260317"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 1,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 2,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        }
+      ],
+      "reverse_prob_t0": 0.333,
+      "reverse_prob_t1": 0.5,
+      "reverse_prob_t2": 0.429,
+      "reverse_prob_t3": 0.5,
+      "reverse_strength": 0.441
+    },
+    {
+      "linked_stock": "002418",
+      "linked_name": "康盛股份",
+      "shared_concepts": [
+        "氢能源"
+      ],
+      "prob_t0": 0.235,
+      "prob_t1": 0.125,
+      "prob_t2": 0.067,
+      "prob_t3": 0.143,
+      "strength": 0.142,
+      "total_zt_count": 17,
+      "linked_zt_count": 7,
+      "linkage_events": [
+        {
+          "base_date": "20260325",
+          "lag": 0,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 0,
+          "linked_date": "20260413"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 0,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 0,
+          "linked_date": "20260506"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 1,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 1,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 2,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 3,
+          "linked_date": "20260325"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 3,
+          "linked_date": "20260417"
+        }
+      ],
+      "reverse_prob_t0": 0.571,
+      "reverse_prob_t1": 0.833,
+      "reverse_prob_t2": 0.6,
+      "reverse_prob_t3": 0.75,
+      "reverse_strength": 0.689
+    },
+    {
+      "linked_stock": "300067",
+      "linked_name": "安诺其",
+      "shared_concepts": [
+        "海工装备"
+      ],
+      "prob_t0": 0.235,
+      "prob_t1": 0.188,
+      "prob_t2": 0.067,
+      "prob_t3": 0.071,
+      "strength": 0.14,
+      "total_zt_count": 17,
+      "linked_zt_count": 6,
+      "linkage_events": [
+        {
+          "base_date": "20260421",
+          "lag": 0,
+          "linked_date": "20260421"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 0,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 0,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 0,
+          "linked_date": "20260506"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 1,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 1,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 1,
+          "linked_date": "20260428"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 2,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 3,
+          "linked_date": "20260428"
+        }
+      ],
+      "reverse_prob_t0": 0.667,
+      "reverse_prob_t1": 0.6,
+      "reverse_prob_t2": 0.5,
+      "reverse_prob_t3": 0.667,
+      "reverse_strength": 0.609
+    },
+    {
+      "linked_stock": "001203",
+      "linked_name": "大中矿业",
+      "shared_concepts": [
+        "绿色电力"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.062,
+      "prob_t2": 0.2,
+      "prob_t3": 0.143,
+      "strength": 0.131,
+      "total_zt_count": 17,
+      "linked_zt_count": 7,
+      "linkage_events": [
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 0,
+          "linked_date": "20260413"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 2,
+          "linked_date": "20260416"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 2,
+          "linked_date": "20260429"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 3,
+          "linked_date": "20260416"
+        }
+      ],
+      "reverse_prob_t0": 0.286,
+      "reverse_prob_t1": 0.333,
+      "reverse_prob_t2": 0.2,
+      "reverse_prob_t3": 0.5,
+      "reverse_strength": 0.33
+    },
+    {
+      "linked_stock": "002498",
+      "linked_name": "汉缆股份",
+      "shared_concepts": [
+        "海工装备",
+        "风电",
+        "氢能源"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.125,
+      "prob_t2": 0.2,
+      "prob_t3": 0.071,
+      "strength": 0.129,
+      "total_zt_count": 17,
+      "linked_zt_count": 15,
+      "linkage_events": [
+        {
+          "base_date": "20260306",
+          "lag": 0,
+          "linked_date": "20260306"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 1,
+          "linked_date": "20260415"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 2,
+          "linked_date": "20260415"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 2,
+          "linked_date": "20260429"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        }
+      ],
+      "reverse_prob_t0": 0.133,
+      "reverse_prob_t1": 0.143,
+      "reverse_prob_t2": 0.231,
+      "reverse_prob_t3": 0.167,
+      "reverse_strength": 0.169
+    },
+    {
+      "linked_stock": "688295",
+      "linked_name": "中复神鹰",
+      "shared_concepts": [
+        "国企改革",
+        "风电",
+        "氢能源"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.125,
+      "prob_t2": 0.067,
+      "prob_t3": 0.143,
+      "strength": 0.128,
+      "total_zt_count": 17,
+      "linked_zt_count": 6,
+      "linkage_events": [
+        {
+          "base_date": "20260316",
+          "lag": 0,
+          "linked_date": "20260316"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 0,
+          "linked_date": "20260317"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 1,
+          "linked_date": "20260317"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 3,
+          "linked_date": "20260311"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        }
+      ],
+      "reverse_prob_t0": 0.5,
+      "reverse_prob_t1": 0.8,
+      "reverse_prob_t2": 1.0,
+      "reverse_prob_t3": 1.667,
+      "reverse_strength": 0.992
+    },
+    {
+      "linked_stock": "001234",
+      "linked_name": "泰慕士",
+      "shared_concepts": [
+        "国企改革"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.188,
+      "prob_t2": 0.133,
+      "prob_t3": 0.071,
+      "strength": 0.128,
+      "total_zt_count": 17,
+      "linked_zt_count": 3,
+      "linkage_events": [
+        {
+          "base_date": "20260422",
+          "lag": 0,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 0,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 1,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 1,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 1,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 2,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 2,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 3,
+          "linked_date": "20260424"
+        }
+      ],
+      "reverse_prob_t0": 0.667,
+      "reverse_prob_t1": 1.0,
+      "reverse_prob_t2": 1.0,
+      "reverse_prob_t3": 1.0,
+      "reverse_strength": 0.917
+    },
+    {
+      "linked_stock": "002256",
+      "linked_name": "兆新股份",
+      "shared_concepts": [
+        "碳中和",
+        "绿色电力"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.188,
+      "prob_t2": 0.067,
+      "prob_t3": 0.071,
+      "strength": 0.126,
+      "total_zt_count": 17,
+      "linked_zt_count": 3,
+      "linkage_events": [
+        {
+          "base_date": "20260317",
+          "lag": 0,
+          "linked_date": "20260317"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 0,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 0,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 1,
+          "linked_date": "20260317"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 1,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 1,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 2,
+          "linked_date": "20260320"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 3,
+          "linked_date": "20260320"
+        }
+      ],
+      "reverse_prob_t0": 1.0,
+      "reverse_prob_t1": 1.5,
+      "reverse_prob_t2": 2.0,
+      "reverse_prob_t3": 3.0,
+      "reverse_strength": 1.875
+    },
+    {
+      "linked_stock": "600736",
+      "linked_name": "苏州高新",
+      "shared_concepts": [
+        "国企改革",
+        "风电",
+        "绿色电力"
+      ],
+      "prob_t0": 0.235,
+      "prob_t1": 0.188,
+      "prob_t2": 0.067,
+      "prob_t3": 0.0,
+      "strength": 0.122,
+      "total_zt_count": 17,
+      "linked_zt_count": 5,
+      "linkage_events": [
+        {
+          "base_date": "20260421",
+          "lag": 0,
+          "linked_date": "20260421"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 0,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 0,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260507",
+          "lag": 0,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 1,
+          "linked_date": "20260422"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 1,
+          "linked_date": "20260423"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 1,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 2,
+          "linked_date": "20260423"
+        }
+      ],
+      "reverse_prob_t0": 0.8,
+      "reverse_prob_t1": 0.5,
+      "reverse_prob_t2": 0.667,
+      "reverse_prob_t3": 0.5,
+      "reverse_strength": 0.617
+    },
+    {
+      "linked_stock": "002263",
+      "linked_name": "大东南",
+      "shared_concepts": [
+        "国企改革"
+      ],
+      "prob_t0": 0.0,
+      "prob_t1": 0.062,
+      "prob_t2": 0.2,
+      "prob_t3": 0.214,
+      "strength": 0.119,
+      "total_zt_count": 17,
+      "linked_zt_count": 6,
+      "linkage_events": [
+        {
+          "base_date": "20260325",
+          "lag": 1,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 2,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 2,
+          "linked_date": "20260327"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 2,
+          "linked_date": "20260416"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 3,
+          "linked_date": "20260326"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 3,
+          "linked_date": "20260327"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 3,
+          "linked_date": "20260416"
+        }
+      ],
+      "reverse_prob_t0": 0.0,
+      "reverse_prob_t1": 0.2,
+      "reverse_prob_t2": 0.25,
+      "reverse_prob_t3": 0.333,
+      "reverse_strength": 0.196
+    },
+    {
+      "linked_stock": "600996",
+      "linked_name": "贵广网络",
+      "shared_concepts": [
+        "国企改革"
+      ],
+      "prob_t0": 0.059,
+      "prob_t1": 0.062,
+      "prob_t2": 0.133,
+      "prob_t3": 0.214,
+      "strength": 0.117,
+      "total_zt_count": 17,
+      "linked_zt_count": 3,
+      "linkage_events": [
+        {
+          "base_date": "20260319",
+          "lag": 0,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 1,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 2,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 2,
+          "linked_date": "20260327"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 3,
+          "linked_date": "20260319"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 3,
+          "linked_date": "20260327"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 3,
+          "linked_date": "20260330"
+        }
+      ],
+      "reverse_prob_t0": 0.333,
+      "reverse_prob_t1": 0.5,
+      "reverse_prob_t2": 1.0,
+      "reverse_prob_t3": 1.0,
+      "reverse_strength": 0.708
+    },
+    {
+      "linked_stock": "002217",
+      "linked_name": "合力泰",
+      "shared_concepts": [
+        "国企改革"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.062,
+      "prob_t2": 0.067,
+      "prob_t3": 0.143,
+      "strength": 0.112,
+      "total_zt_count": 17,
+      "linked_zt_count": 6,
+      "linkage_events": [
+        {
+          "base_date": "20260427",
+          "lag": 0,
+          "linked_date": "20260427"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 0,
+          "linked_date": "20260506"
+        },
+        {
+          "base_date": "20260507",
+          "lag": 0,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 1,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 2,
+          "linked_date": "20260427"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 3,
+          "linked_date": "20260417"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 3,
+          "linked_date": "20260427"
+        }
+      ],
+      "reverse_prob_t0": 0.5,
+      "reverse_prob_t1": 0.4,
+      "reverse_prob_t2": 0.5,
+      "reverse_prob_t3": 1.0,
+      "reverse_strength": 0.6
+    },
+    {
+      "linked_stock": "600821",
+      "linked_name": "金开新能",
+      "shared_concepts": [
+        "国企改革",
+        "风电",
+        "绿色电力",
+        "碳交易"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.125,
+      "prob_t2": 0.067,
+      "prob_t3": 0.071,
+      "strength": 0.11,
+      "total_zt_count": 17,
+      "linked_zt_count": 8,
+      "linkage_events": [
+        {
+          "base_date": "20260306",
+          "lag": 0,
+          "linked_date": "20260306"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 0,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 0,
+          "linked_date": "20260506"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 1,
+          "linked_date": "20260309"
+        },
+        {
+          "base_date": "20260323",
+          "lag": 1,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260320",
+          "lag": 2,
+          "linked_date": "20260324"
+        },
+        {
+          "base_date": "20260319",
+          "lag": 3,
+          "linked_date": "20260324"
+        }
+      ],
+      "reverse_prob_t0": 0.375,
+      "reverse_prob_t1": 0.286,
+      "reverse_prob_t2": 0.333,
+      "reverse_prob_t3": 0.2,
+      "reverse_strength": 0.298
+    },
+    {
+      "linked_stock": "300042",
+      "linked_name": "朗科科技",
+      "shared_concepts": [
+        "国企改革"
+      ],
+      "prob_t0": 0.235,
+      "prob_t1": 0.125,
+      "prob_t2": 0.067,
+      "prob_t3": 0.0,
+      "strength": 0.107,
+      "total_zt_count": 17,
+      "linked_zt_count": 5,
+      "linkage_events": [
+        {
+          "base_date": "20260316",
+          "lag": 0,
+          "linked_date": "20260316"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 0,
+          "linked_date": "20260317"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 0,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 0,
+          "linked_date": "20260506"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 1,
+          "linked_date": "20260317"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 1,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 2,
+          "linked_date": "20260318"
+        }
+      ],
+      "reverse_prob_t0": 0.8,
+      "reverse_prob_t1": 1.0,
+      "reverse_prob_t2": 1.0,
+      "reverse_prob_t3": 2.0,
+      "reverse_strength": 1.2
+    },
+    {
+      "linked_stock": "603316",
+      "linked_name": "诚邦股份",
+      "shared_concepts": [
+        "碳中和"
+      ],
+      "prob_t0": 0.235,
+      "prob_t1": 0.125,
+      "prob_t2": 0.067,
+      "prob_t3": 0.0,
+      "strength": 0.107,
+      "total_zt_count": 17,
+      "linked_zt_count": 5,
+      "linkage_events": [
+        {
+          "base_date": "20260306",
+          "lag": 0,
+          "linked_date": "20260306"
+        },
+        {
+          "base_date": "20260318",
+          "lag": 0,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 0,
+          "linked_date": "20260506"
+        },
+        {
+          "base_date": "20260507",
+          "lag": 0,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 1,
+          "linked_date": "20260318"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 1,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 2,
+          "linked_date": "20260318"
+        }
+      ],
+      "reverse_prob_t0": 0.8,
+      "reverse_prob_t1": 0.5,
+      "reverse_prob_t2": 0.667,
+      "reverse_prob_t3": 0.5,
+      "reverse_strength": 0.617
+    },
+    {
+      "linked_stock": "600156",
+      "linked_name": "华升股份",
+      "shared_concepts": [
+        "国企改革"
+      ],
+      "prob_t0": 0.0,
+      "prob_t1": 0.062,
+      "prob_t2": 0.133,
+      "prob_t3": 0.214,
+      "strength": 0.102,
+      "total_zt_count": 17,
+      "linked_zt_count": 7,
+      "linkage_events": [
+        {
+          "base_date": "20260427",
+          "lag": 1,
+          "linked_date": "20260428"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 2,
+          "linked_date": "20260416"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 2,
+          "linked_date": "20260429"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 3,
+          "linked_date": "20260416"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 3,
+          "linked_date": "20260417"
+        },
+        {
+          "base_date": "20260423",
+          "lag": 3,
+          "linked_date": "20260428"
+        }
+      ],
+      "reverse_prob_t0": 0.0,
+      "reverse_prob_t1": 0.333,
+      "reverse_prob_t2": 0.8,
+      "reverse_prob_t3": 1.25,
+      "reverse_strength": 0.596
+    },
+    {
+      "linked_stock": "002176",
+      "linked_name": "江特电机",
+      "shared_concepts": [
+        "风电"
+      ],
+      "prob_t0": 0.0,
+      "prob_t1": 0.062,
+      "prob_t2": 0.2,
+      "prob_t3": 0.143,
+      "strength": 0.101,
+      "total_zt_count": 17,
+      "linked_zt_count": 4,
+      "linkage_events": [
+        {
+          "base_date": "20260423",
+          "lag": 1,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 2,
+          "linked_date": "20260327"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 2,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 2,
+          "linked_date": "20260429"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 3,
+          "linked_date": "20260327"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 3,
+          "linked_date": "20260424"
+        }
+      ],
+      "reverse_prob_t0": 0.0,
+      "reverse_prob_t1": 0.333,
+      "reverse_prob_t2": 0.5,
+      "reverse_prob_t3": 1.0,
+      "reverse_strength": 0.458
+    },
+    {
+      "linked_stock": "600135",
+      "linked_name": "乐凯胶片",
+      "shared_concepts": [
+        "国企改革",
+        "央企国企改革"
+      ],
+      "prob_t0": 0.0,
+      "prob_t1": 0.125,
+      "prob_t2": 0.2,
+      "prob_t3": 0.071,
+      "strength": 0.099,
+      "total_zt_count": 17,
+      "linked_zt_count": 7,
+      "linkage_events": [
+        {
+          "base_date": "20260306",
+          "lag": 1,
+          "linked_date": "20260309"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 1,
+          "linked_date": "20260415"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 2,
+          "linked_date": "20260310"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 2,
+          "linked_date": "20260415"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 2,
+          "linked_date": "20260429"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 3,
+          "linked_date": "20260330"
+        }
+      ],
+      "reverse_prob_t0": 0.0,
+      "reverse_prob_t1": 0.0,
+      "reverse_prob_t2": 0.2,
+      "reverse_prob_t3": 0.25,
+      "reverse_strength": 0.113
+    },
+    {
+      "linked_stock": "603248",
+      "linked_name": "锡华科技",
+      "shared_concepts": [
+        "风电"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.062,
+      "prob_t2": 0.067,
+      "prob_t3": 0.071,
+      "strength": 0.094,
+      "total_zt_count": 17,
+      "linked_zt_count": 6,
+      "linkage_events": [
+        {
+          "base_date": "20260316",
+          "lag": 0,
+          "linked_date": "20260316"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 0,
+          "linked_date": "20260317"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 0,
+          "linked_date": "20260506"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 1,
+          "linked_date": "20260317"
+        },
+        {
+          "base_date": "20260325",
+          "lag": 2,
+          "linked_date": "20260327"
+        },
+        {
+          "base_date": "20260324",
+          "lag": 3,
+          "linked_date": "20260327"
+        }
+      ],
+      "reverse_prob_t0": 0.5,
+      "reverse_prob_t1": 0.8,
+      "reverse_prob_t2": 0.75,
+      "reverse_prob_t3": 1.0,
+      "reverse_strength": 0.762
+    },
+    {
+      "linked_stock": "002051",
+      "linked_name": "中工国际",
+      "shared_concepts": [
+        "国企改革",
+        "央企国企改革"
+      ],
+      "prob_t0": 0.118,
+      "prob_t1": 0.188,
+      "prob_t2": 0.067,
+      "prob_t3": 0.0,
+      "strength": 0.093,
+      "total_zt_count": 17,
+      "linked_zt_count": 6,
+      "linkage_events": [
+        {
+          "base_date": "20260414",
+          "lag": 0,
+          "linked_date": "20260414"
+        },
+        {
+          "base_date": "20260507",
+          "lag": 0,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 1,
+          "linked_date": "20260414"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 1,
+          "linked_date": "20260415"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 1,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 2,
+          "linked_date": "20260415"
+        }
+      ],
+      "reverse_prob_t0": 0.333,
+      "reverse_prob_t1": 0.0,
+      "reverse_prob_t2": 0.0,
+      "reverse_prob_t3": 0.333,
+      "reverse_strength": 0.167
+    },
+    {
+      "linked_stock": "600208",
+      "linked_name": "衢州发展",
+      "shared_concepts": [
+        "国企改革"
+      ],
+      "prob_t0": 0.0,
+      "prob_t1": 0.062,
+      "prob_t2": 0.067,
+      "prob_t3": 0.214,
+      "strength": 0.086,
+      "total_zt_count": 17,
+      "linked_zt_count": 3,
+      "linkage_events": [
+        {
+          "base_date": "20260423",
+          "lag": 1,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260422",
+          "lag": 2,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 3,
+          "linked_date": "20260417"
+        },
+        {
+          "base_date": "20260421",
+          "lag": 3,
+          "linked_date": "20260424"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 3,
+          "linked_date": "20260430"
+        }
+      ],
+      "reverse_prob_t0": 0.0,
+      "reverse_prob_t1": 1.0,
+      "reverse_prob_t2": 2.0,
+      "reverse_prob_t3": 1.0,
+      "reverse_strength": 1.0
+    },
+    {
+      "linked_stock": "603158",
+      "linked_name": "腾龙股份",
+      "shared_concepts": [
+        "氢能源"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.062,
+      "prob_t2": 0.0,
+      "prob_t3": 0.071,
+      "strength": 0.077,
+      "total_zt_count": 17,
+      "linked_zt_count": 5,
+      "linkage_events": [
+        {
+          "base_date": "20260306",
+          "lag": 0,
+          "linked_date": "20260306"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 0,
+          "linked_date": "20260506"
+        },
+        {
+          "base_date": "20260507",
+          "lag": 0,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 1,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 3,
+          "linked_date": "20260311"
+        }
+      ],
+      "reverse_prob_t0": 0.6,
+      "reverse_prob_t1": 0.25,
+      "reverse_prob_t2": 0.0,
+      "reverse_prob_t3": 0.5,
+      "reverse_strength": 0.338
+    },
+    {
+      "linked_stock": "000818",
+      "linked_name": "航锦科技",
+      "shared_concepts": [
+        "国企改革",
+        "氢能源"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.062,
+      "prob_t2": 0.067,
+      "prob_t3": 0.0,
+      "strength": 0.076,
+      "total_zt_count": 17,
+      "linked_zt_count": 5,
+      "linkage_events": [
+        {
+          "base_date": "20260306",
+          "lag": 0,
+          "linked_date": "20260306"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 0,
+          "linked_date": "20260506"
+        },
+        {
+          "base_date": "20260507",
+          "lag": 0,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 1,
+          "linked_date": "20260507"
+        },
+        {
+          "base_date": "20260427",
+          "lag": 2,
+          "linked_date": "20260429"
+        }
+      ],
+      "reverse_prob_t0": 0.6,
+      "reverse_prob_t1": 0.25,
+      "reverse_prob_t2": 0.333,
+      "reverse_prob_t3": 0.5,
+      "reverse_strength": 0.421
+    },
+    {
+      "linked_stock": "603269",
+      "linked_name": "海鸥股份",
+      "shared_concepts": [
+        "氢能源",
+        "超超临界发电"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.062,
+      "prob_t2": 0.067,
+      "prob_t3": 0.0,
+      "strength": 0.076,
+      "total_zt_count": 17,
+      "linked_zt_count": 4,
+      "linkage_events": [
+        {
+          "base_date": "20260306",
+          "lag": 0,
+          "linked_date": "20260306"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 0,
+          "linked_date": "20260414"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 0,
+          "linked_date": "20260506"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 1,
+          "linked_date": "20260414"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 2,
+          "linked_date": "20260310"
+        }
+      ],
+      "reverse_prob_t0": 0.75,
+      "reverse_prob_t1": 0.333,
+      "reverse_prob_t2": 0.0,
+      "reverse_prob_t3": 0.0,
+      "reverse_strength": 0.271
+    },
+    {
+      "linked_stock": "000533",
+      "linked_name": "顺钠股份",
+      "shared_concepts": [
+        "海工装备",
+        "风电",
+        "超超临界发电"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.125,
+      "prob_t2": 0.0,
+      "prob_t3": 0.0,
+      "strength": 0.075,
+      "total_zt_count": 17,
+      "linked_zt_count": 10,
+      "linkage_events": [
+        {
+          "base_date": "20260306",
+          "lag": 0,
+          "linked_date": "20260306"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 0,
+          "linked_date": "20260316"
+        },
+        {
+          "base_date": "20260317",
+          "lag": 0,
+          "linked_date": "20260317"
+        },
+        {
+          "base_date": "20260306",
+          "lag": 1,
+          "linked_date": "20260309"
+        },
+        {
+          "base_date": "20260316",
+          "lag": 1,
+          "linked_date": "20260317"
+        }
+      ],
+      "reverse_prob_t0": 0.3,
+      "reverse_prob_t1": 0.333,
+      "reverse_prob_t2": 0.375,
+      "reverse_prob_t3": 0.286,
+      "reverse_strength": 0.324
+    },
+    {
+      "linked_stock": "002364",
+      "linked_name": "中恒电气",
+      "shared_concepts": [
+        "海工装备",
+        "风电",
+        "碳中和"
+      ],
+      "prob_t0": 0.176,
+      "prob_t1": 0.062,
+      "prob_t2": 0.0,
+      "prob_t3": 0.0,
+      "strength": 0.059,
+      "total_zt_count": 17,
+      "linked_zt_count": 7,
+      "linkage_events": [
+        {
+          "base_date": "20260413",
+          "lag": 0,
+          "linked_date": "20260413"
+        },
+        {
+          "base_date": "20260414",
+          "lag": 0,
+          "linked_date": "20260414"
+        },
+        {
+          "base_date": "20260506",
+          "lag": 0,
+          "linked_date": "20260506"
+        },
+        {
+          "base_date": "20260413",
+          "lag": 1,
+          "linked_date": "20260414"
+        }
+      ],
+      "reverse_prob_t0": 0.429,
+      "reverse_prob_t1": 0.5,
+      "reverse_prob_t2": 0.4,
+      "reverse_prob_t3": 0.25,
+      "reverse_strength": 0.395
+    }
+  ],
+  "direction_a_to_b": {
+    "total_linked_stocks": 67,
+    "strong_linkages": 2
+  },
+  "direction_b_to_a": {
+    "total_linked_stocks": 67,
+    "strong_linkages": 52
+  }
+}

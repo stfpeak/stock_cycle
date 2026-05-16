@@ -1,0 +1,5 @@
+adata
+akshare
+pandas
+easyquotation
+requests

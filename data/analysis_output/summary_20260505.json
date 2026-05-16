@@ -1,0 +1,127 @@
+{
+  "report_date": "20260505",
+  "report_time": "22:04:48",
+  "concept_count": 20,
+  "concepts": [
+    {
+      "name": "存储芯片",
+      "wave_count": 1,
+      "zt_stock_count": 44,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "芯片概念",
+      "wave_count": 1,
+      "zt_stock_count": 142,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "商业航天",
+      "wave_count": 1,
+      "zt_stock_count": 69,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "锂电池概念",
+      "wave_count": 1,
+      "zt_stock_count": 84,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "算力租赁",
+      "wave_count": 1,
+      "zt_stock_count": 31,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "共封装光学(CPO)",
+      "wave_count": 1,
+      "zt_stock_count": 35,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "东数西算(算力)",
+      "wave_count": 7,
+      "zt_stock_count": 62,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "PCB概念",
+      "wave_count": 1,
+      "zt_stock_count": 38,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "AI应用",
+      "wave_count": 1,
+      "zt_stock_count": 53,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "先进封装",
+      "wave_count": 1,
+      "zt_stock_count": 31,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "储能",
+      "wave_count": 1,
+      "zt_stock_count": 127,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "华为昇腾",
+      "wave_count": 1,
+      "zt_stock_count": 20,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "人工智能",
+      "wave_count": 7,
+      "zt_stock_count": 129,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "机器人概念",
+      "wave_count": 2,
+      "zt_stock_count": 164,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "创新药",
+      "wave_count": 1,
+      "zt_stock_count": 51,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "人形机器人",
+      "wave_count": 1,
+      "zt_stock_count": 56,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "固态电池",
+      "wave_count": 1,
+      "zt_stock_count": 52,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "猪肉",
+      "wave_count": 1,
+      "zt_stock_count": 1,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "液冷服务器",
+      "wave_count": 1,
+      "zt_stock_count": 38,
+      "strong_linkage_count": 0
+    },
+    {
+      "name": "ST板块",
+      "wave_count": 10,
+      "zt_stock_count": 16,
+      "strong_linkage_count": 0
+    }
+  ]
+}

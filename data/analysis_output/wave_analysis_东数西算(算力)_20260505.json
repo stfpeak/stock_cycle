@@ -1,0 +1,1783 @@
+{
+  "analysis_date": "20260505",
+  "generated_at": "22:02:03",
+  "concept_name": "东数西算(算力)",
+  "total_waves": 7,
+  "waves": [
+    {
+      "wave_id": 1,
+      "start_date": "20250716",
+      "end_date": "20250717",
+      "duration_days": 2,
+      "stock_count": 1,
+      "stocks": [
+        "300344"
+      ],
+      "zt_dates": [
+        "20250716",
+        "20250717"
+      ],
+      "wave_stocks": [
+        {
+          "stock_code": "300344",
+          "first_zt_date": "20250716",
+          "zt_count_in_wave": 2,
+          "zt_dates": [
+            "20250716",
+            "20250717"
+          ],
+          "lag_days": 0,
+          "role": "龙头"
+        }
+      ],
+      "summary": {
+        "total_stocks": 1,
+        "dragon_count": 1,
+        "follow_count": 0,
+        "supplementary_count": 0,
+        "dragon_codes": [
+          "300344"
+        ],
+        "follow_codes": [],
+        "supplementary_codes": []
+      }
+    },
+    {
+      "wave_id": 2,
+      "start_date": "20250723",
+      "end_date": "20250723",
+      "duration_days": 1,
+      "stock_count": 1,
+      "stocks": [
+        "300344"
+      ],
+      "zt_dates": [
+        "20250723"
+      ],
+      "wave_stocks": [
+        {
+          "stock_code": "300344",
+          "first_zt_date": "20250723",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "20250723"
+          ],
+          "lag_days": 0,
+          "role": "龙头"
+        }
+      ],
+      "summary": {
+        "total_stocks": 1,
+        "dragon_count": 1,
+        "follow_count": 0,
+        "supplementary_count": 0,
+        "dragon_codes": [
+          "300344"
+        ],
+        "follow_codes": [],
+        "supplementary_codes": []
+      }
+    },
+    {
+      "wave_id": 3,
+      "start_date": "20250807",
+      "end_date": "20250807",
+      "duration_days": 1,
+      "stock_count": 1,
+      "stocks": [
+        "300344"
+      ],
+      "zt_dates": [
+        "20250807"
+      ],
+      "wave_stocks": [
+        {
+          "stock_code": "300344",
+          "first_zt_date": "20250807",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "20250807"
+          ],
+          "lag_days": 0,
+          "role": "龙头"
+        }
+      ],
+      "summary": {
+        "total_stocks": 1,
+        "dragon_count": 1,
+        "follow_count": 0,
+        "supplementary_count": 0,
+        "dragon_codes": [
+          "300344"
+        ],
+        "follow_codes": [],
+        "supplementary_codes": []
+      }
+    },
+    {
+      "wave_id": 4,
+      "start_date": "20251103",
+      "end_date": "20251103",
+      "duration_days": 1,
+      "stock_count": 1,
+      "stocks": [
+        "300344"
+      ],
+      "zt_dates": [
+        "20251103"
+      ],
+      "wave_stocks": [
+        {
+          "stock_code": "300344",
+          "first_zt_date": "20251103",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "20251103"
+          ],
+          "lag_days": 0,
+          "role": "龙头"
+        }
+      ],
+      "summary": {
+        "total_stocks": 1,
+        "dragon_count": 1,
+        "follow_count": 0,
+        "supplementary_count": 0,
+        "dragon_codes": [
+          "300344"
+        ],
+        "follow_codes": [],
+        "supplementary_codes": []
+      }
+    },
+    {
+      "wave_id": 5,
+      "start_date": "20251222",
+      "end_date": "20260123",
+      "duration_days": 31,
+      "stock_count": 62,
+      "stocks": [
+        "688228",
+        "300113",
+        "600996",
+        "301307",
+        "688158",
+        "300017",
+        "300911",
+        "688159",
+        "300088",
+        "301391",
+        "300444",
+        "300499",
+        "688343",
+        "300868",
+        "300418",
+        "300617",
+        "688316",
+        "301382",
+        "300067",
+        "301259",
+        "002639",
+        "688802",
+        "300344",
+        "300635",
+        "300166",
+        "300302",
+        "300249",
+        "300846",
+        "300698",
+        "688685",
+        "300536",
+        "002471",
+        "300270",
+        "600821",
+        "300042",
+        "688051",
+        "300738",
+        "300081",
+        "002647",
+        "688229",
+        "688500",
+        "300634",
+        "300300",
+        "300853",
+        "300458",
+        "300065",
+        "688387",
+        "301291",
+        "300825",
+        "301282",
+        "300603",
+        "301085",
+        "000601",
+        "300383",
+        "300210",
+        "300672",
+        "300895",
+        "300245",
+        "300975",
+        "300454",
+        "002730",
+        "603296"
+      ],
+      "zt_dates": [
+        "20251222",
+        "2026-03-19",
+        "2026-03-20",
+        "2026-03-23",
+        "2026-03-24",
+        "2026-03-25",
+        "2026-03-26",
+        "2026-03-27",
+        "2026-03-30",
+        "2026-03-31",
+        "2026-04-01",
+        "2026-04-03",
+        "2026-04-08",
+        "2026-04-10",
+        "2026-04-14",
+        "2026-04-15",
+        "2026-04-16",
+        "2026-04-17",
+        "2026-04-20",
+        "2026-04-21",
+        "2026-04-22",
+        "2026-04-23",
+        "2026-04-24",
+        "2026-04-27",
+        "2026-04-28",
+        "2026-04-29",
+        "2026-04-30",
+        "20260120",
+        "20260121",
+        "20260122",
+        "20260123"
+      ],
+      "wave_stocks": [
+        {
+          "stock_code": "300344",
+          "first_zt_date": "20251222",
+          "zt_count_in_wave": 5,
+          "zt_dates": [
+            "20251222",
+            "20260120",
+            "20260121",
+            "20260122",
+            "20260123"
+          ],
+          "lag_days": 0,
+          "role": "龙头"
+        },
+        {
+          "stock_code": "600996",
+          "first_zt_date": "2026-03-19",
+          "zt_count_in_wave": 3,
+          "zt_dates": [
+            "2026-03-19",
+            "2026-03-27",
+            "2026-03-30"
+          ],
+          "lag_days": 0,
+          "role": "龙头"
+        },
+        {
+          "stock_code": "000601",
+          "first_zt_date": "2026-03-19",
+          "zt_count_in_wave": 4,
+          "zt_dates": [
+            "2026-03-19",
+            "2026-03-20",
+            "2026-03-24",
+            "2026-03-25"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300895",
+          "first_zt_date": "2026-03-19",
+          "zt_count_in_wave": 2,
+          "zt_dates": [
+            "2026-03-19",
+            "2026-04-23"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300868",
+          "first_zt_date": "2026-03-23",
+          "zt_count_in_wave": 4,
+          "zt_dates": [
+            "2026-03-23",
+            "2026-03-24",
+            "2026-03-27",
+            "2026-04-10"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "688802",
+          "first_zt_date": "2026-03-24",
+          "zt_count_in_wave": 2,
+          "zt_dates": [
+            "2026-03-24",
+            "2026-04-15"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300635",
+          "first_zt_date": "2026-03-24",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-03-24"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "600821",
+          "first_zt_date": "2026-03-24",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-03-24"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300603",
+          "first_zt_date": "2026-03-24",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-03-24"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "002730",
+          "first_zt_date": "2026-03-25",
+          "zt_count_in_wave": 2,
+          "zt_dates": [
+            "2026-03-25",
+            "2026-04-01"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "688229",
+          "first_zt_date": "2026-03-25",
+          "zt_count_in_wave": 3,
+          "zt_dates": [
+            "2026-03-25",
+            "2026-04-08",
+            "2026-04-22"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300300",
+          "first_zt_date": "2026-03-25",
+          "zt_count_in_wave": 2,
+          "zt_dates": [
+            "2026-03-25",
+            "2026-03-30"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300383",
+          "first_zt_date": "2026-03-25",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-03-25"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300245",
+          "first_zt_date": "2026-03-25",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-03-25"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "002471",
+          "first_zt_date": "2026-03-26",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-03-26"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300825",
+          "first_zt_date": "2026-03-31",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-03-31"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "688158",
+          "first_zt_date": "2026-04-01",
+          "zt_count_in_wave": 2,
+          "zt_dates": [
+            "2026-04-01",
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "002639",
+          "first_zt_date": "2026-04-01",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-01"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "603296",
+          "first_zt_date": "2026-04-01",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-01"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300210",
+          "first_zt_date": "2026-04-03",
+          "zt_count_in_wave": 2,
+          "zt_dates": [
+            "2026-04-03",
+            "2026-04-30"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "688228",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300113",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300017",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300499",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "688343",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300418",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300617",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300166",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300975",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300249",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300846",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300042",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300738",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 2,
+          "zt_dates": [
+            "2026-04-08",
+            "2026-04-16"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300634",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300065",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "688387",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 2,
+          "zt_dates": [
+            "2026-04-08",
+            "2026-04-14"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "301291",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "301085",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300454",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "688316",
+          "first_zt_date": "2026-04-08",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-08"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300458",
+          "first_zt_date": "2026-04-10",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-10"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300911",
+          "first_zt_date": "2026-04-14",
+          "zt_count_in_wave": 2,
+          "zt_dates": [
+            "2026-04-14",
+            "2026-04-16"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "002647",
+          "first_zt_date": "2026-04-14",
+          "zt_count_in_wave": 3,
+          "zt_dates": [
+            "2026-04-14",
+            "2026-04-20",
+            "2026-04-28"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300444",
+          "first_zt_date": "2026-04-15",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-15"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "688159",
+          "first_zt_date": "2026-04-16",
+          "zt_count_in_wave": 2,
+          "zt_dates": [
+            "2026-04-16",
+            "2026-04-30"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300088",
+          "first_zt_date": "2026-04-16",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-16"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "301382",
+          "first_zt_date": "2026-04-16",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-16"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "688685",
+          "first_zt_date": "2026-04-16",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-16"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300270",
+          "first_zt_date": "2026-04-16",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-16"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "688500",
+          "first_zt_date": "2026-04-16",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-16"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300853",
+          "first_zt_date": "2026-04-16",
+          "zt_count_in_wave": 2,
+          "zt_dates": [
+            "2026-04-16",
+            "2026-04-27"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "301282",
+          "first_zt_date": "2026-04-16",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-16"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "301259",
+          "first_zt_date": "2026-04-17",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-17"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300067",
+          "first_zt_date": "2026-04-21",
+          "zt_count_in_wave": 4,
+          "zt_dates": [
+            "2026-04-21",
+            "2026-04-22",
+            "2026-04-23",
+            "2026-04-28"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300081",
+          "first_zt_date": "2026-04-21",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-21"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300698",
+          "first_zt_date": "2026-04-22",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-22"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "688051",
+          "first_zt_date": "2026-04-23",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-23"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "301307",
+          "first_zt_date": "2026-04-24",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-24"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "301391",
+          "first_zt_date": "2026-04-27",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-27"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300302",
+          "first_zt_date": "2026-04-29",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-29"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300536",
+          "first_zt_date": "2026-04-30",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-30"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        },
+        {
+          "stock_code": "300672",
+          "first_zt_date": "2026-04-30",
+          "zt_count_in_wave": 1,
+          "zt_dates": [
+            "2026-04-30"
+          ],
+          "lag_days": 0,
+          "role": "跟风"
+        }
+      ],
+      "summary": {
+        "total_stocks": 62,
+        "dragon_count": 2,
+        "follow_count": 60,
+        "supplementary_count": 0,
+        "dragon_codes": [
+          "300344",
+          "600996"
+        ],
+        "follow_codes": [
+          "000601",
+          "300895",
+          "300868",
+          "688802",
+          "300635",
+          "600821",
+          "300603",
+          "002730",
+          "688229",
+          "300300",
+          "300383",
+          "300245",
+          "002471",
+          "300825",
+          "688158",
+          "002639",
+          "603296",
+          "300210",
+          "688228",
+          "300113",
+          "300017",
+          "300499",
+          "688343",
+          "300418",
+          "300617",
+          "300166",
+          "300975",
+          "300249",
+          "300846",
+          "300042",
+          "300738",
+          "300634",
+          "300065",
+          "688387",
+          "301291",
+          "301085",
+          "300454",
+          "688316",
+          "300458",
+          "300911",
+          "002647",
+          "300444",
+          "688159",
+          "300088",
+          "301382",
+          "688685",
+          "300270",
+          "688500",
+          "300853",
+          "301282",
+          "301259",
+          "300067",
+          "300081",
+          "300698",
+          "688051",
+          "301307",
+          "301391",
+          "300302",
+          "300536",
+          "300672"
+        ],
+        "supplementary_codes": []
+      }
+    },
+    {
+      "wave_id": 6,
+      "start_date": "20260127",
+      "end_date": "20260129",
+      "duration_days": 3,
+      "stock_count": 1,
+      "stocks": [
+        "300344"
+      ],
+      "zt_dates": [
+        "20260127",
+        "20260128",
+        "20260129"
+      ],
+      "wave_stocks": [
+        {
+          "stock_code": "300344",
+          "first_zt_date": "20260127",
+          "zt_count_in_wave": 3,
+          "zt_dates": [
+            "20260127",
+            "20260128",
+            "20260129"
+          ],
+          "lag_days": 0,
+          "role": "龙头"
+        }
+      ],
+      "summary": {
+        "total_stocks": 1,
+        "dragon_count": 1,
+        "follow_count": 0,
+        "supplementary_count": 0,
+        "dragon_codes": [
+          "300344"
+        ],
+        "follow_codes": [],
+        "supplementary_codes": []
+      }
+    },
+    {
+      "wave_id": 7,
+      "start_date": "20260204",
+      "end_date": "20260205",
+      "duration_days": 2,
+      "stock_count": 1,
+      "stocks": [
+        "300344"
+      ],
+      "zt_dates": [
+        "20260204",
+        "20260205"
+      ],
+      "wave_stocks": [
+        {
+          "stock_code": "300344",
+          "first_zt_date": "20260204",
+          "zt_count_in_wave": 2,
+          "zt_dates": [
+            "20260204",
+            "20260205"
+          ],
+          "lag_days": 0,
+          "role": "龙头"
+        }
+      ],
+      "summary": {
+        "total_stocks": 1,
+        "dragon_count": 1,
+        "follow_count": 0,
+        "supplementary_count": 0,
+        "dragon_codes": [
+          "300344"
+        ],
+        "follow_codes": [],
+        "supplementary_codes": []
+      }
+    }
+  ],
+  "linkage_matrix": [],
+  "echelon": {
+    "dragon_tier": [
+      {
+        "stock_code": "300344",
+        "first_zt_date": "20250716",
+        "zt_count_in_wave": 2,
+        "zt_dates": [
+          "20250716",
+          "20250717"
+        ],
+        "lag_days": 0,
+        "role": "龙头"
+      },
+      {
+        "stock_code": "300344",
+        "first_zt_date": "20250723",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "20250723"
+        ],
+        "lag_days": 0,
+        "role": "龙头"
+      },
+      {
+        "stock_code": "300344",
+        "first_zt_date": "20250807",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "20250807"
+        ],
+        "lag_days": 0,
+        "role": "龙头"
+      },
+      {
+        "stock_code": "300344",
+        "first_zt_date": "20251103",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "20251103"
+        ],
+        "lag_days": 0,
+        "role": "龙头"
+      },
+      {
+        "stock_code": "300344",
+        "first_zt_date": "20251222",
+        "zt_count_in_wave": 5,
+        "zt_dates": [
+          "20251222",
+          "20260120",
+          "20260121",
+          "20260122",
+          "20260123"
+        ],
+        "lag_days": 0,
+        "role": "龙头"
+      },
+      {
+        "stock_code": "600996",
+        "first_zt_date": "2026-03-19",
+        "zt_count_in_wave": 3,
+        "zt_dates": [
+          "2026-03-19",
+          "2026-03-27",
+          "2026-03-30"
+        ],
+        "lag_days": 0,
+        "role": "龙头"
+      },
+      {
+        "stock_code": "300344",
+        "first_zt_date": "20260127",
+        "zt_count_in_wave": 3,
+        "zt_dates": [
+          "20260127",
+          "20260128",
+          "20260129"
+        ],
+        "lag_days": 0,
+        "role": "龙头"
+      },
+      {
+        "stock_code": "300344",
+        "first_zt_date": "20260204",
+        "zt_count_in_wave": 2,
+        "zt_dates": [
+          "20260204",
+          "20260205"
+        ],
+        "lag_days": 0,
+        "role": "龙头"
+      }
+    ],
+    "follow_tier": [
+      {
+        "stock_code": "000601",
+        "first_zt_date": "2026-03-19",
+        "zt_count_in_wave": 4,
+        "zt_dates": [
+          "2026-03-19",
+          "2026-03-20",
+          "2026-03-24",
+          "2026-03-25"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300895",
+        "first_zt_date": "2026-03-19",
+        "zt_count_in_wave": 2,
+        "zt_dates": [
+          "2026-03-19",
+          "2026-04-23"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300868",
+        "first_zt_date": "2026-03-23",
+        "zt_count_in_wave": 4,
+        "zt_dates": [
+          "2026-03-23",
+          "2026-03-24",
+          "2026-03-27",
+          "2026-04-10"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "688802",
+        "first_zt_date": "2026-03-24",
+        "zt_count_in_wave": 2,
+        "zt_dates": [
+          "2026-03-24",
+          "2026-04-15"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300635",
+        "first_zt_date": "2026-03-24",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-03-24"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "600821",
+        "first_zt_date": "2026-03-24",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-03-24"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300603",
+        "first_zt_date": "2026-03-24",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-03-24"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "002730",
+        "first_zt_date": "2026-03-25",
+        "zt_count_in_wave": 2,
+        "zt_dates": [
+          "2026-03-25",
+          "2026-04-01"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "688229",
+        "first_zt_date": "2026-03-25",
+        "zt_count_in_wave": 3,
+        "zt_dates": [
+          "2026-03-25",
+          "2026-04-08",
+          "2026-04-22"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300300",
+        "first_zt_date": "2026-03-25",
+        "zt_count_in_wave": 2,
+        "zt_dates": [
+          "2026-03-25",
+          "2026-03-30"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300383",
+        "first_zt_date": "2026-03-25",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-03-25"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300245",
+        "first_zt_date": "2026-03-25",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-03-25"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "002471",
+        "first_zt_date": "2026-03-26",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-03-26"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300825",
+        "first_zt_date": "2026-03-31",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-03-31"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "688158",
+        "first_zt_date": "2026-04-01",
+        "zt_count_in_wave": 2,
+        "zt_dates": [
+          "2026-04-01",
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "002639",
+        "first_zt_date": "2026-04-01",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-01"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "603296",
+        "first_zt_date": "2026-04-01",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-01"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300210",
+        "first_zt_date": "2026-04-03",
+        "zt_count_in_wave": 2,
+        "zt_dates": [
+          "2026-04-03",
+          "2026-04-30"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "688228",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300113",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300017",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300499",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "688343",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300418",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300617",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300166",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300975",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300249",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300846",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300042",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300738",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 2,
+        "zt_dates": [
+          "2026-04-08",
+          "2026-04-16"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300634",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300065",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "688387",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 2,
+        "zt_dates": [
+          "2026-04-08",
+          "2026-04-14"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "301291",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "301085",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300454",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "688316",
+        "first_zt_date": "2026-04-08",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-08"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300458",
+        "first_zt_date": "2026-04-10",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-10"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300911",
+        "first_zt_date": "2026-04-14",
+        "zt_count_in_wave": 2,
+        "zt_dates": [
+          "2026-04-14",
+          "2026-04-16"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "002647",
+        "first_zt_date": "2026-04-14",
+        "zt_count_in_wave": 3,
+        "zt_dates": [
+          "2026-04-14",
+          "2026-04-20",
+          "2026-04-28"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300444",
+        "first_zt_date": "2026-04-15",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-15"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "688159",
+        "first_zt_date": "2026-04-16",
+        "zt_count_in_wave": 2,
+        "zt_dates": [
+          "2026-04-16",
+          "2026-04-30"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300088",
+        "first_zt_date": "2026-04-16",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-16"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "301382",
+        "first_zt_date": "2026-04-16",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-16"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "688685",
+        "first_zt_date": "2026-04-16",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-16"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300270",
+        "first_zt_date": "2026-04-16",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-16"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "688500",
+        "first_zt_date": "2026-04-16",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-16"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300853",
+        "first_zt_date": "2026-04-16",
+        "zt_count_in_wave": 2,
+        "zt_dates": [
+          "2026-04-16",
+          "2026-04-27"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "301282",
+        "first_zt_date": "2026-04-16",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-16"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "301259",
+        "first_zt_date": "2026-04-17",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-17"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300067",
+        "first_zt_date": "2026-04-21",
+        "zt_count_in_wave": 4,
+        "zt_dates": [
+          "2026-04-21",
+          "2026-04-22",
+          "2026-04-23",
+          "2026-04-28"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300081",
+        "first_zt_date": "2026-04-21",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-21"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300698",
+        "first_zt_date": "2026-04-22",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-22"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "688051",
+        "first_zt_date": "2026-04-23",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-23"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "301307",
+        "first_zt_date": "2026-04-24",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-24"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "301391",
+        "first_zt_date": "2026-04-27",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-27"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300302",
+        "first_zt_date": "2026-04-29",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-29"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300536",
+        "first_zt_date": "2026-04-30",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-30"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      },
+      {
+        "stock_code": "300672",
+        "first_zt_date": "2026-04-30",
+        "zt_count_in_wave": 1,
+        "zt_dates": [
+          "2026-04-30"
+        ],
+        "lag_days": 0,
+        "role": "跟风"
+      }
+    ],
+    "supplementary_tier": []
+  }
+}

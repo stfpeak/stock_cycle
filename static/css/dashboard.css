@@ -267,12 +267,198 @@ body {
 .today-lb.lb-1 { background: #3182ce; }
 .today-lb.lb-2 { background: var(--orange); }
 .today-lb.lb-3 { background: var(--red); }
+/* today-board中的板块标识(主/创/科)用白色小字 */
+.today-lb .board-inline { font-size: 0.75em; color: #fff; opacity: 0.95; margin-left: 3px; }
+.today-lb .board-inline.board-zhu { color: #fff; }  /* 白色-主 */
+.today-lb .board-inline.board-chuang { color: #fff; }  /* 白色-创 */
+.today-lb .board-inline.board-ke { color: #fff; }  /* 白色-科 */
 .today-concepts {
     font-size: 0.7em;
     color: var(--gray-400);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+/* 今日涨停看板 4列布局 */
+.today-board-4col {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    background: var(--gray-200);
+    border: 1px solid var(--gray-200);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-top: 10px;
+}
+.today-col-header {
+    display: flex;
+    background: var(--gray-600);
+    color: #fff;
+    font-weight: 600;
+    font-size: 0.85em;
+}
+.today-col-header .today-col-cell {
+    background: var(--gray-600);
+    padding: 10px 8px;
+    text-align: center;
+}
+.today-stock-row {
+    display: flex;
+    background: #fff;
+}
+.today-stock-row:hover {
+    background: var(--gray-50);
+}
+.today-col-cell {
+    flex: 1;
+    padding: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+    min-width: 0;
+}
+.col-stock { flex: 0 0 120px; max-width: 120px; }
+.col-cls { flex: 1; }
+.col-kpl { flex: 1; }
+.col-ths { flex: 1; }
+
+/* 涨停股票单元格 */
+.col-stock .today-stock-item {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 0.85em;
+    min-width: 80px;
+    background: #fff;
+    border: 1px solid var(--gray-200);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.col-stock .today-stock-item:hover {
+    border-color: var(--primary-blue);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+.col-stock .today-stock-name {
+    font-weight: 600;
+    margin-bottom: 2px;
+}
+.col-stock .today-stock-lb {
+    font-size: 0.75em;
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: #fff;
+}
+.col-stock .today-stock-item.lb-1 .today-stock-lb { background: #3182ce; }
+.col-stock .today-stock-item.lb-2 .today-stock-lb { background: var(--orange); }
+.col-stock .today-stock-item.lb-3 .today-stock-lb { background: var(--red); }
+
+/* 概念标签 */
+.concept-tag {
+    display: inline-block;
+    padding: 2px 6px;
+    background: var(--gray-100);
+    border: 1px solid var(--gray-200);
+    border-radius: 4px;
+    font-size: 0.7em;
+    color: var(--gray-700);
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+.concept-tag:hover {
+    background: var(--primary-blue);
+    color: #fff;
+    border-color: var(--primary-blue);
+}
+/* 开盘啦主概念 */
+.concept-tag.kpl-main {
+    background: #e6f3ff;
+    border-color: #1890ff;
+    color: #1890ff;
+}
+/* 开盘啦细分 */
+.concept-tag.kpl-sub {
+    background: #f0f5ff;
+    border-color: #adc6ff;
+    color: #416ae8;
+}
+.concept-tag.kpl-main:hover {
+    background: #1890ff;
+    color: #fff;
+}
+.concept-tag.kpl-sub:hover {
+    background: #416ae8;
+    color: #fff;
+}
+.concept-empty {
+    color: var(--gray-400);
+    font-size: 0.8em;
+}
+
+/* 概念弹框 */
+.concept-modal-content {
+    width: 1100px;
+    max-width: 95vw;
+}
+.concept-modal-content .modal-body {
+    min-height: 250px;
+    max-height: 75vh;
+    overflow-y: auto;
+    justify-content: flex-start;
+    align-items: flex-start;
+}
+.concept-modal-stocks {
+    width: 100%;
+    text-align: left;
+}
+.concept-stocks-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.concept-stocks-grid .concept-stock-item {
+    flex: 0 0 calc(16.666% - 8px);
+    box-sizing: border-box;
+    text-align: center;
+    padding: 10px 6px;
+}
+/* 15日涨停标记 */
+.concept-stock-item.zt-highlight {
+    background: #fed7d7;
+    border-color: #fc8181;
+}
+.concept-stock-item.zt-highlight .concept-stock-name {
+    color: #c53030;
+    font-weight: 600;
+}
+.concept-stock-item {
+    display: inline-flex;
+    align-items: center;
+    padding: 8px 14px;
+    background: var(--gray-50);
+    border: 1px solid var(--gray-200);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+.concept-stock-item:hover {
+    background: var(--primary-blue);
+    color: #fff;
+    border-color: var(--primary-blue);
+}
+.concept-stock-name {
+    font-size: 0.9em;
+}
+.concept-empty {
+    color: var(--gray-400);
+    font-size: 0.9em;
+    text-align: center;
+    padding: 20px;
 }
 
 /* 涨停节奏网格 */
@@ -284,7 +470,7 @@ body {
 }
 .rhythm-date {
     flex: 0 0 auto;
-    min-width: 80px;
+    min-width: 65px;
     background: var(--gray-100);
     border: 1px solid var(--gray-200);
     border-radius: 8px;
@@ -294,9 +480,9 @@ body {
     background: var(--gray-600);
     color: #fff;
     text-align: center;
-    padding: 6px;
+    padding: 4px;
     font-weight: 600;
-    font-size: 0.85em;
+    font-size: 0.75em;
 }
 .rhythm-content { display: flex; flex-direction: column; gap: 4px; padding: 6px; }
 .rhythm-item { display: flex; align-items: center; gap: 4px; }
@@ -354,6 +540,11 @@ body {
 .matrix-stock .board-inline.board-zhu { color: var(--primary-blue); }
 .matrix-stock .board-inline.board-chuang { color: var(--orange); }
 .matrix-stock .board-inline.board-ke { color: #805ad5; }
+/* 热门概念表格内的板块标签 */
+.hot-stocks-table .board-inline { font-size: 0.65em; font-weight: 600; padding: 1px 4px; border-radius: 3px; margin-left: 4px; }
+.hot-stocks-table .board-inline.board-主 { color: #2b6cb0; background: #ebf8ff; }  /* 蓝色-主 */
+.hot-stocks-table .board-inline.board-创 { color: #c05621; background: #feebc8; }  /* 橙色-创 */
+.hot-stocks-table .board-inline.board-科 { color: #6b46c1; background: #e9d8fd; }  /* 紫色-科 */
 
 .stock-block.lb-1 { background: var(--light-blue); color: var(--primary-blue); }
 .stock-block.lb-1 .lb-tag { background: #3182ce; }
@@ -766,6 +957,23 @@ body {
     min-height: 600px;
     display: block;
     border: none;
+}
+
+/* 韭研公社涨停简图样式 */
+.JYGS_ZT-image-wrapper {
+    background: var(--gray-50);
+    border-radius: 8px;
+    overflow: hidden;
+    text-align: center;
+}
+.JYGS_ZT-image {
+    width: 100%;
+    height: auto;
+    display: block;
+}
+.JYGS_ZT-fallback {
+    padding: 40px;
+    color: #999;
 }
 
 /* 涨停简图样式 */

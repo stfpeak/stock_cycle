@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>股票分析</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #1a365d 0%, #2c5282 100%); min-height: 100vh; color: #2d3748; }
+        .container { max-width: 600px; margin: 0 auto; padding: 60px 20px; }
+        h1 { font-size: 2.2em; color: #fff; margin-bottom: 10px; text-align: center; }
+        .subtitle { color: rgba(255,255,255,0.8); text-align: center; margin-bottom: 40px; font-size: 0.95em; }
+        .card { background: #fff; border-radius: 16px; padding: 25px 30px; margin-bottom: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); text-decoration: none; color: #2d3748; display: block; transition: all 0.2s; }
+        .card:hover { transform: translateY(-3px); box-shadow: 0 8px 25px rgba(0,0,0,0.15); }
+        .card-title { font-size: 1.2em; font-weight: 600; margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }
+        .card-desc { font-size: 0.85em; color: #718096; }
+        .card-badge { background: #e53e3e; color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+        .card-badge.blue { background: #3182ce; }
+        .card-badge.green { background: #38a169; }
+        .footer { text-align: center; margin-top: 40px; color: rgba(255,255,255,0.6); font-size: 0.8em; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📈 股票分析</h1>
+        <div class="subtitle">交易日 16:30 自动更新</div>
+
+        <a href="realtime_report.html" class="card">
+            <div class="card-title">
+                🔴 实时涨停监控
+                <span class="card-badge">90秒刷新</span>
+            </div>
+            <div class="card-desc">实时捕捉当日涨停股票，分析概念题材联动</div>
+        </a>
+
+        <a href="report_latest.html" class="card">
+            <div class="card-title">
+                📊 股票分析日报
+                <span class="card-badge blue">16:30刷新</span>
+            </div>
+            <div class="card-desc">热门概念、涨停股联动分析、强势股筛选</div>
+        </a>
+
+        <a href="reports/dashboard.html" class="card">
+            <div class="card-title">
+                🎯 涨停板看板
+                <span class="card-badge green">16:30刷新</span>
+            </div>
+            <div class="card-desc">近20日涨停股票形态分类，K线图表展示</div>
+        </a>
+
+        <div class="footer">
+            Cloudflare Tunnel · 交易日自动刷新
+        </div>
+    </div>
+</body>
+</html>

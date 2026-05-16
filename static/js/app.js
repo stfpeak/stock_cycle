@@ -8,6 +8,7 @@
     // 全局变量
     let currentStockCode = '';
     let currentStockPrefix = '';
+    let conceptToStocks = {'cls': {}, 'kpl': {}, 'ths': {}};  // 概念→股票映射
 
     // ================================================
     // JSON报告加载功能
@@ -154,6 +155,9 @@
         renderMatrix(data.matrix, data.date);
 
         // 6. 渲染今日涨停看板
+        if (data.concept_to_stocks) {
+            conceptToStocks = data.concept_to_stocks;
+        }
         renderTodayBoard(data.today_board);
 
         // 7. 渲染涨停简图
@@ -291,7 +295,7 @@
     }
 
     /**
-     * 渲染今日涨停看板
+     * 渲染今日涨停看板 - 4列布局
      */
     function renderTodayBoard(todayBoard) {
         var container = document.getElementById('today-board-container');
@@ -307,34 +311,125 @@
             descEl.textContent = todayBoard.date ? todayBoard.date.substring(0,4) + '年' + todayBoard.date.substring(4,6) + '月' + todayBoard.date.substring(6,8) + '日 | 共' + totalCount + '只涨停' : '今日涨停概况';
         }
 
+        var stocks = todayBoard.stocks || [];
         var conceptGroups = todayBoard.concept_groups || [];
-        var html = '';
 
-        conceptGroups.forEach(function(group) {
-            var stocks = group.stocks || [];
-            if (stocks.length > 0) {
-                html += '<div class="today-board-concept">';
-                html += '<div class="today-board-header">' + escapeHtml(group.concept_name || group.name || '其他') + ' <span class="today-board-count">' + stocks.length + '只</span></div>';
-                html += '<div class="today-board-stocks">';
+        // 如果没有新格式的stocks数据，回退到旧逻辑
+        if (stocks.length === 0) {
+            var html = '';
+            conceptGroups.forEach(function(group) {
+                var groupStocks = group.stocks || [];
+                if (groupStocks.length > 0) {
+                    html += '<div class="today-board-concept">';
+                    html += '<div class="today-board-header">' + escapeHtml(group.concept_name || group.name || '其他') + ' <span class="today-board-count">' + groupStocks.length + '只</span></div>';
+                    html += '<div class="today-board-stocks">';
 
-                stocks.forEach(function(stock) {
-                    var lb = stock.lianban || 1;
-                    var lbTag = lb >= 3 ? '3+' : (lb === 2 ? '2板' : '首板');
-                    var lbClass = lb >= 3 ? 'lb-3' : (lb === 2 ? 'lb-2' : 'lb-1');
-                    var stockName = stock.name || stock[0] || '';
-                    var stockCode = stock.code || stock[1] || '';
-                    html += '<div class="today-stock-item ' + lbClass + '" onclick="openKLineModal(\'' + stockCode + '\', \'' + escapeHtml(stockName) + '\')">' +
-                        '<span class="today-stock-name">' + escapeHtml(stockName) + '</span>' +
-                        '<span class="today-stock-lb">' + lbTag + '</span></div>';
-                });
+                    groupStocks.forEach(function(stock) {
+                        var lb = stock.lianban || 1;
+                        var lbTag = lb >= 3 ? '3+' : (lb === 2 ? '2板' : '首板');
+                        var lbClass = lb >= 3 ? 'lb-3' : (lb === 2 ? 'lb-2' : 'lb-1');
+                        var stockName = stock.name || stock[0] || '';
+                        var stockCode = stock.code || stock[1] || '';
+                        html += '<div class="today-stock-item ' + lbClass + '" onclick="openKLineModal(\'' + stockCode + '\', \'' + escapeHtml(stockName) + '\')">' +
+                            '<span class="today-stock-name">' + escapeHtml(stockName) + '</span>' +
+                            '<span class="today-stock-lb">' + lbTag + '</span></div>';
+                    });
 
-                html += '</div></div>';
+                    html += '</div></div>';
+                }
+            });
+            if (!html) {
+                html = '<div class="jianxi-summary">暂无涨停数据</div>';
             }
+            container.innerHTML = html;
+            return;
+        }
+
+        // 渲染4列布局
+        var html = '<div class="today-board-4col">';
+        html += '<div class="today-col-header">';
+        html += '<div class="today-col-cell col-stock">涨停股票</div>';
+        html += '<div class="today-col-cell col-cls">财联社</div>';
+        html += '<div class="today-col-cell col-kpl">开盘啦</div>';
+        html += '<div class="today-col-cell col-ths">同花顺</div>';
+        html += '</div>';
+
+        stocks.forEach(function(stock) {
+            var lb = stock.lianban || 1;
+            var lbTag = lb >= 3 ? '3+' : (lb === 2 ? '2板' : '首板');
+            var lbClass = lb >= 3 ? 'lb-3' : (lb === 2 ? 'lb-2' : 'lb-1');
+            var stockName = stock.name || '';
+            var stockCode = stock.code || '';
+
+            html += '<div class="today-stock-row">';
+
+            // 第1列：涨停股票
+            html += '<div class="today-col-cell col-stock">';
+            html += '<div class="today-stock-item ' + lbClass + '" onclick="openKLineModal(\'' + stockCode + '\', \'' + escapeHtml(stockName) + '\')">';
+            html += '<span class="today-stock-name">' + escapeHtml(stockName) + '</span>';
+            html += '<span class="today-stock-lb">' + lbTag + '</span>';
+            html += '</div></div>';
+
+            // 第2列：财联社概念
+            html += '<div class="today-col-cell col-cls">';
+            var clsConcepts = stock.cls_concepts || [];
+            if (clsConcepts.length > 0) {
+                clsConcepts.forEach(function(concept) {
+                    html += '<span class="concept-tag" onclick="openConceptModal(\'cls\', \'' + escapeHtml(concept) + '\')">' + escapeHtml(concept) + '</span>';
+                });
+            } else {
+                html += '<span class="concept-empty">-</span>';
+            }
+            html += '</div>';
+
+            // 第3列：开盘啦概念
+            html += '<div class="today-col-cell col-kpl">';
+            var kplConcepts = stock.kpl_concepts || [];
+            if (kplConcepts.length > 0) {
+                kplConcepts.forEach(function(item) {
+                    var mainConcept = item.concept || '';
+                    var subConcepts = item.sub || [];
+                    // 主概念标签
+                    if (mainConcept) {
+                        html += '<span class="concept-tag kpl-main" onclick="openConceptModal(\'kpl\', \'' + escapeHtml(mainConcept) + '\')">' + escapeHtml(mainConcept) + '</span>';
+                    }
+                    // 细分标签
+                    subConcepts.forEach(function(sub) {
+                        html += '<span class="concept-tag kpl-sub" onclick="openConceptModal(\'kpl\', \'' + escapeHtml(mainConcept) + '\', \'' + escapeHtml(sub) + '\')">' + escapeHtml(sub) + '</span>';
+                    });
+                });
+            } else {
+                html += '<span class="concept-empty">-</span>';
+            }
+            html += '</div>';
+
+            // 第4列：同花顺概念
+            html += '<div class="today-col-cell col-ths">';
+            var thsConcepts = stock.ths_concepts || [];
+            if (thsConcepts.length > 0) {
+                thsConcepts.forEach(function(conceptArr) {
+                    // thsConcepts格式: [["概念", "细分"], ...]
+                    if (Array.isArray(conceptArr)) {
+                        var conceptName = conceptArr[0] || '';
+                        var subName = conceptArr[1] || '';
+                        if (subName) {
+                            html += '<span class="concept-tag" onclick="openConceptModal(\'ths\', \'' + escapeHtml(conceptName) + '\', \'' + escapeHtml(subName) + '\')">' + escapeHtml(conceptName) + '::' + escapeHtml(subName) + '</span>';
+                        } else {
+                            html += '<span class="concept-tag" onclick="openConceptModal(\'ths\', \'' + escapeHtml(conceptName) + '\')">' + escapeHtml(conceptName) + '</span>';
+                        }
+                    } else {
+                        html += '<span class="concept-tag" onclick="openConceptModal(\'ths\', \'' + escapeHtml(conceptArr) + '\')">' + escapeHtml(conceptArr) + '</span>';
+                    }
+                });
+            } else {
+                html += '<span class="concept-empty">-</span>';
+            }
+            html += '</div>';
+
+            html += '</div>';  // end today-stock-row
         });
 
-        if (!html) {
-            html = '<div class="jianxi-summary">暂无涨停数据</div>';
-        }
+        html += '</div>';  // end today-board-4col
 
         container.innerHTML = html;
     }
@@ -613,6 +708,113 @@
     function closeKLineModal() {
         document.getElementById('kline-modal').style.display = 'none';
         document.getElementById('kline-img').src = '';
+    }
+
+    // ================================================
+    // 概念弹窗功能
+    // ================================================
+
+    /**
+     * 打开概念弹窗
+     * @param {string} source - 'cls' | 'kpl' | 'ths'
+     * @param {string} concept - 概念名称
+     * @param {string} subConcept - 可选，细分概念（仅开盘啦）
+     */
+    function openConceptModal(source, concept, subConcept) {
+        var modal = document.getElementById('concept-modal');
+        if (!modal) return;
+
+        var sourceName = {'cls': '财联社', 'kpl': '开盘啦', 'ths': '同花顺'}[source] || source;
+        var stocks = [];
+
+        // 优先使用预加载的数据（HTML报告），其次使用renderReport加载的数据（JSON报告）
+        var cts = PRELOADED_CONCEPT_TO_STOCKS;
+        if (!cts || Object.keys(cts).length === 0) {
+            cts = conceptToStocks || {'cls': {}, 'kpl': {}, 'ths': {}};
+        }
+
+        if (source === 'kpl' && subConcept) {
+            // 开盘啦细分概念
+            var key = concept + '::' + subConcept;
+            stocks = cts.kpl[key] || [];
+            document.getElementById('concept-modal-title').innerText = sourceName + ' - ' + concept + '::' + subConcept;
+        } else if (source === 'kpl') {
+            // 开盘啦主概念
+            stocks = cts.kpl[concept] || [];
+            document.getElementById('concept-modal-title').innerText = sourceName + ' - ' + concept;
+        } else if (source === 'cls') {
+            // 财联社概念
+            var foundCls = false;
+            for (var key in cts.cls) {
+                if (key === concept || key.startsWith(concept + '::')) {
+                    var clsStocks = cts.cls[key] || [];
+                    clsStocks.forEach(function(s) {
+                        if (stocks.indexOf(s) === -1) stocks.push(s);
+                    });
+                    foundCls = true;
+                }
+            }
+            if (!foundCls) stocks = cts.cls[concept] || [];
+            document.getElementById('concept-modal-title').innerText = sourceName + ' - ' + concept;
+        } else if (source === 'ths') {
+            // 同花顺概念
+            if (subConcept) {
+                var key = concept + '::' + subConcept;
+                stocks = cts.ths[key] || cts.ths[concept] || [];
+            } else {
+                stocks = cts.ths[concept] || [];
+            }
+            document.getElementById('concept-modal-title').innerText = sourceName + ' - ' + concept + (subConcept ? '::' + subConcept : '');
+        }
+
+        // 渲染股票列表（15日涨停标记+排序）
+        var listContainer = document.getElementById('concept-modal-stocks');
+        if (stocks.length > 0) {
+            // 准备股票数据并排序：15日涨停的排前面
+            var stockData = [];
+            stocks.forEach(function(stock) {
+                var stockName, stockCode, isZT = false;
+                if (typeof stock === 'object' && stock !== null) {
+                    stockName = stock.name || stock.Name || '';
+                    stockCode = stock.code || stock.Code || '';
+                } else {
+                    stockName = stock;
+                    stockCode = '';
+                }
+                // 检查是否在15日涨停列表中（使用名称匹配）
+                if (stockName && ZT_15D_NAMES && ZT_15D_NAMES.has && ZT_15D_NAMES.has(stockName)) {
+                    isZT = true;
+                }
+                stockData.push({name: stockName, code: stockCode, isZT: isZT});
+            });
+
+            // 排序：涨停的在前
+            stockData.sort(function(a, b) {
+                return (b.isZT ? 1 : 0) - (a.isZT ? 1 : 0);
+            });
+
+            var html = '<div class="concept-stocks-grid">';
+            stockData.forEach(function(item) {
+                var displayText = item.code ? item.name + ' (' + item.code + ')' : item.name;
+                var ztClass = item.isZT ? ' zt-highlight' : '';
+                html += '<div class="concept-stock-item' + ztClass + '" onclick="closeConceptModal()">' +
+                    '<span class="concept-stock-name">' + escapeHtml(displayText) + '</span></div>';
+            });
+            html += '</div>';
+            listContainer.innerHTML = html;
+        } else {
+            listContainer.innerHTML = '<div class="concept-empty">暂无相关股票</div>';
+        }
+
+        modal.style.display = 'flex';
+    }
+
+    /**
+     * 关闭概念弹窗
+     */
+    function closeConceptModal() {
+        var modal = document.getElementById('concept-modal');
+        if (modal) modal.style.display = 'none';
     }
 
     /**
@@ -2046,6 +2248,8 @@
     window.getSinaCode = getSinaCode;
     window.openKLineModal = openKLineModal;
     window.closeKLineModal = closeKLineModal;
+    window.openConceptModal = openConceptModal;
+    window.closeConceptModal = closeConceptModal;
     window.switchKLineTab = switchKLineTab;
     window.toggleSidebar = toggleSidebar;
     window.showSection = showSection;

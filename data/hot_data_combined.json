@@ -1,0 +1,2418 @@
+{
+  "date": "20260502",
+  "generated_at": "13:20:25",
+  "hot_concepts": [
+    {
+      "code": "886078",
+      "name": "商业航天",
+      "hot_value": 35960.0,
+      "change_pct": 1.0354,
+      "hot_tag": "连续127天上榜",
+      "stock_count": 20,
+      "stocks": [
+        {
+          "code": "000066",
+          "name": "中国长城",
+          "rank": 4,
+          "hot_value": 151609.0,
+          "change_pct": 9.9889,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "002202",
+          "name": "金风科技",
+          "rank": 7,
+          "hot_value": 104197.0,
+          "change_pct": 7.0735,
+          "pop_tag": ""
+        },
+        {
+          "code": "002297",
+          "name": "博云新材",
+          "rank": 8,
+          "hot_value": 101589.0,
+          "change_pct": 5.5579,
+          "pop_tag": "14天7板"
+        },
+        {
+          "code": "002149",
+          "name": "西部材料",
+          "rank": 9,
+          "hot_value": 98254.0,
+          "change_pct": 9.9931,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "600330",
+          "name": "天通股份",
+          "rank": 19,
+          "hot_value": 65303.0,
+          "change_pct": 8.6906,
+          "pop_tag": ""
+        },
+        {
+          "code": "002342",
+          "name": "巨力索具",
+          "rank": 26,
+          "hot_value": 61153.0,
+          "change_pct": 4.8148,
+          "pop_tag": ""
+        },
+        {
+          "code": "002361",
+          "name": "神剑股份",
+          "rank": 27,
+          "hot_value": 60316.0,
+          "change_pct": 2.4938,
+          "pop_tag": "持续上榜"
+        },
+        {
+          "code": "600246",
+          "name": "万通发展",
+          "rank": 42,
+          "hot_value": 44963.0,
+          "change_pct": 10.0488,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "600118",
+          "name": "中国卫星",
+          "rank": 48,
+          "hot_value": 42809.0,
+          "change_pct": 4.9729,
+          "pop_tag": ""
+        },
+        {
+          "code": "603601",
+          "name": "再升科技",
+          "rank": 53,
+          "hot_value": 39806.0,
+          "change_pct": 4.2763,
+          "pop_tag": ""
+        },
+        {
+          "code": "300136",
+          "name": "信维通信",
+          "rank": 57,
+          "hot_value": 38304.0,
+          "change_pct": 6.7711,
+          "pop_tag": ""
+        },
+        {
+          "code": "600522",
+          "name": "中天科技",
+          "rank": 64,
+          "hot_value": 36614.0,
+          "change_pct": -3.3839,
+          "pop_tag": ""
+        },
+        {
+          "code": "000988",
+          "name": "华工科技",
+          "rank": 73,
+          "hot_value": 33736.0,
+          "change_pct": 0.4116,
+          "pop_tag": ""
+        },
+        {
+          "code": "600105",
+          "name": "永鼎股份",
+          "rank": 78,
+          "hot_value": 32976.0,
+          "change_pct": -2.1006,
+          "pop_tag": ""
+        },
+        {
+          "code": "002428",
+          "name": "云南锗业",
+          "rank": 87,
+          "hot_value": 31538.0,
+          "change_pct": 1.1413,
+          "pop_tag": ""
+        },
+        {
+          "code": "002565",
+          "name": "顺灏股份",
+          "rank": 89,
+          "hot_value": 30059.0,
+          "change_pct": 2.6998,
+          "pop_tag": ""
+        },
+        {
+          "code": "000925",
+          "name": "众合科技",
+          "rank": 93,
+          "hot_value": 29315.0,
+          "change_pct": -5.8402,
+          "pop_tag": "6天3板"
+        },
+        {
+          "code": "600498",
+          "name": "烽火通信",
+          "rank": 94,
+          "hot_value": 28857.0,
+          "change_pct": -9.3592,
+          "pop_tag": ""
+        },
+        {
+          "code": "600703",
+          "name": "三安光电",
+          "rank": 95,
+          "hot_value": 28658.0,
+          "change_pct": -1.9369,
+          "pop_tag": ""
+        },
+        {
+          "code": "000547",
+          "name": "航天发展",
+          "rank": 99,
+          "hot_value": 27769.0,
+          "change_pct": 2.1613,
+          "pop_tag": ""
+        }
+      ]
+    },
+    {
+      "code": "885756",
+      "name": "芯片概念",
+      "hot_value": 21126.0,
+      "change_pct": 1.312,
+      "hot_tag": "连续22天上榜",
+      "stock_count": 39,
+      "stocks": [
+        {
+          "code": "688256",
+          "name": "寒武纪",
+          "rank": 2,
+          "hot_value": 227502.0,
+          "change_pct": 20.0003,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "002081",
+          "name": "金螳螂",
+          "rank": 3,
+          "hot_value": 182567.0,
+          "change_pct": 10.0746,
+          "pop_tag": "10天8板"
+        },
+        {
+          "code": "000066",
+          "name": "中国长城",
+          "rank": 4,
+          "hot_value": 151609.0,
+          "change_pct": 9.9889,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "603629",
+          "name": "利通电子",
+          "rank": 5,
+          "hot_value": 140863.0,
+          "change_pct": 9.9931,
+          "pop_tag": "3天2板"
+        },
+        {
+          "code": "600745",
+          "name": "闻泰科技",
+          "rank": 6,
+          "hot_value": 111625.0,
+          "change_pct": 0.0,
+          "pop_tag": ""
+        },
+        {
+          "code": "601138",
+          "name": "工业富联",
+          "rank": 17,
+          "hot_value": 68960.0,
+          "change_pct": -5.1011,
+          "pop_tag": ""
+        },
+        {
+          "code": "600379",
+          "name": "宝光股份",
+          "rank": 18,
+          "hot_value": 66254.0,
+          "change_pct": 10.0328,
+          "pop_tag": "3天3板"
+        },
+        {
+          "code": "600330",
+          "name": "天通股份",
+          "rank": 19,
+          "hot_value": 65303.0,
+          "change_pct": 8.6906,
+          "pop_tag": ""
+        },
+        {
+          "code": "002281",
+          "name": "光迅科技",
+          "rank": 25,
+          "hot_value": 61420.0,
+          "change_pct": 8.5873,
+          "pop_tag": ""
+        },
+        {
+          "code": "002131",
+          "name": "利欧股份",
+          "rank": 30,
+          "hot_value": 53149.0,
+          "change_pct": -1.8265,
+          "pop_tag": ""
+        },
+        {
+          "code": "000062",
+          "name": "深圳华强",
+          "rank": 32,
+          "hot_value": 51949.0,
+          "change_pct": 3.5624,
+          "pop_tag": ""
+        },
+        {
+          "code": "002407",
+          "name": "多氟多",
+          "rank": 39,
+          "hot_value": 45980.0,
+          "change_pct": 1.2267,
+          "pop_tag": ""
+        },
+        {
+          "code": "600246",
+          "name": "万通发展",
+          "rank": 42,
+          "hot_value": 44963.0,
+          "change_pct": 10.0488,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "600487",
+          "name": "亨通光电",
+          "rank": 44,
+          "hot_value": 44115.0,
+          "change_pct": -2.4933,
+          "pop_tag": ""
+        },
+        {
+          "code": "002156",
+          "name": "通富微电",
+          "rank": 47,
+          "hot_value": 42938.0,
+          "change_pct": 4.5859,
+          "pop_tag": ""
+        },
+        {
+          "code": "600118",
+          "name": "中国卫星",
+          "rank": 48,
+          "hot_value": 42809.0,
+          "change_pct": 4.9729,
+          "pop_tag": ""
+        },
+        {
+          "code": "002384",
+          "name": "东山精密",
+          "rank": 51,
+          "hot_value": 41035.0,
+          "change_pct": 1.346,
+          "pop_tag": ""
+        },
+        {
+          "code": "601869",
+          "name": "长飞光纤",
+          "rank": 52,
+          "hot_value": 40273.0,
+          "change_pct": -4.4856,
+          "pop_tag": ""
+        },
+        {
+          "code": "603601",
+          "name": "再升科技",
+          "rank": 53,
+          "hot_value": 39806.0,
+          "change_pct": 4.2763,
+          "pop_tag": ""
+        },
+        {
+          "code": "002655",
+          "name": "共达电声",
+          "rank": 54,
+          "hot_value": 38958.0,
+          "change_pct": 2.671,
+          "pop_tag": "2天1板"
+        },
+        {
+          "code": "300136",
+          "name": "信维通信",
+          "rank": 57,
+          "hot_value": 38304.0,
+          "change_pct": 6.7711,
+          "pop_tag": ""
+        },
+        {
+          "code": "003026",
+          "name": "中晶科技",
+          "rank": 58,
+          "hot_value": 38264.0,
+          "change_pct": 5.4197,
+          "pop_tag": ""
+        },
+        {
+          "code": "002475",
+          "name": "立讯精密",
+          "rank": 65,
+          "hot_value": 36109.0,
+          "change_pct": -2.3893,
+          "pop_tag": ""
+        },
+        {
+          "code": "001309",
+          "name": "德明利",
+          "rank": 69,
+          "hot_value": 34329.0,
+          "change_pct": 0.3595,
+          "pop_tag": ""
+        },
+        {
+          "code": "300308",
+          "name": "中际旭创",
+          "rank": 72,
+          "hot_value": 33913.0,
+          "change_pct": 1.4793,
+          "pop_tag": ""
+        },
+        {
+          "code": "000988",
+          "name": "华工科技",
+          "rank": 73,
+          "hot_value": 33736.0,
+          "change_pct": 0.4116,
+          "pop_tag": ""
+        },
+        {
+          "code": "300632",
+          "name": "光莆股份",
+          "rank": 74,
+          "hot_value": 33629.0,
+          "change_pct": 20.0098,
+          "pop_tag": "2天2板"
+        },
+        {
+          "code": "688521",
+          "name": "芯原股份",
+          "rank": 77,
+          "hot_value": 33403.0,
+          "change_pct": 19.9983,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "600105",
+          "name": "永鼎股份",
+          "rank": 78,
+          "hot_value": 32976.0,
+          "change_pct": -2.1006,
+          "pop_tag": ""
+        },
+        {
+          "code": "600410",
+          "name": "华胜天成",
+          "rank": 79,
+          "hot_value": 32871.0,
+          "change_pct": -2.6211,
+          "pop_tag": ""
+        },
+        {
+          "code": "002990",
+          "name": "盛视科技",
+          "rank": 80,
+          "hot_value": 32800.0,
+          "change_pct": 9.9918,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "688981",
+          "name": "中芯国际",
+          "rank": 85,
+          "hot_value": 31947.0,
+          "change_pct": 5.5659,
+          "pop_tag": ""
+        },
+        {
+          "code": "603986",
+          "name": "兆易创新",
+          "rank": 86,
+          "hot_value": 31691.0,
+          "change_pct": 1.3273,
+          "pop_tag": ""
+        },
+        {
+          "code": "002428",
+          "name": "云南锗业",
+          "rank": 87,
+          "hot_value": 31538.0,
+          "change_pct": 1.1413,
+          "pop_tag": ""
+        },
+        {
+          "code": "600770",
+          "name": "综艺股份",
+          "rank": 91,
+          "hot_value": 29755.0,
+          "change_pct": -3.4221,
+          "pop_tag": "6天3板"
+        },
+        {
+          "code": "000925",
+          "name": "众合科技",
+          "rank": 93,
+          "hot_value": 29315.0,
+          "change_pct": -5.8402,
+          "pop_tag": "6天3板"
+        },
+        {
+          "code": "600498",
+          "name": "烽火通信",
+          "rank": 94,
+          "hot_value": 28857.0,
+          "change_pct": -9.3592,
+          "pop_tag": ""
+        },
+        {
+          "code": "600703",
+          "name": "三安光电",
+          "rank": 95,
+          "hot_value": 28658.0,
+          "change_pct": -1.9369,
+          "pop_tag": ""
+        },
+        {
+          "code": "000547",
+          "name": "航天发展",
+          "rank": 99,
+          "hot_value": 27769.0,
+          "change_pct": 2.1613,
+          "pop_tag": ""
+        }
+      ]
+    },
+    {
+      "code": "886042",
+      "name": "存储芯片",
+      "hot_value": 20673.0,
+      "change_pct": 2.1204,
+      "hot_tag": "连续151天上榜",
+      "stock_count": 8,
+      "stocks": [
+        {
+          "code": "000062",
+          "name": "深圳华强",
+          "rank": 32,
+          "hot_value": 51949.0,
+          "change_pct": 3.5624,
+          "pop_tag": ""
+        },
+        {
+          "code": "002407",
+          "name": "多氟多",
+          "rank": 39,
+          "hot_value": 45980.0,
+          "change_pct": 1.2267,
+          "pop_tag": ""
+        },
+        {
+          "code": "600246",
+          "name": "万通发展",
+          "rank": 42,
+          "hot_value": 44963.0,
+          "change_pct": 10.0488,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "002156",
+          "name": "通富微电",
+          "rank": 47,
+          "hot_value": 42938.0,
+          "change_pct": 4.5859,
+          "pop_tag": ""
+        },
+        {
+          "code": "001309",
+          "name": "德明利",
+          "rank": 69,
+          "hot_value": 34329.0,
+          "change_pct": 0.3595,
+          "pop_tag": ""
+        },
+        {
+          "code": "002990",
+          "name": "盛视科技",
+          "rank": 80,
+          "hot_value": 32800.0,
+          "change_pct": 9.9918,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "688981",
+          "name": "中芯国际",
+          "rank": 85,
+          "hot_value": 31947.0,
+          "change_pct": 5.5659,
+          "pop_tag": ""
+        },
+        {
+          "code": "603986",
+          "name": "兆易创新",
+          "rank": 86,
+          "hot_value": 31691.0,
+          "change_pct": 1.3273,
+          "pop_tag": ""
+        }
+      ]
+    },
+    {
+      "code": "885710",
+      "name": "锂电池概念",
+      "hot_value": 17285.5,
+      "change_pct": 0.2129,
+      "hot_tag": "连续28天上榜",
+      "stock_count": 25,
+      "stocks": [
+        {
+          "code": "000066",
+          "name": "中国长城",
+          "rank": 4,
+          "hot_value": 151609.0,
+          "change_pct": 9.9889,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "603399",
+          "name": "永杉锂业",
+          "rank": 12,
+          "hot_value": 80824.0,
+          "change_pct": 9.983,
+          "pop_tag": "3天3板"
+        },
+        {
+          "code": "002580",
+          "name": "圣阳股份",
+          "rank": 14,
+          "hot_value": 72089.0,
+          "change_pct": -3.9161,
+          "pop_tag": ""
+        },
+        {
+          "code": "600330",
+          "name": "天通股份",
+          "rank": 19,
+          "hot_value": 65303.0,
+          "change_pct": 8.6906,
+          "pop_tag": ""
+        },
+        {
+          "code": "002192",
+          "name": "融捷股份",
+          "rank": 20,
+          "hot_value": 64251.0,
+          "change_pct": 10.001,
+          "pop_tag": "2天2板"
+        },
+        {
+          "code": "002709",
+          "name": "天赐材料",
+          "rank": 22,
+          "hot_value": 63821.0,
+          "change_pct": 2.0061,
+          "pop_tag": "2天1板"
+        },
+        {
+          "code": "002466",
+          "name": "天齐锂业",
+          "rank": 28,
+          "hot_value": 60247.0,
+          "change_pct": 5.9719,
+          "pop_tag": ""
+        },
+        {
+          "code": "002240",
+          "name": "盛新锂能",
+          "rank": 31,
+          "hot_value": 52355.0,
+          "change_pct": 9.9945,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "002176",
+          "name": "江特电机",
+          "rank": 36,
+          "hot_value": 48082.0,
+          "change_pct": -0.2486,
+          "pop_tag": "2天1板"
+        },
+        {
+          "code": "002407",
+          "name": "多氟多",
+          "rank": 39,
+          "hot_value": 45980.0,
+          "change_pct": 1.2267,
+          "pop_tag": ""
+        },
+        {
+          "code": "301217",
+          "name": "铜冠铜箔",
+          "rank": 41,
+          "hot_value": 45275.0,
+          "change_pct": 10.3691,
+          "pop_tag": "2天1板"
+        },
+        {
+          "code": "603778",
+          "name": "国晟科技",
+          "rank": 45,
+          "hot_value": 44062.0,
+          "change_pct": -2.8133,
+          "pop_tag": ""
+        },
+        {
+          "code": "600152",
+          "name": "维科技术",
+          "rank": 55,
+          "hot_value": 38767.0,
+          "change_pct": 2.4138,
+          "pop_tag": "5天3板"
+        },
+        {
+          "code": "002805",
+          "name": "丰元股份",
+          "rank": 59,
+          "hot_value": 37973.0,
+          "change_pct": 10.0144,
+          "pop_tag": "2天2板"
+        },
+        {
+          "code": "002460",
+          "name": "赣锋锂业",
+          "rank": 63,
+          "hot_value": 37486.0,
+          "change_pct": 2.0483,
+          "pop_tag": ""
+        },
+        {
+          "code": "600522",
+          "name": "中天科技",
+          "rank": 64,
+          "hot_value": 36614.0,
+          "change_pct": -3.3839,
+          "pop_tag": ""
+        },
+        {
+          "code": "000833",
+          "name": "粤桂股份",
+          "rank": 66,
+          "hot_value": 35550.0,
+          "change_pct": 9.9861,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "603687",
+          "name": "大胜达",
+          "rank": 67,
+          "hot_value": 34858.0,
+          "change_pct": 9.9872,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "603906",
+          "name": "龙蟠科技",
+          "rank": 70,
+          "hot_value": 34285.0,
+          "change_pct": 0.5456,
+          "pop_tag": "2天1板"
+        },
+        {
+          "code": "000988",
+          "name": "华工科技",
+          "rank": 73,
+          "hot_value": 33736.0,
+          "change_pct": 0.4116,
+          "pop_tag": ""
+        },
+        {
+          "code": "300632",
+          "name": "光莆股份",
+          "rank": 74,
+          "hot_value": 33629.0,
+          "change_pct": 20.0098,
+          "pop_tag": "2天2板"
+        },
+        {
+          "code": "600884",
+          "name": "杉杉股份",
+          "rank": 81,
+          "hot_value": 32720.0,
+          "change_pct": -1.4793,
+          "pop_tag": ""
+        },
+        {
+          "code": "002759",
+          "name": "天际股份",
+          "rank": 83,
+          "hot_value": 32242.0,
+          "change_pct": 5.7762,
+          "pop_tag": ""
+        },
+        {
+          "code": "603986",
+          "name": "兆易创新",
+          "rank": 86,
+          "hot_value": 31691.0,
+          "change_pct": 1.3273,
+          "pop_tag": ""
+        },
+        {
+          "code": "000155",
+          "name": "川能动力",
+          "rank": 90,
+          "hot_value": 29816.0,
+          "change_pct": -9.5065,
+          "pop_tag": ""
+        }
+      ]
+    },
+    {
+      "code": "886033",
+      "name": "共封装光学(CPO)",
+      "hot_value": 13618.0,
+      "change_pct": 0.7315,
+      "hot_tag": "连续198天上榜",
+      "stock_count": 15,
+      "stocks": [
+        {
+          "code": "601138",
+          "name": "工业富联",
+          "rank": 17,
+          "hot_value": 68960.0,
+          "change_pct": -5.1011,
+          "pop_tag": ""
+        },
+        {
+          "code": "002281",
+          "name": "光迅科技",
+          "rank": 25,
+          "hot_value": 61420.0,
+          "change_pct": 8.5873,
+          "pop_tag": ""
+        },
+        {
+          "code": "000062",
+          "name": "深圳华强",
+          "rank": 32,
+          "hot_value": 51949.0,
+          "change_pct": 3.5624,
+          "pop_tag": ""
+        },
+        {
+          "code": "600487",
+          "name": "亨通光电",
+          "rank": 44,
+          "hot_value": 44115.0,
+          "change_pct": -2.4933,
+          "pop_tag": ""
+        },
+        {
+          "code": "002156",
+          "name": "通富微电",
+          "rank": 47,
+          "hot_value": 42938.0,
+          "change_pct": 4.5859,
+          "pop_tag": ""
+        },
+        {
+          "code": "002384",
+          "name": "东山精密",
+          "rank": 51,
+          "hot_value": 41035.0,
+          "change_pct": 1.346,
+          "pop_tag": ""
+        },
+        {
+          "code": "601869",
+          "name": "长飞光纤",
+          "rank": 52,
+          "hot_value": 40273.0,
+          "change_pct": -4.4856,
+          "pop_tag": ""
+        },
+        {
+          "code": "600522",
+          "name": "中天科技",
+          "rank": 64,
+          "hot_value": 36614.0,
+          "change_pct": -3.3839,
+          "pop_tag": ""
+        },
+        {
+          "code": "002475",
+          "name": "立讯精密",
+          "rank": 65,
+          "hot_value": 36109.0,
+          "change_pct": -2.3893,
+          "pop_tag": ""
+        },
+        {
+          "code": "001309",
+          "name": "德明利",
+          "rank": 69,
+          "hot_value": 34329.0,
+          "change_pct": 0.3595,
+          "pop_tag": ""
+        },
+        {
+          "code": "300308",
+          "name": "中际旭创",
+          "rank": 72,
+          "hot_value": 33913.0,
+          "change_pct": 1.4793,
+          "pop_tag": ""
+        },
+        {
+          "code": "000988",
+          "name": "华工科技",
+          "rank": 73,
+          "hot_value": 33736.0,
+          "change_pct": 0.4116,
+          "pop_tag": ""
+        },
+        {
+          "code": "600105",
+          "name": "永鼎股份",
+          "rank": 78,
+          "hot_value": 32976.0,
+          "change_pct": -2.1006,
+          "pop_tag": ""
+        },
+        {
+          "code": "600498",
+          "name": "烽火通信",
+          "rank": 94,
+          "hot_value": 28857.0,
+          "change_pct": -9.3592,
+          "pop_tag": ""
+        },
+        {
+          "code": "600703",
+          "name": "三安光电",
+          "rank": 95,
+          "hot_value": 28658.0,
+          "change_pct": -1.9369,
+          "pop_tag": ""
+        }
+      ]
+    },
+    {
+      "code": "886050",
+      "name": "算力租赁",
+      "hot_value": 9374.5,
+      "change_pct": -0.2134,
+      "hot_tag": "连续62天上榜",
+      "stock_count": 6,
+      "stocks": [
+        {
+          "code": "603629",
+          "name": "利通电子",
+          "rank": 5,
+          "hot_value": 140863.0,
+          "change_pct": 9.9931,
+          "pop_tag": "3天2板"
+        },
+        {
+          "code": "600186",
+          "name": "莲花控股",
+          "rank": 10,
+          "hot_value": 93846.0,
+          "change_pct": -0.9242,
+          "pop_tag": "2天1板"
+        },
+        {
+          "code": "601138",
+          "name": "工业富联",
+          "rank": 17,
+          "hot_value": 68960.0,
+          "change_pct": -5.1011,
+          "pop_tag": ""
+        },
+        {
+          "code": "002217",
+          "name": "合力泰",
+          "rank": 29,
+          "hot_value": 54033.0,
+          "change_pct": -5.8632,
+          "pop_tag": ""
+        },
+        {
+          "code": "600821",
+          "name": "金开新能",
+          "rank": 60,
+          "hot_value": 37964.0,
+          "change_pct": -10.0346,
+          "pop_tag": ""
+        },
+        {
+          "code": "000925",
+          "name": "众合科技",
+          "rank": 93,
+          "hot_value": 29315.0,
+          "change_pct": -5.8402,
+          "pop_tag": "6天3板"
+        }
+      ]
+    },
+    {
+      "code": "885699",
+      "name": "ST板块",
+      "hot_value": 7506.0,
+      "change_pct": 0.1522,
+      "hot_tag": "连续36天上榜",
+      "stock_count": 0,
+      "stocks": []
+    },
+    {
+      "code": "885959",
+      "name": "PCB概念",
+      "hot_value": 7096.0,
+      "change_pct": 0.433,
+      "hot_tag": "连续21天上榜",
+      "stock_count": 7,
+      "stocks": [
+        {
+          "code": "600330",
+          "name": "天通股份",
+          "rank": 19,
+          "hot_value": 65303.0,
+          "change_pct": 8.6906,
+          "pop_tag": ""
+        },
+        {
+          "code": "002217",
+          "name": "合力泰",
+          "rank": 29,
+          "hot_value": 54033.0,
+          "change_pct": -5.8632,
+          "pop_tag": ""
+        },
+        {
+          "code": "301217",
+          "name": "铜冠铜箔",
+          "rank": 41,
+          "hot_value": 45275.0,
+          "change_pct": 10.3691,
+          "pop_tag": "2天1板"
+        },
+        {
+          "code": "002384",
+          "name": "东山精密",
+          "rank": 51,
+          "hot_value": 41035.0,
+          "change_pct": 1.346,
+          "pop_tag": ""
+        },
+        {
+          "code": "000988",
+          "name": "华工科技",
+          "rank": 73,
+          "hot_value": 33736.0,
+          "change_pct": 0.4116,
+          "pop_tag": ""
+        },
+        {
+          "code": "300632",
+          "name": "光莆股份",
+          "rank": 74,
+          "hot_value": 33629.0,
+          "change_pct": 20.0098,
+          "pop_tag": "2天2板"
+        },
+        {
+          "code": "600176",
+          "name": "中国巨石",
+          "rank": 88,
+          "hot_value": 30343.0,
+          "change_pct": -3.3613,
+          "pop_tag": ""
+        }
+      ]
+    },
+    {
+      "code": "886044",
+      "name": "液冷服务器",
+      "hot_value": 5261.5,
+      "change_pct": 0.3797,
+      "hot_tag": "连续19天上榜",
+      "stock_count": 15,
+      "stocks": [
+        {
+          "code": "000066",
+          "name": "中国长城",
+          "rank": 4,
+          "hot_value": 151609.0,
+          "change_pct": 9.9889,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "603629",
+          "name": "利通电子",
+          "rank": 5,
+          "hot_value": 140863.0,
+          "change_pct": 9.9931,
+          "pop_tag": "3天2板"
+        },
+        {
+          "code": "600745",
+          "name": "闻泰科技",
+          "rank": 6,
+          "hot_value": 111625.0,
+          "change_pct": 0.0,
+          "pop_tag": ""
+        },
+        {
+          "code": "002580",
+          "name": "圣阳股份",
+          "rank": 14,
+          "hot_value": 72089.0,
+          "change_pct": -3.9161,
+          "pop_tag": ""
+        },
+        {
+          "code": "601138",
+          "name": "工业富联",
+          "rank": 17,
+          "hot_value": 68960.0,
+          "change_pct": -5.1011,
+          "pop_tag": ""
+        },
+        {
+          "code": "002281",
+          "name": "光迅科技",
+          "rank": 25,
+          "hot_value": 61420.0,
+          "change_pct": 8.5873,
+          "pop_tag": ""
+        },
+        {
+          "code": "002131",
+          "name": "利欧股份",
+          "rank": 30,
+          "hot_value": 53149.0,
+          "change_pct": -1.8265,
+          "pop_tag": ""
+        },
+        {
+          "code": "002050",
+          "name": "三花智控",
+          "rank": 43,
+          "hot_value": 44871.0,
+          "change_pct": 4.6854,
+          "pop_tag": ""
+        },
+        {
+          "code": "600487",
+          "name": "亨通光电",
+          "rank": 44,
+          "hot_value": 44115.0,
+          "change_pct": -2.4933,
+          "pop_tag": ""
+        },
+        {
+          "code": "300083",
+          "name": "创世纪",
+          "rank": 50,
+          "hot_value": 42116.0,
+          "change_pct": 20.0236,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "600522",
+          "name": "中天科技",
+          "rank": 64,
+          "hot_value": 36614.0,
+          "change_pct": -3.3839,
+          "pop_tag": ""
+        },
+        {
+          "code": "002475",
+          "name": "立讯精密",
+          "rank": 65,
+          "hot_value": 36109.0,
+          "change_pct": -2.3893,
+          "pop_tag": ""
+        },
+        {
+          "code": "603906",
+          "name": "龙蟠科技",
+          "rank": 70,
+          "hot_value": 34285.0,
+          "change_pct": 0.5456,
+          "pop_tag": "2天1板"
+        },
+        {
+          "code": "300308",
+          "name": "中际旭创",
+          "rank": 72,
+          "hot_value": 33913.0,
+          "change_pct": 1.4793,
+          "pop_tag": ""
+        },
+        {
+          "code": "600498",
+          "name": "烽火通信",
+          "rank": 94,
+          "hot_value": 28857.0,
+          "change_pct": -9.3592,
+          "pop_tag": ""
+        }
+      ]
+    },
+    {
+      "code": "885517",
+      "name": "机器人概念",
+      "hot_value": 4781.0,
+      "change_pct": 0.6876,
+      "hot_tag": "连续29天上榜",
+      "stock_count": 20,
+      "stocks": [
+        {
+          "code": "601138",
+          "name": "工业富联",
+          "rank": 17,
+          "hot_value": 68960.0,
+          "change_pct": -5.1011,
+          "pop_tag": ""
+        },
+        {
+          "code": "002217",
+          "name": "合力泰",
+          "rank": 29,
+          "hot_value": 54033.0,
+          "change_pct": -5.8632,
+          "pop_tag": ""
+        },
+        {
+          "code": "000062",
+          "name": "深圳华强",
+          "rank": 32,
+          "hot_value": 51949.0,
+          "change_pct": 3.5624,
+          "pop_tag": ""
+        },
+        {
+          "code": "002176",
+          "name": "江特电机",
+          "rank": 36,
+          "hot_value": 48082.0,
+          "change_pct": -0.2486,
+          "pop_tag": "2天1板"
+        },
+        {
+          "code": "002050",
+          "name": "三花智控",
+          "rank": 43,
+          "hot_value": 44871.0,
+          "change_pct": 4.6854,
+          "pop_tag": ""
+        },
+        {
+          "code": "600487",
+          "name": "亨通光电",
+          "rank": 44,
+          "hot_value": 44115.0,
+          "change_pct": -2.4933,
+          "pop_tag": ""
+        },
+        {
+          "code": "300083",
+          "name": "创世纪",
+          "rank": 50,
+          "hot_value": 42116.0,
+          "change_pct": 20.0236,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "002384",
+          "name": "东山精密",
+          "rank": 51,
+          "hot_value": 41035.0,
+          "change_pct": 1.346,
+          "pop_tag": ""
+        },
+        {
+          "code": "601869",
+          "name": "长飞光纤",
+          "rank": 52,
+          "hot_value": 40273.0,
+          "change_pct": -4.4856,
+          "pop_tag": ""
+        },
+        {
+          "code": "600152",
+          "name": "维科技术",
+          "rank": 55,
+          "hot_value": 38767.0,
+          "change_pct": 2.4138,
+          "pop_tag": "5天3板"
+        },
+        {
+          "code": "300136",
+          "name": "信维通信",
+          "rank": 57,
+          "hot_value": 38304.0,
+          "change_pct": 6.7711,
+          "pop_tag": ""
+        },
+        {
+          "code": "600522",
+          "name": "中天科技",
+          "rank": 64,
+          "hot_value": 36614.0,
+          "change_pct": -3.3839,
+          "pop_tag": ""
+        },
+        {
+          "code": "002475",
+          "name": "立讯精密",
+          "rank": 65,
+          "hot_value": 36109.0,
+          "change_pct": -2.3893,
+          "pop_tag": ""
+        },
+        {
+          "code": "000988",
+          "name": "华工科技",
+          "rank": 73,
+          "hot_value": 33736.0,
+          "change_pct": 0.4116,
+          "pop_tag": ""
+        },
+        {
+          "code": "300632",
+          "name": "光莆股份",
+          "rank": 74,
+          "hot_value": 33629.0,
+          "change_pct": 20.0098,
+          "pop_tag": "2天2板"
+        },
+        {
+          "code": "603178",
+          "name": "圣龙股份",
+          "rank": 75,
+          "hot_value": 33588.0,
+          "change_pct": 10.0057,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "002990",
+          "name": "盛视科技",
+          "rank": 80,
+          "hot_value": 32800.0,
+          "change_pct": 9.9918,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "605389",
+          "name": "长龄液压",
+          "rank": 92,
+          "hot_value": 29711.0,
+          "change_pct": 9.8404,
+          "pop_tag": ""
+        },
+        {
+          "code": "000925",
+          "name": "众合科技",
+          "rank": 93,
+          "hot_value": 29315.0,
+          "change_pct": -5.8402,
+          "pop_tag": "6天3板"
+        },
+        {
+          "code": "002645",
+          "name": "华宏科技",
+          "rank": 96,
+          "hot_value": 28564.0,
+          "change_pct": 9.9872,
+          "pop_tag": "2天2板"
+        }
+      ]
+    },
+    {
+      "code": "886015",
+      "name": "创新药",
+      "hot_value": 4537.0,
+      "change_pct": 0.092,
+      "hot_tag": "连续28天上榜",
+      "stock_count": 0,
+      "stocks": []
+    },
+    {
+      "code": "885580",
+      "name": "足球概念",
+      "hot_value": 4163.5,
+      "change_pct": 2.1238,
+      "hot_tag": "5天3次上榜",
+      "stock_count": 3,
+      "stocks": [
+        {
+          "code": "002181",
+          "name": "粤传媒",
+          "rank": 13,
+          "hot_value": 80526.0,
+          "change_pct": 10.0067,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "605299",
+          "name": "舒华体育",
+          "rank": 24,
+          "hot_value": 63017.0,
+          "change_pct": 9.9915,
+          "pop_tag": "2天2板"
+        },
+        {
+          "code": "600158",
+          "name": "中体产业",
+          "rank": 68,
+          "hot_value": 34787.0,
+          "change_pct": 10.0279,
+          "pop_tag": "首板涨停"
+        }
+      ]
+    },
+    {
+      "code": "885728",
+      "name": "人工智能",
+      "hot_value": 4058.5,
+      "change_pct": 0.5768,
+      "hot_tag": "10天9次上榜",
+      "stock_count": 22,
+      "stocks": [
+        {
+          "code": "688256",
+          "name": "寒武纪",
+          "rank": 2,
+          "hot_value": 227502.0,
+          "change_pct": 20.0003,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "002081",
+          "name": "金螳螂",
+          "rank": 3,
+          "hot_value": 182567.0,
+          "change_pct": 10.0746,
+          "pop_tag": "10天8板"
+        },
+        {
+          "code": "000066",
+          "name": "中国长城",
+          "rank": 4,
+          "hot_value": 151609.0,
+          "change_pct": 9.9889,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "002202",
+          "name": "金风科技",
+          "rank": 7,
+          "hot_value": 104197.0,
+          "change_pct": 7.0735,
+          "pop_tag": ""
+        },
+        {
+          "code": "002181",
+          "name": "粤传媒",
+          "rank": 13,
+          "hot_value": 80526.0,
+          "change_pct": 10.0067,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "601138",
+          "name": "工业富联",
+          "rank": 17,
+          "hot_value": 68960.0,
+          "change_pct": -5.1011,
+          "pop_tag": ""
+        },
+        {
+          "code": "605299",
+          "name": "舒华体育",
+          "rank": 24,
+          "hot_value": 63017.0,
+          "change_pct": 9.9915,
+          "pop_tag": "2天2板"
+        },
+        {
+          "code": "002131",
+          "name": "利欧股份",
+          "rank": 30,
+          "hot_value": 53149.0,
+          "change_pct": -1.8265,
+          "pop_tag": ""
+        },
+        {
+          "code": "001896",
+          "name": "豫能控股",
+          "rank": 34,
+          "hot_value": 50365.0,
+          "change_pct": -9.9823,
+          "pop_tag": ""
+        },
+        {
+          "code": "600118",
+          "name": "中国卫星",
+          "rank": 48,
+          "hot_value": 42809.0,
+          "change_pct": 4.9729,
+          "pop_tag": ""
+        },
+        {
+          "code": "300083",
+          "name": "创世纪",
+          "rank": 50,
+          "hot_value": 42116.0,
+          "change_pct": 20.0236,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "002115",
+          "name": "三维通信",
+          "rank": 56,
+          "hot_value": 38474.0,
+          "change_pct": -1.8392,
+          "pop_tag": ""
+        },
+        {
+          "code": "002624",
+          "name": "完美世界",
+          "rank": 61,
+          "hot_value": 37850.0,
+          "change_pct": -8.5938,
+          "pop_tag": ""
+        },
+        {
+          "code": "603687",
+          "name": "大胜达",
+          "rank": 67,
+          "hot_value": 34858.0,
+          "change_pct": 9.9872,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "001309",
+          "name": "德明利",
+          "rank": 69,
+          "hot_value": 34329.0,
+          "change_pct": 0.3595,
+          "pop_tag": ""
+        },
+        {
+          "code": "688521",
+          "name": "芯原股份",
+          "rank": 77,
+          "hot_value": 33403.0,
+          "change_pct": 19.9983,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "600410",
+          "name": "华胜天成",
+          "rank": 79,
+          "hot_value": 32871.0,
+          "change_pct": -2.6211,
+          "pop_tag": ""
+        },
+        {
+          "code": "002990",
+          "name": "盛视科技",
+          "rank": 80,
+          "hot_value": 32800.0,
+          "change_pct": 9.9918,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "600770",
+          "name": "综艺股份",
+          "rank": 91,
+          "hot_value": 29755.0,
+          "change_pct": -3.4221,
+          "pop_tag": "6天3板"
+        },
+        {
+          "code": "000925",
+          "name": "众合科技",
+          "rank": 93,
+          "hot_value": 29315.0,
+          "change_pct": -5.8402,
+          "pop_tag": "6天3板"
+        },
+        {
+          "code": "600498",
+          "name": "烽火通信",
+          "rank": 94,
+          "hot_value": 28857.0,
+          "change_pct": -9.3592,
+          "pop_tag": ""
+        },
+        {
+          "code": "000547",
+          "name": "航天发展",
+          "rank": 99,
+          "hot_value": 27769.0,
+          "change_pct": 2.1613,
+          "pop_tag": ""
+        }
+      ]
+    },
+    {
+      "code": "886032",
+      "name": "固态电池",
+      "hot_value": 3986.0,
+      "change_pct": -0.3389,
+      "hot_tag": "连续39天上榜",
+      "stock_count": 17,
+      "stocks": [
+        {
+          "code": "603399",
+          "name": "永杉锂业",
+          "rank": 12,
+          "hot_value": 80824.0,
+          "change_pct": 9.983,
+          "pop_tag": "3天3板"
+        },
+        {
+          "code": "002580",
+          "name": "圣阳股份",
+          "rank": 14,
+          "hot_value": 72089.0,
+          "change_pct": -3.9161,
+          "pop_tag": ""
+        },
+        {
+          "code": "002709",
+          "name": "天赐材料",
+          "rank": 22,
+          "hot_value": 63821.0,
+          "change_pct": 2.0061,
+          "pop_tag": "2天1板"
+        },
+        {
+          "code": "002466",
+          "name": "天齐锂业",
+          "rank": 28,
+          "hot_value": 60247.0,
+          "change_pct": 5.9719,
+          "pop_tag": ""
+        },
+        {
+          "code": "002240",
+          "name": "盛新锂能",
+          "rank": 31,
+          "hot_value": 52355.0,
+          "change_pct": 9.9945,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "002176",
+          "name": "江特电机",
+          "rank": 36,
+          "hot_value": 48082.0,
+          "change_pct": -0.2486,
+          "pop_tag": "2天1板"
+        },
+        {
+          "code": "002407",
+          "name": "多氟多",
+          "rank": 39,
+          "hot_value": 45980.0,
+          "change_pct": 1.2267,
+          "pop_tag": ""
+        },
+        {
+          "code": "301217",
+          "name": "铜冠铜箔",
+          "rank": 41,
+          "hot_value": 45275.0,
+          "change_pct": 10.3691,
+          "pop_tag": "2天1板"
+        },
+        {
+          "code": "603778",
+          "name": "国晟科技",
+          "rank": 45,
+          "hot_value": 44062.0,
+          "change_pct": -2.8133,
+          "pop_tag": ""
+        },
+        {
+          "code": "600152",
+          "name": "维科技术",
+          "rank": 55,
+          "hot_value": 38767.0,
+          "change_pct": 2.4138,
+          "pop_tag": "5天3板"
+        },
+        {
+          "code": "002805",
+          "name": "丰元股份",
+          "rank": 59,
+          "hot_value": 37973.0,
+          "change_pct": 10.0144,
+          "pop_tag": "2天2板"
+        },
+        {
+          "code": "002460",
+          "name": "赣锋锂业",
+          "rank": 63,
+          "hot_value": 37486.0,
+          "change_pct": 2.0483,
+          "pop_tag": ""
+        },
+        {
+          "code": "600522",
+          "name": "中天科技",
+          "rank": 64,
+          "hot_value": 36614.0,
+          "change_pct": -3.3839,
+          "pop_tag": ""
+        },
+        {
+          "code": "603906",
+          "name": "龙蟠科技",
+          "rank": 70,
+          "hot_value": 34285.0,
+          "change_pct": 0.5456,
+          "pop_tag": "2天1板"
+        },
+        {
+          "code": "300632",
+          "name": "光莆股份",
+          "rank": 74,
+          "hot_value": 33629.0,
+          "change_pct": 20.0098,
+          "pop_tag": "2天2板"
+        },
+        {
+          "code": "600884",
+          "name": "杉杉股份",
+          "rank": 81,
+          "hot_value": 32720.0,
+          "change_pct": -1.4793,
+          "pop_tag": ""
+        },
+        {
+          "code": "002759",
+          "name": "天际股份",
+          "rank": 83,
+          "hot_value": 32242.0,
+          "change_pct": 5.7762,
+          "pop_tag": ""
+        }
+      ]
+    },
+    {
+      "code": "886069",
+      "name": "人形机器人",
+      "hot_value": 3941.0,
+      "change_pct": 0.963,
+      "hot_tag": "连续362天上榜",
+      "stock_count": 11,
+      "stocks": [
+        {
+          "code": "002176",
+          "name": "江特电机",
+          "rank": 36,
+          "hot_value": 48082.0,
+          "change_pct": -0.2486,
+          "pop_tag": "2天1板"
+        },
+        {
+          "code": "002050",
+          "name": "三花智控",
+          "rank": 43,
+          "hot_value": 44871.0,
+          "change_pct": 4.6854,
+          "pop_tag": ""
+        },
+        {
+          "code": "600487",
+          "name": "亨通光电",
+          "rank": 44,
+          "hot_value": 44115.0,
+          "change_pct": -2.4933,
+          "pop_tag": ""
+        },
+        {
+          "code": "300083",
+          "name": "创世纪",
+          "rank": 50,
+          "hot_value": 42116.0,
+          "change_pct": 20.0236,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "002384",
+          "name": "东山精密",
+          "rank": 51,
+          "hot_value": 41035.0,
+          "change_pct": 1.346,
+          "pop_tag": ""
+        },
+        {
+          "code": "601869",
+          "name": "长飞光纤",
+          "rank": 52,
+          "hot_value": 40273.0,
+          "change_pct": -4.4856,
+          "pop_tag": ""
+        },
+        {
+          "code": "002460",
+          "name": "赣锋锂业",
+          "rank": 63,
+          "hot_value": 37486.0,
+          "change_pct": 2.0483,
+          "pop_tag": ""
+        },
+        {
+          "code": "002475",
+          "name": "立讯精密",
+          "rank": 65,
+          "hot_value": 36109.0,
+          "change_pct": -2.3893,
+          "pop_tag": ""
+        },
+        {
+          "code": "300632",
+          "name": "光莆股份",
+          "rank": 74,
+          "hot_value": 33629.0,
+          "change_pct": 20.0098,
+          "pop_tag": "2天2板"
+        },
+        {
+          "code": "002990",
+          "name": "盛视科技",
+          "rank": 80,
+          "hot_value": 32800.0,
+          "change_pct": 9.9918,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "603986",
+          "name": "兆易创新",
+          "rank": 86,
+          "hot_value": 31691.0,
+          "change_pct": 1.3273,
+          "pop_tag": ""
+        }
+      ]
+    },
+    {
+      "code": "885574",
+      "name": "卫星导航",
+      "hot_value": 3894.5,
+      "change_pct": 1.5254,
+      "hot_tag": "首次上榜",
+      "stock_count": 15,
+      "stocks": [
+        {
+          "code": "000066",
+          "name": "中国长城",
+          "rank": 4,
+          "hot_value": 151609.0,
+          "change_pct": 9.9889,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "002149",
+          "name": "西部材料",
+          "rank": 9,
+          "hot_value": 98254.0,
+          "change_pct": 9.9931,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "600330",
+          "name": "天通股份",
+          "rank": 19,
+          "hot_value": 65303.0,
+          "change_pct": 8.6906,
+          "pop_tag": ""
+        },
+        {
+          "code": "002361",
+          "name": "神剑股份",
+          "rank": 27,
+          "hot_value": 60316.0,
+          "change_pct": 2.4938,
+          "pop_tag": "持续上榜"
+        },
+        {
+          "code": "600246",
+          "name": "万通发展",
+          "rank": 42,
+          "hot_value": 44963.0,
+          "change_pct": 10.0488,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "600118",
+          "name": "中国卫星",
+          "rank": 48,
+          "hot_value": 42809.0,
+          "change_pct": 4.9729,
+          "pop_tag": ""
+        },
+        {
+          "code": "002115",
+          "name": "三维通信",
+          "rank": 56,
+          "hot_value": 38474.0,
+          "change_pct": -1.8392,
+          "pop_tag": ""
+        },
+        {
+          "code": "300136",
+          "name": "信维通信",
+          "rank": 57,
+          "hot_value": 38304.0,
+          "change_pct": 6.7711,
+          "pop_tag": ""
+        },
+        {
+          "code": "000988",
+          "name": "华工科技",
+          "rank": 73,
+          "hot_value": 33736.0,
+          "change_pct": 0.4116,
+          "pop_tag": ""
+        },
+        {
+          "code": "002428",
+          "name": "云南锗业",
+          "rank": 87,
+          "hot_value": 31538.0,
+          "change_pct": 1.1413,
+          "pop_tag": ""
+        },
+        {
+          "code": "002565",
+          "name": "顺灏股份",
+          "rank": 89,
+          "hot_value": 30059.0,
+          "change_pct": 2.6998,
+          "pop_tag": ""
+        },
+        {
+          "code": "000925",
+          "name": "众合科技",
+          "rank": 93,
+          "hot_value": 29315.0,
+          "change_pct": -5.8402,
+          "pop_tag": "6天3板"
+        },
+        {
+          "code": "600498",
+          "name": "烽火通信",
+          "rank": 94,
+          "hot_value": 28857.0,
+          "change_pct": -9.3592,
+          "pop_tag": ""
+        },
+        {
+          "code": "600703",
+          "name": "三安光电",
+          "rank": 95,
+          "hot_value": 28658.0,
+          "change_pct": -1.9369,
+          "pop_tag": ""
+        },
+        {
+          "code": "000547",
+          "name": "航天发展",
+          "rank": 99,
+          "hot_value": 27769.0,
+          "change_pct": 2.1613,
+          "pop_tag": ""
+        }
+      ]
+    },
+    {
+      "code": "885893",
+      "name": "国家大基金持股",
+      "hot_value": 3650.5,
+      "change_pct": 3.5512,
+      "hot_tag": "5天3次上榜",
+      "stock_count": 3,
+      "stocks": [
+        {
+          "code": "002156",
+          "name": "通富微电",
+          "rank": 47,
+          "hot_value": 42938.0,
+          "change_pct": 4.5859,
+          "pop_tag": ""
+        },
+        {
+          "code": "688521",
+          "name": "芯原股份",
+          "rank": 77,
+          "hot_value": 33403.0,
+          "change_pct": 19.9983,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "688981",
+          "name": "中芯国际",
+          "rank": 85,
+          "hot_value": 31947.0,
+          "change_pct": 5.5659,
+          "pop_tag": ""
+        }
+      ]
+    },
+    {
+      "code": "886009",
+      "name": "先进封装",
+      "hot_value": 3461.0,
+      "change_pct": 1.9952,
+      "hot_tag": "10天8次上榜",
+      "stock_count": 8,
+      "stocks": [
+        {
+          "code": "688256",
+          "name": "寒武纪",
+          "rank": 2,
+          "hot_value": 227502.0,
+          "change_pct": 20.0003,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "600745",
+          "name": "闻泰科技",
+          "rank": 6,
+          "hot_value": 111625.0,
+          "change_pct": 0.0,
+          "pop_tag": ""
+        },
+        {
+          "code": "600330",
+          "name": "天通股份",
+          "rank": 19,
+          "hot_value": 65303.0,
+          "change_pct": 8.6906,
+          "pop_tag": ""
+        },
+        {
+          "code": "002156",
+          "name": "通富微电",
+          "rank": 47,
+          "hot_value": 42938.0,
+          "change_pct": 4.5859,
+          "pop_tag": ""
+        },
+        {
+          "code": "000988",
+          "name": "华工科技",
+          "rank": 73,
+          "hot_value": 33736.0,
+          "change_pct": 0.4116,
+          "pop_tag": ""
+        },
+        {
+          "code": "300632",
+          "name": "光莆股份",
+          "rank": 74,
+          "hot_value": 33629.0,
+          "change_pct": 20.0098,
+          "pop_tag": "2天2板"
+        },
+        {
+          "code": "688521",
+          "name": "芯原股份",
+          "rank": 77,
+          "hot_value": 33403.0,
+          "change_pct": 19.9983,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "000925",
+          "name": "众合科技",
+          "rank": 93,
+          "hot_value": 29315.0,
+          "change_pct": -5.8402,
+          "pop_tag": "6天3板"
+        }
+      ]
+    },
+    {
+      "code": "885573",
+      "name": "猪肉",
+      "hot_value": 3420.0,
+      "change_pct": 1.0076,
+      "hot_tag": "连续25天上榜",
+      "stock_count": 0,
+      "stocks": []
+    },
+    {
+      "code": "885957",
+      "name": "东数西算(算力)",
+      "hot_value": 3180.0,
+      "change_pct": 0.0245,
+      "hot_tag": "连续53天上榜",
+      "stock_count": 19,
+      "stocks": [
+        {
+          "code": "688256",
+          "name": "寒武纪",
+          "rank": 2,
+          "hot_value": 227502.0,
+          "change_pct": 20.0003,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "000066",
+          "name": "中国长城",
+          "rank": 4,
+          "hot_value": 151609.0,
+          "change_pct": 9.9889,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "603629",
+          "name": "利通电子",
+          "rank": 5,
+          "hot_value": 140863.0,
+          "change_pct": 9.9931,
+          "pop_tag": "3天2板"
+        },
+        {
+          "code": "002202",
+          "name": "金风科技",
+          "rank": 7,
+          "hot_value": 104197.0,
+          "change_pct": 7.0735,
+          "pop_tag": ""
+        },
+        {
+          "code": "600186",
+          "name": "莲花控股",
+          "rank": 10,
+          "hot_value": 93846.0,
+          "change_pct": -0.9242,
+          "pop_tag": "2天1板"
+        },
+        {
+          "code": "002580",
+          "name": "圣阳股份",
+          "rank": 14,
+          "hot_value": 72089.0,
+          "change_pct": -3.9161,
+          "pop_tag": ""
+        },
+        {
+          "code": "601138",
+          "name": "工业富联",
+          "rank": 17,
+          "hot_value": 68960.0,
+          "change_pct": -5.1011,
+          "pop_tag": ""
+        },
+        {
+          "code": "002281",
+          "name": "光迅科技",
+          "rank": 25,
+          "hot_value": 61420.0,
+          "change_pct": 8.5873,
+          "pop_tag": ""
+        },
+        {
+          "code": "002217",
+          "name": "合力泰",
+          "rank": 29,
+          "hot_value": 54033.0,
+          "change_pct": -5.8632,
+          "pop_tag": ""
+        },
+        {
+          "code": "001896",
+          "name": "豫能控股",
+          "rank": 34,
+          "hot_value": 50365.0,
+          "change_pct": -9.9823,
+          "pop_tag": ""
+        },
+        {
+          "code": "600821",
+          "name": "金开新能",
+          "rank": 60,
+          "hot_value": 37964.0,
+          "change_pct": -10.0346,
+          "pop_tag": ""
+        },
+        {
+          "code": "600522",
+          "name": "中天科技",
+          "rank": 64,
+          "hot_value": 36614.0,
+          "change_pct": -3.3839,
+          "pop_tag": ""
+        },
+        {
+          "code": "000988",
+          "name": "华工科技",
+          "rank": 73,
+          "hot_value": 33736.0,
+          "change_pct": 0.4116,
+          "pop_tag": ""
+        },
+        {
+          "code": "688521",
+          "name": "芯原股份",
+          "rank": 77,
+          "hot_value": 33403.0,
+          "change_pct": 19.9983,
+          "pop_tag": "首板涨停"
+        },
+        {
+          "code": "600105",
+          "name": "永鼎股份",
+          "rank": 78,
+          "hot_value": 32976.0,
+          "change_pct": -2.1006,
+          "pop_tag": ""
+        },
+        {
+          "code": "600410",
+          "name": "华胜天成",
+          "rank": 79,
+          "hot_value": 32871.0,
+          "change_pct": -2.6211,
+          "pop_tag": ""
+        },
+        {
+          "code": "002565",
+          "name": "顺灏股份",
+          "rank": 89,
+          "hot_value": 30059.0,
+          "change_pct": 2.6998,
+          "pop_tag": ""
+        },
+        {
+          "code": "000925",
+          "name": "众合科技",
+          "rank": 93,
+          "hot_value": 29315.0,
+          "change_pct": -5.8402,
+          "pop_tag": "6天3板"
+        },
+        {
+          "code": "600498",
+          "name": "烽火通信",
+          "rank": 94,
+          "hot_value": 28857.0,
+          "change_pct": -9.3592,
+          "pop_tag": ""
+        }
+      ]
+    }
+  ],
+  "unclassified_stocks": [
+    {
+      "code": "000858",
+      "name": "五粮液",
+      "rank": 1,
+      "hot_value": 523452.0,
+      "change_pct": -1.2813,
+      "pop_tag": "",
+      "concept_tag": "白酒概念;超级品牌"
+    },
+    {
+      "code": "600759",
+      "name": "ST洲际",
+      "rank": 11,
+      "hot_value": 85200.0,
+      "change_pct": -5.0813,
+      "pop_tag": "",
+      "concept_tag": "俄乌冲突概念;天然气"
+    },
+    {
+      "code": "603538",
+      "name": "美诺华",
+      "rank": 15,
+      "hot_value": 72038.0,
+      "change_pct": -4.3492,
+      "pop_tag": "",
+      "concept_tag": "流感;减肥药"
+    },
+    {
+      "code": "301599",
+      "name": "理奇智能",
+      "rank": 16,
+      "hot_value": 71566.0,
+      "change_pct": 348.5981,
+      "pop_tag": "",
+      "concept_tag": "固态电池;芯片概念"
+    },
+    {
+      "code": "600396",
+      "name": "华电辽能",
+      "rank": 21,
+      "hot_value": 63959.0,
+      "change_pct": -4.8897,
+      "pop_tag": "8天4板",
+      "concept_tag": "超超临界发电;绿色电力"
+    },
+    {
+      "code": "600111",
+      "name": "北方稀土",
+      "rank": 23,
+      "hot_value": 63559.0,
+      "change_pct": 4.1021,
+      "pop_tag": "2天1板",
+      "concept_tag": "稀土永磁;小金属概念"
+    },
+    {
+      "code": "600726",
+      "name": "华电能源",
+      "rank": 33,
+      "hot_value": 51078.0,
+      "change_pct": -7.1831,
+      "pop_tag": "6天4板",
+      "concept_tag": "煤炭概念;超超临界发电"
+    },
+    {
+      "code": "603095",
+      "name": "越剑智能",
+      "rank": 35,
+      "hot_value": 49069.0,
+      "change_pct": 10.0173,
+      "pop_tag": "4天4板",
+      "concept_tag": "高端装备;专精特新"
+    },
+    {
+      "code": "002842",
+      "name": "翔鹭钨业",
+      "rank": 37,
+      "hot_value": 47653.0,
+      "change_pct": 10.0029,
+      "pop_tag": "2天2板",
+      "concept_tag": "金属铜;小金属概念"
+    },
+    {
+      "code": "000890",
+      "name": "法尔胜",
+      "rank": 38,
+      "hot_value": 47588.0,
+      "change_pct": -8.9535,
+      "pop_tag": "",
+      "concept_tag": "光纤概念;净水概念"
+    },
+    {
+      "code": "601778",
+      "name": "晶科科技",
+      "rank": 40,
+      "hot_value": 45886.0,
+      "change_pct": -6.6092,
+      "pop_tag": "",
+      "concept_tag": "算力租赁;虚拟电厂"
+    },
+    {
+      "code": "000980",
+      "name": "众泰汽车",
+      "rank": 46,
+      "hot_value": 43159.0,
+      "change_pct": 10.0437,
+      "pop_tag": "关注激增",
+      "concept_tag": "百度概念;新能源汽车"
+    },
+    {
+      "code": "600519",
+      "name": "贵州茅台",
+      "rank": 49,
+      "hot_value": 42399.0,
+      "change_pct": -1.169,
+      "pop_tag": "",
+      "concept_tag": "白酒概念;超级品牌"
+    },
+    {
+      "code": "603318",
+      "name": "水发燃气",
+      "rank": 62,
+      "hot_value": 37812.0,
+      "change_pct": -1.9931,
+      "pop_tag": "9天6板",
+      "concept_tag": "天然气;氢能源"
+    },
+    {
+      "code": "002210",
+      "name": "飞马国际",
+      "rank": 71,
+      "hot_value": 34121.0,
+      "change_pct": -9.9698,
+      "pop_tag": "4天3板",
+      "concept_tag": "固废处理;PPP概念"
+    },
+    {
+      "code": "601016",
+      "name": "节能风电",
+      "rank": 76,
+      "hot_value": 33547.0,
+      "change_pct": -6.5789,
+      "pop_tag": "",
+      "concept_tag": "绿色电力;风电"
+    },
+    {
+      "code": "600433",
+      "name": "冠豪高新",
+      "rank": 82,
+      "hot_value": 32589.0,
+      "change_pct": 10.0,
+      "pop_tag": "首板涨停",
+      "concept_tag": "可降解塑料;烟草"
+    },
+    {
+      "code": "688808",
+      "name": "联讯仪器",
+      "rank": 84,
+      "hot_value": 32159.0,
+      "change_pct": 11.3502,
+      "pop_tag": "",
+      "concept_tag": "2026一季报预增;注册制次新股"
+    },
+    {
+      "code": "000567",
+      "name": "海德股份",
+      "rank": 97,
+      "hot_value": 28494.0,
+      "change_pct": 10.066,
+      "pop_tag": "2天2板",
+      "concept_tag": "海南自贸区;化债概念(AMC概念)"
+    },
+    {
+      "code": "600900",
+      "name": "长江电力",
+      "rank": 98,
+      "hot_value": 27974.0,
+      "change_pct": 2.0545,
+      "pop_tag": "",
+      "concept_tag": "同花顺中特估100;同花顺漂亮100"
+    },
+    {
+      "code": "000593",
+      "name": "德龙汇能",
+      "rank": 100,
+      "hot_value": 27712.0,
+      "change_pct": -5.2789,
+      "pop_tag": "6天3板",
+      "concept_tag": "青蒿素;信托概念"
+    }
+  ]
+}
