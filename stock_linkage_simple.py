@@ -1116,7 +1116,14 @@ function _cachedFetch(url) {
     }
     var p = fetch(url)
         .then(function(r) { return r.json(); })
-        .then(function(data) { _tabCache[url] = data; return data; })
+        .then(function(data) {
+            if (Array.isArray(data) && data.length === 0) {
+                delete _tabCache[url];
+                return data;
+            }
+            _tabCache[url] = data;
+            return data;
+        })
         .catch(function(e) { delete _tabCache[url]; throw e; });
     _tabCache[url] = p;
     return p;
