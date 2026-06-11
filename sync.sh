@@ -66,12 +66,17 @@ do_restart() {
     echo "> 重启远程服务..."
     remote "
         cd $REMOTE_DIR
-        pkill -f stock_linkage_simple.py 2>/dev/null
-        sleep 1
+        PID=\$(ps aux | grep 'stock_linkage_simple' | grep -v grep | awk '{print \$2}')
+        if [ -n \"\$PID\" ]; then
+            echo '  停止旧进程 (PID:' \$PID ')'
+            kill \$PID 2>/dev/null
+            sleep 1
+        fi
         nohup python3 -u stock_linkage_simple.py > /tmp/stock_service.log 2>&1 &
         sleep 3
-        if pgrep -f stock_linkage_simple.py > /dev/null 2>&1; then
-            echo '  服务已启动 (PID: '\$(pgrep -f stock_linkage_simple.py)')'
+        NEWPID=\$(ps aux | grep 'stock_linkage_simple' | grep -v grep | awk '{print \$2}')
+        if [ -n \"\$NEWPID\" ]; then
+            echo '  服务已启动 (PID:' \$NEWPID ')'
         else
             echo '  服务启动失败'
             tail -3 /tmp/stock_service.log
