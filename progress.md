@@ -110,3 +110,36 @@
 - Phase 1-3 已完成
 - 服务已停止
 - 下次启动：`python stock_linkage_simple.py` → http://localhost:5001
+
+## Session: 2026-05-23
+
+### Phase 6: 前端Tab数据预取缓存 + 云主机故障排查
+- **Status:** complete
+- **Started:** 2026-05-23
+- Actions taken:
+  1. 新增 `_tabCache` / `_cachedFetch(url)` / `_clearTabCache()` / `_prefetchAllTabs()` 缓存体系
+  2. 替换 8 个 `load*()` 函数中的 `fetch` 为 `_cachedFetch`
+  3. `_cachedFetch` 空数组保护：`[]` 不缓存，确保预取空时自动重试
+  4. 数据更新后 `_clearTabCache()` 清空缓存
+  5. 错别字修正：首版屠龙 → 首板屠龙
+  6. 排查云主机同花顺热股/概念数据为空：
+     - adata 直调正常 → finder 调用正常 → 线程测试正常
+     - 根因：服务用 `.venv/bin/python3` 运行，但 venv 缺少 `adata` 模块
+     - 修复：`.venv/bin/pip install adata`
+  7. 打包项目到 `~/Desktop/stock_concept_cycle.tar.gz`（含数据库文件，166MB）
+- Files created/modified:
+  - stock_linkage_simple.py (预取缓存 + 空数组保护)
+  - DESIGN.md (错别字修正)
+  - MEMORY.md (记忆更新)
+- Commits:
+  - `a114030` feat: add tab data prefetch cache and fix typo
+  - `725ce15` fix: _cachedFetch not caching empty arrays, fix cloud venv adata dep
+
+### 5-Question Reboot Check
+| Question | Answer |
+|----------|--------|
+| Where am I? | Phase 6 complete - Prefetch Cache + adata fix |
+| Where am I going? | Phase 4: 概念轮动热力图 (pending) / Phase 5: 数据导出 (pending) |
+| What's the goal? | Complete all 6 phases for StockLinkageFinder |
+| What have I learned? | venv deps check, cachedFetch empty array protection |
+| What have I done? | Prefetch cache, adata venv fix, cloud deploy, project packaging |

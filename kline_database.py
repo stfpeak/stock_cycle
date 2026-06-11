@@ -53,6 +53,8 @@ class KlineDB:
         self.pro = None
         self._init_tushare()
         self._init_database()
+        # 迁移修复：确保UNIQUE约束存在，清理历史重复数据
+        self._migrate_schema()
 
     def _init_tushare(self):
         """初始化 tushare pro 接口"""
@@ -107,6 +109,95 @@ class KlineDB:
         except Exception as e:
             print(f"tushare 获取 {stock_code} 失败: {e}")
             return pd.DataFrame()
+
+    def _migrate_schema(self):
+        """迁移修复：确保UNIQUE约束存在，清理重复数据"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            # 检查当前表是否有UNIQUE约束
+            cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='kline_daily'")
+            row = cursor.fetchone()
+            if row and 'UNIQUE' not in row[0]:
+                print("检测到kline_daily表缺少UNIQUE约束，正在迁移修复...")
+                # 重建表：去重 + 加UNIQUE约束
+                cursor.executescript("""
+                    CREATE TABLE kline_daily_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        stock_code TEXT NOT NULL,
+                        trade_date TEXT NOT NULL,
+                        open REAL, high REAL, low REAL, close REAL,
+                        volume REAL, amount REAL, change_pct REAL,
+                        change_val REAL, prev_close REAL, turnover_ratio REAL,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(stock_code, trade_date)
+                    );
+                    INSERT OR IGNORE INTO kline_daily_new
+                        (stock_code, trade_date, open, high, low, close,
+                         volume, amount, change_pct, change_val, prev_close, turnover_ratio)
+                    SELECT stock_code, trade_date, open, high, low, close,
+                           volume, amount, change_pct, change_val, prev_close, turnover_ratio
+                    FROM kline_daily;
+                    DROP TABLE kline_daily;
+                    ALTER TABLE kline_daily_new RENAME TO kline_daily;
+                    CREATE INDEX IF NOT EXISTS idx_kline_stock ON kline_daily(stock_code);
+                    CREATE INDEX IF NOT EXISTS idx_kline_date ON kline_daily(trade_date);
+                    CREATE INDEX IF NOT EXISTS idx_kline_stock_date ON kline_daily(stock_code, trade_date);
+                """)
+                conn.commit()
+                print("  迁移完成，重复数据已清理")
+        finally:
+            conn.close()
+
+    def deduplicate(self):
+        """清理kline_daily表中的重复记录，只保留每条(stock_code, trade_date)的最新一条"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM kline_daily WHERE id NOT IN (
+                    SELECT MIN(id) FROM kline_daily GROUP BY stock_code, trade_date
+                )
+            """)
+            deleted = cursor.rowcount
+            conn.commit()
+            if deleted > 0:
+                print(f"清理了 {deleted} 条重复记录")
+            return deleted
+        finally:
+            conn.close()
+
+    def vacuum(self):
+        """回收数据库空闲空间（压缩文件大小）"""
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            before = os.path.getsize(self.db_path)
+            cursor.execute("VACUUM")
+            conn.commit()
+            after = os.path.getsize(self.db_path)
+            saved = before - after
+            print(f"VACUUM完成: {before/1024/1024:.0f}M → {after/1024/1024:.0f}M (节省{saved/1024/1024:.0f}M)")
+            return saved
+        finally:
+            conn.close()
+
+    def reclaim_space(self):
+        """一键回收空间：去重 + 重建索引 + VACUUM"""
+        print("=== 数据库空间回收 ===")
+        before = os.path.getsize(self.db_path)
+        deleted = self.deduplicate()
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("REINDEX")
+            conn.commit()
+        finally:
+            conn.close()
+        saved = self.vacuum()
+        print(f"回收完成: 删除{deleted}条重复, 节省{saved/1024/1024:.0f}M")
+        return {'deleted': deleted, 'saved': saved}
 
     def _get_connection(self) -> sqlite3.Connection:
         """获取数据库连接"""
@@ -513,110 +604,100 @@ def get_zt_pool_stocks(days: int = 20) -> List[str]:
 def update_all_stocks_kline(stock_codes: List[str] = None, db: KlineDB = None,
                               start_date: str = None, end_date: str = None) -> dict:
     """
-    批量更新所有股票K线数据（增量更新）
+    批量更新所有股票K线数据（按天批量拉取，快！）
+
+    注意：此方法已转为按天批量拉取（pro.daily(trade_date=...)），
+    单次请求获取全市场5000+只股票，比逐只更新快百倍。
+
+    也推荐使用 update_data_fast.py 进行快速更新：
+        python update_data_fast.py
 
     Args:
-        stock_codes: 股票代码列表，None则使用数据库中的所有股票
+        stock_codes: 保留参数，实际忽略（按天拉取全市场）
         db: KlineDB实例
-        start_date: 开始日期 YYYYMMDD，默认30个交易日前
-        end_date: 结束日期 YYYYMMDD，默认今天
+        start_date: 保留参数，忽略
+        end_date: 保留参数，忽略
 
     Returns:
-        更新统计 {"total": 6000, "success": 5900, "failed": 100, "updated": 150000}
+        更新统计
     """
-    if db is None:
-        db = KlineDB()
+    # 直接调用 update_data_fast 的按天批量拉取（一次API获取全市场5000+只）
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        if script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+        import update_data_fast
 
-    # 获取股票列表
-    if stock_codes is None:
-        stock_codes = db.get_all_stocks()
+        print("使用按天批量拉取模式（单次请求获取全市场5000+只股票）...")
+        print()
 
-    if not stock_codes:
-        print("没有股票可更新")
+        # Step 1: 扩展交易日历
+        added = update_data_fast.extend_trade_calendar()
+
+        # Step 2: 检查缺失
+        missing = update_data_fast.get_db_missing_dates()
+
+        if not missing:
+            print("所有数据已是最新，无需更新")
+            return {"total": 0, "success": 0, "failed": 0, "updated": 0}
+
+        # Step 3: 按天批量拉取
+        print(f"缺失 {len(missing)} 个交易日，开始拉取...")
+        result = update_data_fast.fetch_and_save_missing_dates(missing, delay=0.6)
+
+        print(f"完成! 成功: {result.get('success', 0)}/{len(missing)} 天, "
+              f"新增 {result.get('records', 0)} 条记录")
+        return {
+            'total': len(missing),
+            'success': result.get('success', 0),
+            'failed': len(missing) - result.get('success', 0),
+            'updated': result.get('records', 0)
+        }
+    except Exception as e:
+        print(f"按天批量拉取出错: {e}")
+        import traceback
+        traceback.print_exc()
         return {"total": 0, "success": 0, "failed": 0, "updated": 0}
-
-    # 确定日期范围
-    if end_date is None:
-        end_date = datetime.now().strftime('%Y%m%d')
-    if start_date is None:
-        # 默认取近30个交易日
-        trade_dates = db.load_trade_calendar()
-        # 取最近30个（日期是倒序的，所以取前30个）
-        if trade_dates:
-            start_date = trade_dates[min(29, len(trade_dates)-1)]
-        else:
-            start_date = (datetime.now() - timedelta(days=45)).strftime('%Y%m%d')
-
-    total = len(stock_codes)
-    success = 0
-    failed = 0
-    total_updated = 0
-
-    print(f"开始更新 {total} 只股票的K线数据 ({start_date} ~ {end_date})...")
-    print("-" * 60)
-
-    for i, code in enumerate(stock_codes):
-        try:
-            # 检查缺失日期
-            all_dates = db.load_trade_calendar()
-            missing_dates = [d for d in all_dates if d >= start_date and d <= end_date]
-
-            # 实际检查数据库中的日期
-            existing = db.get_existing_dates(code)
-            existing_fmt = {d.replace('-', '') for d in existing}
-            missing = [d for d in missing_dates if d not in existing_fmt]
-
-            if not missing:
-                success += 1
-                continue
-
-            # 使用 tushare 获取缺失的数据
-            df = db.fetch_by_tushare(code, min(missing), max(missing))
-
-            if df is not None and not df.empty:
-                count = db.save_kline_data(code, df)
-                total_updated += count
-                success += 1
-                status = f"✓ +{count}"
-            else:
-                failed += 1
-                status = "✗ 无数据"
-
-        except Exception as e:
-            failed += 1
-            status = f"✗ {type(e).__name__}"
-
-        if (i + 1) % 100 == 0 or status.startswith("✗"):
-            print(f"[{i+1}/{total}] {code} {status}")
-
-        # 控制 tushare 调用频率
-        if i < total - 1:
-            time.sleep(0.3)
-
-    print("-" * 60)
-    print(f"完成! 成功: {success}/{total}, 失败: {failed}, 更新: {total_updated} 条")
-
-    return {"total": total, "success": success, "failed": failed, "updated": total_updated}
 
 
 # ========== 测试代码 ==========
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("K线数据库测试")
-    print("=" * 60)
+    import sys
 
-    db = KlineDB()
+    if len(sys.argv) > 1 and sys.argv[1] == '--reclaim':
+        db = KlineDB()
+        db.reclaim_space()
+        sys.exit(0)
 
-    # 测试数据库路径
-    print(f"数据库路径: {db.db_path}")
+    if len(sys.argv) > 1 and sys.argv[1] == '--info':
+        db = KlineDB()
+        print("=" * 60)
+        print("K线数据库信息")
+        print("=" * 60)
+        print(f"数据库路径: {db.db_path}")
+        size_mb = os.path.getsize(db.db_path) / 1024 / 1024
+        print(f"文件大小: {size_mb:.0f} MB")
 
-    # 检查数据覆盖
-    coverage = db.get_data_coverage()
-    print(f"\n当前数据覆盖: {len(coverage)} 个交易日")
+        conn = db._get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM kline_daily")
+            total = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(DISTINCT stock_code) FROM kline_daily")
+            stocks = cursor.fetchone()[0]
+            cursor.execute("SELECT MAX(trade_date) FROM kline_daily")
+            last_date = cursor.fetchone()[0]
+            cursor.execute("SELECT MIN(trade_date) FROM kline_daily")
+            first_date = cursor.fetchone()[0]
+            cursor.execute("PRAGMA freelist_count")
+            freelist = cursor.fetchone()[0]
 
-    if not coverage.empty:
-        print(f"最新数据日期: {coverage.iloc[0]['trade_date']}")
-        print(f"股票数量: {coverage.iloc[0]['stock_count']}")
+            print(f"总记录数: {total:,}")
+            print(f"股票数量: {stocks}")
+            print(f"日期范围: {first_date} ~ {last_date}")
+            print(f"空闲页数: {freelist}  (浪费{freelist * 4096 / 1024 / 1024:.0f}M)")
+        finally:
+            conn.close()
 
-    print("\n测试完成!")
+        sys.exit(0)

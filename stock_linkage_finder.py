@@ -120,7 +120,7 @@ class StockLinkageFinder:
 
         self.zt_pool_dates = defaultdict(set)
         self.zt_pool_records = []
-        self.zt_pool_prices = defaultdict(list)  # {code: [(date, close_price, lianban, zb_count), ...]}
+        self.zt_pool_prices = defaultdict(list)  # {code: [(date, close_price, lianban, zb_count, first_time), ...]}
 
         if not os.path.exists(zt_dir):
             print(f"涨停池目录不存在: {zt_dir}")
@@ -153,8 +153,10 @@ class StockLinkageFinder:
                     lb_val = int(lianban) if pd.notna(lianban) else 0
                     chg_val = float(change_pct) if pd.notna(change_pct) else 0.0
 
+                    first_time_val = int(row.get('首次封板时间', 0)) if pd.notna(row.get('首次封板时间', None)) else 0
+
                     self.zt_pool_prices[code].append(
-                        (date_str, close_val, lb_val, zb_val)
+                        (date_str, close_val, lb_val, zb_val, first_time_val)
                     )
 
                     self.zt_pool_records.append({
@@ -166,6 +168,7 @@ class StockLinkageFinder:
                         'close_price': close_val,
                         'change_pct': chg_val,
                         'zb_count': zb_val,
+                        'first_time': first_time_val,
                         'source': 'zt_pool'
                     })
 
@@ -237,9 +240,13 @@ class StockLinkageFinder:
         self.trade_dates = sorted(all_dates_in_zt & self.trade_date_set)
         if not self.trade_dates:
             self.trade_dates = self.all_trade_dates
+        # 日期→索引映射，用于O(1)的滞后日期计算
+        self.trade_date_index = {d: i for i, d in enumerate(self.trade_dates)}
 
         print(f"合并后: {len(self.all_zt_dates)} 只有涨停记录的股票")
         print(f"交易日范围: {self.trade_dates[0]} ~ {self.trade_dates[-1]} ({len(self.trade_dates)}天)")
+        # 数据变更后清空依赖数据的内部缓存
+        self._zt_filter_cache = None
 
     # ========== 查询接口 ==========
 
@@ -337,24 +344,195 @@ class StockLinkageFinder:
         """获取所有概念名称"""
         return sorted(self.concept_stocks.keys())
 
-    def get_concept_zt_stats(self, concept_name: str) -> Dict:
-        """获取概念内涨停统计"""
+    def get_today_zt(self) -> List[Dict]:
+        """获取最新交易日的涨停股票列表（含连板数、首次封板时间、概念标签）
+
+        Returns:
+            [{code, name, lianban, zb_count, first_time, concepts, concept_count, trade_date}, ...]
+            按首次封板时间升序排列（越早涨停越靠前）
+        """
+        if not self.trade_dates:
+            return []
+        latest_date = self.trade_dates[-1]
+
+        result = []
+        for code, dates in self.all_zt_dates.items():
+            if latest_date not in dates:
+                continue
+
+            # 获取连板数、炸板数和首次封板时间
+            lianban = 1
+            zb_count = 0
+            first_time = 999999
+            price_records = self.zt_pool_prices.get(code, [])
+            # 尝试精确匹配最新交易日；若失败则降级使用最近CSV记录中的封板时间
+            found_exact = False
+            fallback_first_time = 999999
+            if price_records:
+                for rec in price_records:
+                    if rec[0] == latest_date:
+                        lianban = rec[2] or 1
+                        zb_count = rec[3] or 0
+                        first_time = rec[4] if len(rec) > 4 and rec[4] else 999999
+                        found_exact = True
+                        break
+                # 未精确匹配时，取最后一条CSV记录的封板时间作为降级
+                if not found_exact:
+                    latest_rec = price_records[-1]  # 假定已按日期升序
+                    fallback_first_time = latest_rec[4] if len(latest_rec) > 4 and latest_rec[4] else 999999
+                    first_time = fallback_first_time
+
+            concepts = list(self.get_stock_concepts(code))
+            result.append({
+                'code': code,
+                'name': self.get_stock_name(code),
+                'lianban': lianban,
+                'zb_count': zb_count,
+                'first_time': first_time,
+                'concepts': concepts,
+                'concept_count': len(concepts),
+                'trade_date': latest_date,
+            })
+
+        # 按首次封板时间升序（越早涨停越靠前），无时间数据的排在最后
+        result.sort(key=lambda x: x['first_time'])
+        return result
+
+    def get_hot_rank_100(self) -> List[Dict]:
+        """获取同花顺热股Top100
+
+        Returns:
+            [{rank, code, name, change_pct, hot_value, pop_tag, concepts}, ...]
+        """
+        try:
+            import adata
+            df = adata.sentiment.hot.hot_rank_100_ths()
+            if df is None or df.empty:
+                return []
+            result = []
+            for _, row in df.iterrows():
+                code = str(row.get('stock_code', '')).zfill(6)
+                concepts = str(row.get('concept_tag', ''))
+                result.append({
+                    'rank': int(row.get('rank', 0)),
+                    'code': code,
+                    'name': str(row.get('short_name', '')),
+                    'change_pct': float(row.get('change_pct', 0)),
+                    'hot_value': int(float(str(row.get('hot_value', 0)).replace(',', ''))) if pd.notna(row.get('hot_value', 0)) else 0,
+                    'pop_tag': str(row.get('pop_tag', '')) if pd.notna(row.get('pop_tag', '')) else '',
+                    'concepts': [c.strip() for c in concepts.split(';') if c.strip()],
+                })
+            return result
+        except Exception as e:
+            print(f"获取同花顺热股Top100失败: {e}")
+            return []
+
+    def get_hot_concept_20(self) -> List[Dict]:
+        """获取同花顺热门概念板块Top20
+
+        Returns:
+            [{rank, concept_code, concept_name, change_pct, hot_value, hot_tag}, ...]
+        """
+        try:
+            import adata
+            df = adata.sentiment.hot.hot_concept_20_ths()
+            if df is None or df.empty:
+                return []
+            result = []
+            for _, row in df.iterrows():
+                result.append({
+                    'rank': int(row.get('rank', 0)),
+                    'concept_code': str(row.get('concept_code', '')),
+                    'concept_name': str(row.get('concept_name', '')),
+                    'change_pct': float(row.get('change_pct', 0)),
+                    'hot_value': int(float(str(row.get('hot_value', 0)).replace(',', ''))) if pd.notna(row.get('hot_value', 0)) else 0,
+                    'hot_tag': str(row.get('hot_tag', '')) if pd.notna(row.get('hot_tag', '')) else '',
+                })
+            return result
+        except Exception as e:
+            print(f"获取同花顺热门概念板块Top20失败: {e}")
+            return []
+
+    def get_lianban_ladder(self, top_n: int = 30) -> List[Dict]:
+        """获取连续涨停天数排行（连板天梯）
+
+        从最新交易日往前追溯，计算每只股票的连续涨停天数。
+
+        Args:
+            top_n: 返回前N只
+
+        Returns:
+            [{code, name, consecutive_lianban, zt_count, concepts}, ...]
+            按连续涨停天数降序排列
+        """
+        if not self.trade_dates:
+            return []
+        latest_date = self.trade_dates[-1]
+
+        # 筛选最新交易日有涨停的股票
+        candidates = []
+        for code, dates in self.all_zt_dates.items():
+            if latest_date not in dates:
+                continue
+            candidates.append(code)
+
+        ladder = []
+        for code in candidates:
+            zt_dates = sorted(self.all_zt_dates[code])
+            if not zt_dates:
+                continue
+
+            # 从最新日往前追溯连续涨停（使用完整交易日历，避免gap误判）
+            consecutive = 0
+            zt_set = self.all_zt_dates.get(code, set())
+            for d in reversed(self.all_trade_dates):
+                if d not in self.trade_date_set:
+                    continue  # 跳过非交易日
+                if d in zt_set:
+                    consecutive += 1
+                elif consecutive > 0:
+                    break  # 连续涨停中断
+                # 未开始计数时遇到非ZT日，继续往前
+
+            concepts = self.get_stock_concepts(code)
+            ladder.append({
+                'code': code,
+                'name': self.get_stock_name(code),
+                'consecutive_lianban': consecutive,
+                'zt_count': len(zt_dates),
+                'concepts': concepts[:8],
+                'concept_count': len(concepts),
+            })
+
+        ladder.sort(key=lambda x: x['consecutive_lianban'], reverse=True)
+        return ladder[:top_n]
+
+    def get_concept_zt_stats(self, concept_name: str, rhythm_days: int = 20) -> Dict:
+        """获取概念内涨停统计，含近N日涨停节奏（含连板和板块信息）"""
         stock_codes = self.get_concept_stocks(concept_name)
         if not stock_codes:
             return {'concept': concept_name, 'total_stocks': 0, 'zt_stocks': []}
 
+        # 板块中文标签映射
+        _BOARD_LABEL = {'gem': '创', 'star': '科', 'bj': '北', 'main': '主'}
+
+        # 构建每只股票的ZT日期set和sorted list
+        stock_zt_sets = {}
+        stock_zt_lists = {}
         zt_stocks = []
         for code in stock_codes:
             dates = self.get_stock_zt_dates(code)
             if dates:
                 name = self.get_stock_name(code)
+                stock_zt_sets[code] = set(dates)
+                stock_zt_lists[code] = sorted(dates)
                 zt_stocks.append({
                     'code': code,
                     'name': name,
+                    'board': _BOARD_LABEL.get(self._get_board(code), '主'),
                     'zt_count': len(dates),
                     'first_zt': dates[0],
                     'last_zt': dates[-1],
-                    'dates': dates
                 })
 
         zt_stocks.sort(key=lambda x: x['zt_count'], reverse=True)
@@ -362,30 +540,129 @@ class StockLinkageFinder:
         # 计算概念整体涨停热力（每日涨停股票数）
         daily_zt_count = defaultdict(int)
         for s in zt_stocks:
-            for d in s['dates']:
+            for d in stock_zt_lists[s['code']]:
                 daily_zt_count[d] += 1
 
         peak_dates = sorted(daily_zt_count.items(), key=lambda x: x[1], reverse=True)[:10]
+
+        # --- 涨停节奏：最近 rhythm_days 个交易日（含连板和板块） ---
+        recent_dates = self.trade_dates[-rhythm_days:] if len(self.trade_dates) >= rhythm_days else self.trade_dates
+
+        # 提前计算每只股票每个ZT日期的连板数
+        stock_lianban = {}
+        for code in stock_zt_lists:
+            dates_list = stock_zt_lists[code]
+            zt_set = stock_zt_sets[code]
+            stock_lianban[code] = {}
+            for d in dates_list:
+                lb = 1
+                curr = d
+                while True:
+                    prev = self._get_lagged_date(curr, -1)
+                    if prev and prev in zt_set:
+                        lb += 1
+                        curr = prev
+                    else:
+                        break
+                stock_lianban[code][d] = lb
+
+        # 额外获取创业板/科创板股票的大涨数据（涨幅≥10%但未涨停）
+        gem_star_codes = [c for c in stock_codes if c.startswith(('300', '301', '688'))]
+        gem_stock_names = {}
+        gem_strong_rise = {}  # {code: {date: change_pct}}
+        if gem_star_codes and len(recent_dates) >= 2:
+            try:
+                conn = self.db._get_connection()
+                cursor = conn.cursor()
+                start_fmt = f"{recent_dates[0][:4]}-{recent_dates[0][4:6]}-{recent_dates[0][6:8]}"
+                end_fmt = f"{recent_dates[-1][:4]}-{recent_dates[-1][4:6]}-{recent_dates[-1][6:8]}"
+                placeholders = ','.join(['?'] * len(gem_star_codes))
+                cursor.execute(f"""
+                    SELECT kd.stock_code, kd.trade_date, kd.change_pct, s.stock_name
+                    FROM kline_daily kd
+                    LEFT JOIN stocks s ON kd.stock_code = s.stock_code
+                    WHERE kd.stock_code IN ({placeholders})
+                      AND kd.trade_date >= ? AND kd.trade_date <= ?
+                """, gem_star_codes + [start_fmt, end_fmt])
+                for row in cursor.fetchall():
+                    code = row[0]
+                    d = row[1].replace('-', '')
+                    change_pct = float(row[2]) if row[2] is not None else 0
+                    name = row[3] if row[3] else ''
+                    if change_pct >= 10:
+                        if code not in gem_strong_rise:
+                            gem_strong_rise[code] = {}
+                        gem_strong_rise[code][d] = change_pct
+                    if name:
+                        gem_stock_names[code] = name
+                conn.close()
+            except Exception:
+                pass
+
+        daily_rhythm = []
+        for d in recent_dates:
+            count = daily_zt_count.get(d, 0)
+            stocks_today = []
+            if count > 0:
+                for s in zt_stocks:
+                    code = s['code']
+                    if d in stock_zt_sets.get(code, set()):
+                        lb = stock_lianban.get(code, {}).get(d, 1)
+                        stocks_today.append({
+                            'code': code,
+                            'name': s['name'],
+                            'board': _BOARD_LABEL.get(self._get_board(code), '主'),
+                            'lianban': lb,
+                            'change_pct': 19.9 if lb > 1 else None,
+                            'is_limit_up': True,
+                        })
+            # 额外添加创业板/科创板大涨股票（涨幅≥10%但未达涨停阈值）
+            for code in gem_star_codes:
+                if d in gem_strong_rise.get(code, {}):
+                    if d in stock_zt_sets.get(code, set()):
+                        continue  # 已通过涨停逻辑添加
+                    pct = gem_strong_rise[code][d]
+                    name = gem_stock_names.get(code, self.stock_name_map.get(code, code))
+                    board_en = self._get_board(code)
+                    stocks_today.append({
+                        'code': code,
+                        'name': name,
+                        'board': _BOARD_LABEL.get(board_en, '主'),
+                        'board_en': board_en,
+                        'lianban': 0,
+                        'change_pct': round(pct, 1),
+                        'is_limit_up': False,
+                    })
+            count = len(stocks_today)
+            daily_rhythm.append({
+                'date': d,
+                'count': count,
+                'display_date': d[4:6] + d[6:8] + '日',
+                'stocks': stocks_today,
+            })
+
+        # 日期越近排在前面
+        daily_rhythm.reverse()
 
         return {
             'concept': concept_name,
             'total_stocks': len(stock_codes),
             'zt_stock_count': len(zt_stocks),
             'zt_stocks': zt_stocks,
-            'peak_dates': [{'date': d, 'count': c} for d, c in peak_dates]
+            'peak_dates': [{'date': d, 'count': c} for d, c in peak_dates],
+            'daily_rhythm': daily_rhythm,
         }
 
     # ========== 联动计算 ==========
 
     def _get_lagged_date(self, base_date: str, lag: int) -> Optional[str]:
-        """计算滞后N天的交易日期（lag=0返回当日）"""
-        try:
-            idx = self.trade_dates.index(str(base_date))
-            target_idx = idx + lag
-            if 0 <= target_idx < len(self.trade_dates):
-                return self.trade_dates[target_idx]
-        except ValueError:
-            pass
+        """计算滞后N天的交易日期（lag=0返回当日）O(1)字典查找"""
+        idx = self._get_trade_day_index(base_date)
+        if idx is None:
+            return None
+        target_idx = idx + lag
+        if 0 <= target_idx < len(self.trade_dates):
+            return self.trade_dates[target_idx]
         return None
 
     def _compute_linkage_probs(self, base_zt_dates: List[str],
@@ -427,8 +704,60 @@ class StockLinkageFinder:
 
         return probs, all_events
 
+    def _build_zt_filter_cache(self) -> Dict[str, Dict]:
+        """
+        预计算所有股票的4种涨停过滤状态（结果缓存到self._zt_filter_cache）
+
+        N15:   近15个交易日内有涨停
+        N15F:  近15日内有涨停，且之前15日(第16~30个交易日)无涨停
+        N10ZB: 近10个交易日内有涨停炸板
+        N10ZBF:近10日内有涨停炸板，且近15日无涨停（新起势的炸板）
+
+        Returns:
+            {code: {'n15': bool, 'n15f': bool, 'n10zb': bool, 'n10zbf': bool}}
+        """
+        if hasattr(self, '_zt_filter_cache') and self._zt_filter_cache is not None:
+            return self._zt_filter_cache
+
+        if not self.trade_dates or len(self.trade_dates) < 15:
+            self._zt_filter_cache = {}
+            return {}
+
+        cache = {}
+        td = self.trade_dates
+
+        # N15 / N15F 窗口
+        n15_window = set(td[-15:])                                    # 近15日
+        n15f_prev_window = set(td[-30:-15]) if len(td) >= 30 else set()  # 之前15日（第16~30）
+
+        # N10ZB / N10ZBF 窗口
+        n10_window = set(td[-10:]) if len(td) >= 10 else set(td)      # 近10日
+
+        # Build {code: set(date)} for zb_count > 0 from zt_pool_records
+        zb_records = defaultdict(set)  # {code: set(dates_with_zb)}
+        for rec in self.zt_pool_records:
+            if rec.get('zb_count', 0) > 0:
+                zb_records[rec['stock_code']].add(rec['trade_date'])
+
+        for code, zt_dates_set in self.all_zt_dates.items():
+            n15 = bool(zt_dates_set & n15_window)
+            n15f = n15 and not bool(zt_dates_set & n15f_prev_window)
+            n10zb = bool(zb_records.get(code, set()) & n10_window)
+            n10zbf = n10zb and not n15  # 新起势的炸板：有炸板但近15日无涨停
+
+            cache[code] = {
+                'n15': n15,
+                'n15f': n15f,
+                'n10zb': n10zb,
+                'n10zbf': n10zbf,
+            }
+
+        self._zt_filter_cache = cache
+        return cache
+
     def find_stock_linkages(self, stock_code: str, concept_name: str = None,
-                            max_lag: int = 3, min_prob: float = 0.15) -> Dict:
+                            max_lag: int = 3, min_prob: float = 0.15,
+                            filters: List[str] = None) -> Dict:
         """
         查找某只股票的历史联动股票（V5：支持T+0、方向性、去重）
 
@@ -566,6 +895,21 @@ class StockLinkageFinder:
 
         all_linkages.sort(key=lambda x: x['strength'], reverse=True)
 
+        # ========== 涨停过滤 (N15/N15F/N10ZB/N10ZBF) ==========
+        zt_filter_cache = self._build_zt_filter_cache()
+        # Always attach filter_info to every linkage for frontend display
+        for link in all_linkages:
+            code = link['linked_stock']
+            link['filter_info'] = zt_filter_cache.get(code, {})
+        # Apply filter if requested
+        if filters:
+            filtered = []
+            for link in all_linkages:
+                info = link.get('filter_info', {})
+                if any(info.get(f.lower(), False) for f in filters):
+                    filtered.append(link)
+            all_linkages = filtered
+
         # ========== 方向 A→B 整体统计 ==========
         direction_a_to_b = {
             'total_linked_stocks': len(all_linkages),
@@ -665,8 +1009,8 @@ class StockLinkageFinder:
             if len(base_zt_a) < 2:
                 continue
 
-            for code_b, _ in zt_stocks[i+1:]:
-                other_zt_dates = set(self.get_stock_zt_dates(code_b))
+            for code_b, zt_b in zt_stocks[i+1:]:
+                other_zt_dates = set(zt_b)
 
                 probs_a_to_b, _ = self._compute_linkage_probs(base_zt_a, other_zt_dates, lags)
                 probs_b_to_a, _ = self._compute_linkage_probs(
@@ -815,8 +1159,8 @@ class StockLinkageFinder:
             # 如果在交易日历中，用索引差
             if hasattr(self, 'trade_dates') and self.trade_dates:
                 if d1 in self.trade_dates and d2 in self.trade_dates:
-                    i1 = self.trade_dates.index(d1)
-                    i2 = self.trade_dates.index(d2)
+                    i1 = self._get_trade_day_index(d1)
+                    i2 = self._get_trade_day_index(d2)
                     return abs(i2 - i1)
         except:
             pass
@@ -1128,7 +1472,7 @@ class StockLinkageFinder:
 
         print(f"近{lookback_days}天有涨停的候选股票: {len(candidate_stocks)}只")
 
-        # 2. 从数据库批量获取K线数据
+        # 2. 从数据库批量获取K线数据（单次批量查询替代逐条查询）
         conn = None
         kline_batch = {}  # {code: [{date, open, high, low, close, volume}, ...]}
         try:
@@ -1136,32 +1480,37 @@ class StockLinkageFinder:
             cursor = conn.cursor()
 
             # 计算K线查询起始日期：从 lookback_start 再往前推10天
-            kline_start = max(0, self.trade_dates.index(lookback_start) - 10)
+            kline_start = max(0, self._get_trade_day_index(lookback_start) - 10)
             kline_start_date = self.trade_dates[kline_start]
             start_date_str = f"{kline_start_date[:4]}-{kline_start_date[4:6]}-{kline_start_date[6:]}"
 
-            for code in candidate_stocks:
-                cursor.execute("""
-                    SELECT trade_date, open, high, low, close, volume, change_pct
+            codes = list(candidate_stocks.keys())
+            # SQLite变量数限制约999，分批查询每批500
+            batch_size = 500
+            for batch_start in range(0, len(codes), batch_size):
+                batch_codes = codes[batch_start:batch_start + batch_size]
+                placeholders = ','.join(['?'] * len(batch_codes))
+                cursor.execute(f"""
+                    SELECT stock_code, trade_date, open, high, low, close, volume, change_pct
                     FROM kline_daily
-                    WHERE stock_code = ? AND trade_date >= ?
-                    ORDER BY trade_date
-                """, (code, start_date_str))
-                rows = cursor.fetchall()
-                klines = []
-                for row in rows:
-                    d = row[0].replace('-', '') if row[0] else ''
-                    klines.append({
+                    WHERE stock_code IN ({placeholders}) AND trade_date >= ?
+                    ORDER BY stock_code, trade_date
+                """, batch_codes + [start_date_str])
+                for row in cursor.fetchall():
+                    code = row[0]
+                    d = row[1].replace('-', '') if row[1] else ''
+                    kline = {
                         'date': d,
-                        'open': float(row[1]),
-                        'high': float(row[2]),
-                        'low': float(row[3]),
-                        'close': float(row[4]),
-                        'volume': float(row[5]),
-                        'change_pct': float(row[6]) if row[6] else 0
-                    })
-                if klines:
-                    kline_batch[code] = klines
+                        'open': float(row[2]),
+                        'high': float(row[3]),
+                        'low': float(row[4]),
+                        'close': float(row[5]),
+                        'volume': float(row[6]),
+                        'change_pct': float(row[7]) if row[7] else 0
+                    }
+                    if code not in kline_batch:
+                        kline_batch[code] = []
+                    kline_batch[code].append(kline)
         except Exception as e:
             print(f"批量查询K线失败: {e}")
         finally:
@@ -1214,15 +1563,15 @@ class StockLinkageFinder:
                 d1 = zt_dates[i]
                 d2 = zt_dates[i-1]
                 # 检查是否连续交易日
-                try:
-                    idx1 = self.trade_dates.index(d1)
-                    idx2 = self.trade_dates.index(d2)
+                idx1 = self._get_trade_day_index(d1)
+                idx2 = self._get_trade_day_index(d2)
+                if idx1 is not None and idx2 is not None:
                     if idx1 - idx2 == 1:
                         current_lianban += 1
                         max_lianban = max(max_lianban, current_lianban)
                     else:
                         current_lianban = 1
-                except ValueError:
+                else:
                     current_lianban = 1
 
             # --- 计算回调天数 ---
@@ -1472,39 +1821,44 @@ class StockLinkageFinder:
         if not candidate_stocks:
             return self._empty_n_pattern_result()
 
-        # 2. 批量获取K线数据
+        # 2. 批量获取K线数据（单次批量查询替代逐条查询）
         conn = None
         kline_batch = {}
         try:
             conn = self.db._get_connection()
             cursor = conn.cursor()
 
-            kline_start_idx = max(0, self.trade_dates.index(lookback_start) - 30)
+            kline_start_idx = max(0, self._get_trade_day_index(lookback_start) - 30)
             kline_start_date = self.trade_dates[kline_start_idx]
             start_date_str = f"{kline_start_date[:4]}-{kline_start_date[4:6]}-{kline_start_date[6:]}"
 
-            for code in candidate_stocks:
-                cursor.execute("""
-                    SELECT trade_date, open, high, low, close, volume, change_pct
+            codes = list(candidate_stocks.keys())
+            # SQLite变量数限制约999，分批查询每批500
+            batch_size = 500
+            for batch_start in range(0, len(codes), batch_size):
+                batch_codes = codes[batch_start:batch_start + batch_size]
+                placeholders = ','.join(['?'] * len(batch_codes))
+                cursor.execute(f"""
+                    SELECT stock_code, trade_date, open, high, low, close, volume, change_pct
                     FROM kline_daily
-                    WHERE stock_code = ? AND trade_date >= ?
-                    ORDER BY trade_date
-                """, (code, start_date_str))
-                rows = cursor.fetchall()
-                klines = []
-                for row in rows:
-                    d = row[0].replace('-', '') if row[0] else ''
-                    klines.append({
+                    WHERE stock_code IN ({placeholders}) AND trade_date >= ?
+                    ORDER BY stock_code, trade_date
+                """, batch_codes + [start_date_str])
+                for row in cursor.fetchall():
+                    code = row[0]
+                    d = row[1].replace('-', '') if row[1] else ''
+                    kline = {
                         'date': d,
-                        'open': float(row[1]),
-                        'high': float(row[2]),
-                        'low': float(row[3]),
-                        'close': float(row[4]),
-                        'volume': float(row[5]),
-                        'change_pct': float(row[6]) if row[6] else 0
-                    })
-                if klines:
-                    kline_batch[code] = klines
+                        'open': float(row[2]),
+                        'high': float(row[3]),
+                        'low': float(row[4]),
+                        'close': float(row[5]),
+                        'volume': float(row[6]),
+                        'change_pct': float(row[7]) if row[7] else 0
+                    }
+                    if code not in kline_batch:
+                        kline_batch[code] = []
+                    kline_batch[code].append(kline)
         except Exception as e:
             print(f"N字战法: 批量查询K线失败: {e}")
         finally:
@@ -1553,14 +1907,11 @@ class StockLinkageFinder:
             for i in range(len(zt_dates) - 2, -1, -1):
                 d1 = zt_dates[i]
                 d2 = zt_dates[i + 1]
-                try:
-                    idx1 = self.trade_dates.index(d1)
-                    idx2 = self.trade_dates.index(d2)
-                    if idx2 - idx1 == 1:
-                        lianban_chain.insert(0, d1)
-                    else:
-                        break
-                except ValueError:
+                idx1 = self._get_trade_day_index(d1)
+                idx2 = self._get_trade_day_index(d2)
+                if idx1 is not None and idx2 is not None and idx2 - idx1 == 1:
+                    lianban_chain.insert(0, d1)
+                else:
                     break
 
             first_zt_date = lianban_chain[0]
@@ -1762,7 +2113,7 @@ class StockLinkageFinder:
                         'base_price': round(base_price, 2),
                         'concepts': concepts,
                         'current_pullback_pct': current_pullback_pct,
-                        'klines': klines,
+                        'klines': self._build_np_klines(klines, kline_date_map, zt_dates),
                     })
 
             # === 创业板/科创板异动检测 ===
@@ -1782,6 +2133,97 @@ class StockLinkageFinder:
                         'klines': klines,
                     })
 
+        # === N字战法新模式：阳线回调 + 三连阴回调 ===
+        yang_pattern_stocks = []
+        three_yin_pattern_stocks = []
+
+        for code, zt_dates in candidate_stocks.items():
+            if code not in kline_batch:
+                continue
+            klines = kline_batch[code]
+            if len(klines) < 5:
+                continue
+
+            # 过滤近15个交易日内的涨停
+            recent_start = self._get_n_trade_days_before(last_trade_date, 15)
+            recent_zt = [d for d in zt_dates if d >= recent_start and d <= last_trade_date]
+            if not recent_zt:
+                continue
+
+            last_zt = recent_zt[-1]
+
+            # 在klines中找last_zt的位置
+            kline_date_map = {k['date']: i for i, k in enumerate(klines)}
+            idx = kline_date_map.get(last_zt)
+            if idx is None:
+                continue
+
+            zt_close = klines[idx]['close']
+
+            # 涨停前日收盘价（用于价格范围约束）
+            if idx == 0:
+                continue
+            pre_zt_close = klines[idx - 1]['close']
+
+            # 涨停日后K线
+            after = klines[idx + 1:]
+            if not after:
+                continue  # 刚涨停，无回调
+
+            # 价格范围约束
+            after_high_max = max(k['high'] for k in after)
+            after_low_min = min(k['low'] for k in after)
+
+            if after_high_max > zt_close * 1.10:
+                continue  # 涨停后冲太高
+            if after_low_min < pre_zt_close:
+                continue  # 跌破涨停前日收盘价（回补缺口）
+
+            last = klines[-1]
+            last_change_pct = last['change_pct']
+            board = self._get_board(code)
+            concepts = sorted(self.stock_concepts.get(code, set()))
+
+            # 模式1: 阳线回调 - 涨停后阴线回调 + 最后一根阳线企稳
+            if last['close'] > last['open'] and 0 < last_change_pct < 5:
+                # 涨停日后到阳线之前至少有一根阴线（回调）
+                middle_klines = after[:-1]  # 排除最后阳线本身
+                if not middle_klines or not any(k['close'] < k['open'] for k in middle_klines):
+                    continue  # 无阴线回调，跳过
+                yang_pattern_stocks.append({
+                    'code': code,
+                    'name': self.get_stock_name(code),
+                    'board': board,
+                    'concepts': concepts,
+                    'last_zt_date': last_zt,
+                    'recent_zt_count': len(recent_zt),
+                    'change_pct': round(last_change_pct, 2),
+                    'close': round(last['close'], 2),
+                    'open': round(last['open'], 2),
+                    'klines': self._build_np_klines(klines, kline_date_map, zt_dates),
+                })
+
+            # 模式2: 三连阴回调 - 最后连续3根阴线
+            if len(klines) >= 3:
+                last_3 = klines[-3:]
+                if all(k['close'] < k['open'] for k in last_3):
+                    three_yin_pattern_stocks.append({
+                        'code': code,
+                        'name': self.get_stock_name(code),
+                        'board': board,
+                        'concepts': concepts,
+                        'last_zt_date': last_zt,
+                        'recent_zt_count': len(recent_zt),
+                        'change_pct': round(last_change_pct, 2),
+                        'close': round(last['close'], 2),
+                        'open': round(last['open'], 2),
+                        'klines': self._build_np_klines(klines, kline_date_map, zt_dates),
+                    })
+
+        # 按change_pct升序排列
+        yang_pattern_stocks.sort(key=lambda x: x['change_pct'])
+        three_yin_pattern_stocks.sort(key=lambda x: x['change_pct'])
+
         # 各类别内按连板数排序
         for ck in cat_keys:
             for bk in ['main_board', 'gem', 'star', 'bj']:
@@ -1799,6 +2241,8 @@ class StockLinkageFinder:
                 'zha_ban': alerts_zhaban_list,
                 'gem_alert': alerts_gem_list,
             },
+            'yang_pattern': yang_pattern_stocks,
+            'three_yin_pattern': three_yin_pattern_stocks,
             'update_time': update_time,
             'summary': {
                 'total_stocks': sum(
@@ -1817,6 +2261,8 @@ class StockLinkageFinder:
                     1 for ck in cat_keys for bk in ['main_board', 'gem', 'star', 'bj']
                     for c in categories[ck][bk] if c.get('is_nw_pattern')
                 ),
+                'yang_pattern_count': len(yang_pattern_stocks),
+                'three_yin_pattern_count': len(three_yin_pattern_stocks),
             }
         }
 
@@ -1835,16 +2281,22 @@ class StockLinkageFinder:
         }
         return names.get(key, key)
 
+    def _get_trade_day_index(self, date_str: str) -> Optional[int]:
+        """O(1)获取交易日索引"""
+        idx = self.trade_date_index.get(date_str)
+        if idx is None:
+            idx = self.trade_date_index.get(str(date_str))
+        return idx
+
     def _get_n_trade_days_before(self, date_str: str, n: int) -> str:
         """获取指定交易日之前的第N个交易日"""
-        try:
-            idx = self.trade_dates.index(date_str)
+        idx = self._get_trade_day_index(date_str)
+        if idx is not None:
             target = max(0, idx - n)
             return self.trade_dates[target]
-        except ValueError:
-            from datetime import datetime, timedelta
-            dt = datetime.strptime(date_str, '%Y%m%d')
-            return (dt - timedelta(days=n * 1.5)).strftime('%Y%m%d')
+        from datetime import datetime, timedelta
+        dt = datetime.strptime(date_str, '%Y%m%d')
+        return (dt - timedelta(days=n * 1.5)).strftime('%Y%m%d')
 
     def find_gem_arbitrage(self, stock_code: str, max_lag: int = 2) -> Dict:
         """
@@ -1907,9 +2359,8 @@ class StockLinkageFinder:
 
                 for zt_date in main_zt_dates:
                     # 检查T+0到T+max_lag
-                    try:
-                        zt_idx = self.trade_dates.index(zt_date)
-                    except ValueError:
+                    zt_idx = self._get_trade_day_index(zt_date)
+                    if zt_idx is None:
                         continue
 
                     for lag in range(max_lag + 1):
@@ -1970,6 +2421,303 @@ class StockLinkageFinder:
             'pairs': pairs,
         }
 
+    # ========== 震荡企稳模式检测 ==========
+
+    def analyze_oscillation_pattern(self, lookback_days: int = 20) -> Dict:
+        """
+        震荡企稳模式检测：连板后回调震荡起二波
+
+        检测条件：
+        1. 最近20个交易日内有连续2个及以上涨停
+        2. 无A杀（回调最低价不低于第一个涨停板K线的中位价）
+        3. 从回调低点至今至少有5个交易日的震荡期
+        4. 震荡区间价差不超过15%，未跌破回调低点
+        5. 成交量相对连板期明显萎缩（量缩比 < 0.8）
+
+        Returns:
+            {
+                'stocks': [{code, name, concepts, lianban_count, lianban_dates,
+                            last_zt_date, peak_price, pullback_low, max_pullback_pct,
+                            osc_high, osc_low, osc_range_pct, osc_days,
+                            volume_shrink_ratio, above_ma5, above_ma10,
+                            stabilization_score, klines}, ...],
+                'summary': {total: N, candidate_count: M},
+                'update_time': 'YYYY-MM-DD HH:MM:SS'
+            }
+        """
+        if len(self.trade_dates) < lookback_days + 5:
+            lookback_days = max(len(self.trade_dates) - 5, 10)
+
+        recent_trade_dates = self.trade_dates[-lookback_days:]
+        lookback_start = recent_trade_dates[0]
+        last_trade_date = recent_trade_dates[-1]
+
+        # 1. 找到观察窗口内有涨停的股票
+        candidate_stocks = {}
+        for code, all_dates in self.all_zt_dates.items():
+            zt_in_window = [d for d in all_dates if d >= lookback_start and d <= last_trade_date]
+            if zt_in_window:
+                candidate_stocks[code] = sorted(zt_in_window)
+
+        print(f"震荡企稳: 近{lookback_days}天有涨停的候选股票: {len(candidate_stocks)}只")
+
+        if not candidate_stocks:
+            return {'stocks': [], 'summary': {'total': 0, 'candidate_count': 0},
+                    'update_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+        # 2. 批量获取K线数据
+        conn = None
+        kline_batch = {}
+        try:
+            conn = self.db._get_connection()
+            cursor = conn.cursor()
+
+            kline_start_idx = max(0, self._get_trade_day_index(lookback_start) - 30)
+            kline_start_date = self.trade_dates[kline_start_idx]
+            start_date_str = f"{kline_start_date[:4]}-{kline_start_date[4:6]}-{kline_start_date[6:]}"
+
+            codes = list(candidate_stocks.keys())
+            batch_size = 500
+            for batch_start in range(0, len(codes), batch_size):
+                batch_codes = codes[batch_start:batch_start + batch_size]
+                placeholders = ','.join(['?'] * len(batch_codes))
+                cursor.execute(f"""
+                    SELECT stock_code, trade_date, open, high, low, close, volume, change_pct
+                    FROM kline_daily
+                    WHERE stock_code IN ({placeholders}) AND trade_date >= ?
+                    ORDER BY stock_code, trade_date
+                """, batch_codes + [start_date_str])
+                for row in cursor.fetchall():
+                    code = row[0]
+                    d = row[1].replace('-', '') if row[1] else ''
+                    kline = {
+                        'date': d,
+                        'open': float(row[2]),
+                        'high': float(row[3]),
+                        'low': float(row[4]),
+                        'close': float(row[5]),
+                        'volume': float(row[6]),
+                        'change_pct': float(row[7]) if row[7] else 0
+                    }
+                    if code not in kline_batch:
+                        kline_batch[code] = []
+                    kline_batch[code].append(kline)
+        except Exception as e:
+            print(f"震荡企稳: 批量查询K线失败: {e}")
+        finally:
+            if conn:
+                conn.close()
+
+        print(f"震荡企稳: 有K线数据的候选股票: {len(kline_batch)}只")
+
+        # 3. 分析每只股票
+        results = []
+
+        for code, zt_dates in candidate_stocks.items():
+            if code not in kline_batch:
+                continue
+
+            klines = kline_batch[code]
+            if len(klines) < 10:
+                continue
+
+            # 构建日期→索引映射
+            kline_date_map = {k['date']: i for i, k in enumerate(klines)}
+
+            # 检测连板链（从最后一个涨停往前）
+            last_zt_date = zt_dates[-1]
+            if last_zt_date not in kline_date_map:
+                continue
+
+            lianban_chain = [last_zt_date]
+            for i in range(len(zt_dates) - 2, -1, -1):
+                d1 = zt_dates[i]
+                d2 = zt_dates[i + 1]
+                idx1 = self._get_trade_day_index(d1)
+                idx2 = self._get_trade_day_index(d2)
+                if idx1 is not None and idx2 is not None and idx2 - idx1 == 1:
+                    lianban_chain.insert(0, d1)
+                else:
+                    break
+
+            first_zt_date = lianban_chain[0]
+            lianban_count = len(lianban_chain)
+
+            # 条件1: 连续2个及以上涨停
+            if lianban_count < 2:
+                continue
+
+            # 连板期间最高价
+            first_zt_idx = kline_date_map.get(first_zt_date, -1)
+            last_zt_idx = kline_date_map.get(last_zt_date, -1)
+            if last_zt_idx < 0 or first_zt_idx < 0:
+                continue
+
+            chain_high = max(
+                klines[kline_date_map[d]]['high']
+                for d in lianban_chain if d in kline_date_map
+            )
+
+            # 连板最后一天收盘价（视为阶段性顶价）
+            top_price = klines[last_zt_idx]['close']
+
+            # 回调区间：连板最后一天之后的所有K线
+            pullback_klines = klines[last_zt_idx + 1:]
+            if not pullback_klines:
+                continue
+
+            # 回调最低价
+            pullback_low = min(k['low'] for k in pullback_klines)
+
+            # 最大回调幅度（从顶到低）
+            max_pullback_pct = round((top_price - pullback_low) / top_price * 100, 1)
+
+            # 第一个涨停板的K线中位价 = (high + low) / 2
+            first_zt_kline = klines[first_zt_idx]
+            first_zt_midpoint = (first_zt_kline['high'] + first_zt_kline['low']) / 2
+
+            # 条件2: 无A杀 —— 回调最低价不低于第一个涨停板K线的中位价
+            # 如果跌回到起涨点附近，说明资金已放弃，不算企稳形态
+            if pullback_low < first_zt_midpoint * 0.98:
+                continue
+
+            # 找到回调低点对应的K线索引（在pullback_klines中）
+            low_idx_in_pullback = -1
+            for i, k in enumerate(pullback_klines):
+                if k['low'] == pullback_low:
+                    low_idx_in_pullback = i
+                    break
+            if low_idx_in_pullback < 0:
+                continue
+
+            # 震荡期：回调低点之后的所有K线
+            oscillation_klines = pullback_klines[low_idx_in_pullback + 1:]
+
+            # 条件3: 震荡期至少5根K线
+            if len(oscillation_klines) < 5:
+                continue
+
+            # 震荡区间最高/最低
+            osc_high = max(k['high'] for k in oscillation_klines)
+            osc_low = min(k['low'] for k in oscillation_klines)
+
+            # 震荡区间范围（%）
+            osc_low_price = pullback_low  # 震荡区间下限=回调低点
+            osc_range_pct = round((osc_high - osc_low_price) / osc_low_price * 100, 1)
+
+            # 条件4: 震荡区间不超过15%，且未跌破回调低点
+            if osc_range_pct > 15:
+                continue
+            if osc_low < pullback_low * 0.995:
+                continue
+
+            # 量缩比计算
+            zt_vol_start = max(0, last_zt_idx - 2)
+            zt_avg_vol = sum(
+                k['volume'] for k in klines[zt_vol_start:last_zt_idx + 1]
+            ) / max(last_zt_idx + 1 - zt_vol_start, 1)
+
+            # 震荡期平均成交量
+            osc_avg_vol = sum(
+                k['volume'] for k in oscillation_klines
+            ) / max(len(oscillation_klines), 1)
+
+            volume_shrink_ratio = round(
+                osc_avg_vol / max(zt_avg_vol, 0.01), 2
+            ) if zt_avg_vol > 0 else 1.0
+
+            # 条件5: 量缩比 < 0.8
+            if volume_shrink_ratio >= 0.8:
+                continue
+
+            # 均线位置
+            current_close = oscillation_klines[-1]['close']
+            n_klines = len(klines)
+            last_idx = n_klines - 1
+
+            # 计算MA5/MA10
+            ma5 = sum(klines[j]['close'] for j in range(max(0, last_idx - 4), last_idx + 1)) / min(5, last_idx + 1)
+            ma10 = sum(klines[j]['close'] for j in range(max(0, last_idx - 9), last_idx + 1)) / min(10, last_idx + 1)
+
+            above_ma5 = current_close >= ma5 * 0.97  # 在MA5附近
+            above_ma10 = current_close >= ma10 * 0.97
+
+            # 综合评分
+            # a) 震荡质量 (35分)
+            osc_quality_score = 0
+            # 震荡区间越小分越高
+            range_factor = max(0, 1 - osc_range_pct / 15)  # 0~1
+            osc_quality_score += range_factor * 15
+            # 震荡天数越长越好
+            days_factor = min(1, len(oscillation_klines) / 15)  # 0~1
+            osc_quality_score += days_factor * 20
+
+            # b) 量缩程度 (25分)
+            shrink_factor = max(0, 1 - volume_shrink_ratio / 0.8)  # 0~1
+            vol_score = shrink_factor * 25
+
+            # c) 均线支撑 (20分)
+            ma_score = 0
+            if above_ma5:
+                ma_score += 12
+            if above_ma10:
+                ma_score += 8
+
+            # d) 连板高度 (20分)
+            lianban_score = min(lianban_count / 5, 1) * 20  # 5连板满分
+
+            stabilization_score = round(osc_quality_score + vol_score + ma_score + lianban_score, 1)
+
+            # 构建K线数据（含均线、涨停标记）
+            zt_set = set(zt_dates)
+            np_klines = self._build_np_klines(klines, kline_date_map, zt_dates)
+
+            # 震荡天数（交易日数）
+            osc_days = len(oscillation_klines)
+
+            # 距离上次涨停的天数
+            days_since_last_zt = self._get_trade_day_diff(last_zt_date, last_trade_date)
+
+            results.append({
+                'code': code,
+                'name': self.stock_name_map.get(code, ''),
+                'concepts': list(self.stock_concepts.get(code, []))[:8],
+                'lianban_count': lianban_count,
+                'lianban_dates': lianban_chain,
+                'last_zt_date': last_zt_date,
+                'days_since_last_zt': days_since_last_zt,
+                'peak_price': round(chain_high, 2),
+                'first_zt_midpoint': round(first_zt_midpoint, 2),
+                'pullback_low': round(pullback_low, 2),
+                'max_pullback_pct': max_pullback_pct,
+                'current_close': round(current_close, 2),
+                'osc_high': round(osc_high, 2),
+                'osc_low': round(osc_low, 2),
+                'osc_range_pct': osc_range_pct,
+                'osc_days': osc_days,
+                'volume_shrink_ratio': volume_shrink_ratio,
+                'above_ma5': above_ma5,
+                'above_ma10': above_ma10,
+                'ma5': round(ma5, 2),
+                'ma10': round(ma10, 2),
+                'stabilization_score': stabilization_score,
+                'klines': np_klines,
+            })
+
+        # 按评分降序排列
+        results.sort(key=lambda x: -x['stabilization_score'])
+
+        print(f"震荡企稳: 符合条件的股票: {len(results)}只")
+
+        return {
+            'stocks': results,
+            'summary': {
+                'total': len(candidate_stocks),
+                'candidate_count': len(results),
+            },
+            'update_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        }
+
     def _build_np_klines(self, klines: List[Dict],
                           kline_date_map: Dict[str, int],
                           zt_dates: List[str]) -> List[Dict]:
@@ -2010,8 +2758,10 @@ class StockLinkageFinder:
         return {
             'categories': categories,
             'alerts': {'zha_ban': [], 'gem_alert': []},
+            'yang_pattern': [],
+            'three_yin_pattern': [],
             'update_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'summary': {'total_stocks': 0, 'candidate_count': 0, 'kline_count': 0}
+            'summary': {'total_stocks': 0, 'candidate_count': 0, 'kline_count': 0, 'yang_pattern_count': 0, 'three_yin_pattern_count': 0}
         }
 
     # ========== 15日涨停板窗口查询 ==========
@@ -2050,6 +2800,7 @@ class StockLinkageFinder:
                 'last_zt_date': last_zt,
                 'days_ago': days_ago,
                 'concepts': list(self.stock_concepts.get(code, []))[:8],  # 最多8个概念
+                'board': self._get_board(code),
             }
 
         # 按天数分窗
@@ -2181,117 +2932,47 @@ class StockLinkageFinder:
     # ========== K线数据自动补全 ==========
 
     def _check_and_auto_update(self):
-        """检测K线数据是否缺失最近交易日数据，后台线程自动补全"""
+        """检测K线数据是否缺失，后台按天批量自动补全（快）"""
         if not getattr(self.db, 'pro', None):
             return  # tushare未初始化，跳过
 
-        today = datetime.now().strftime('%Y%m%d')
-
-        # 查询数据库中最新日期
-        try:
-            conn = self.db._get_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT MAX(trade_date) FROM kline_daily")
-            row = cursor.fetchone()
-            conn.close()
-        except Exception:
-            return
-
-        latest_db = (row[0] or '2000-01-01').replace('-', '')
-        missing_dates = [d for d in self.trade_dates if d > latest_db and d <= today]
-
-        if not missing_dates:
-            return  # 数据已是最新
-
-        missing_count = len(missing_dates)
-        print(f"检测到K线数据缺失 {missing_count} 个交易日 ({missing_dates[0]} ~ {missing_dates[-1]})")
-        print(f"后台线程开始自动补全涨停池K线数据...")
-
-        thread = threading.Thread(
-            target=self._auto_update_kline_worker,
-            args=(missing_dates,),
-            daemon=True
-        )
+        thread = threading.Thread(target=self._auto_update_kline_batch, daemon=True)
         thread.start()
 
-    def _auto_update_kline_worker(self, missing_dates: List[str]):
-        """后台工作线程：补全缺失的K线数据"""
-        if not missing_dates:
-            return
-
-        missing_start = missing_dates[0]
-        missing_end = missing_dates[-1]
-
-        # 获取zt_pool股票（最快的批量检查列表）
+    def _auto_update_kline_batch(self):
+        """后台：扩展日历→检查缺失→按天批量拉取（一次API获取全市场5000+只）"""
         try:
-            from kline_database import get_zt_pool_stocks
-            stock_codes = get_zt_pool_stocks(days=999)
-        except Exception:
-            # 回退：从数据库查所有不重复的股票
-            try:
-                conn = self.db._get_connection()
-                cursor = conn.cursor()
-                cursor.execute("SELECT DISTINCT stock_code FROM kline_daily")
-                stock_codes = [row[0] for row in cursor.fetchall()]
-                conn.close()
-            except Exception:
-                print("  K线自动补全：无法获取股票列表")
-                return
+            # 动态导入避免循环依赖
+            from importlib import import_module
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            if script_dir not in sys.path:
+                sys.path.insert(0, script_dir)
+            import update_data_fast
 
-        if not stock_codes:
-            return
+            # Step 1: 扩展交易日历
+            added = update_data_fast.extend_trade_calendar()
+            if added > 0:
+                print(f"K线自动补全: 交易日历新增 {added} 天")
 
-        # 单次查询所有股票的最新日期，避免逐只与数据库交互
-        try:
-            conn = self.db._get_connection()
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT stock_code, MAX(trade_date) as last_date
-                FROM kline_daily
-                WHERE stock_code IN ({})
-                GROUP BY stock_code
-            """.format(','.join(['?'] * len(stock_codes))), stock_codes)
-            latest_by_code = {}
-            for row in cursor.fetchall():
-                latest_by_code[row[0]] = row[1].replace('-', '') if row[1] else '00000000'
-            conn.close()
-        except Exception:
-            latest_by_code = {}
+            # Step 2: 检查缺失
+            missing = update_data_fast.get_db_missing_dates()
+            if not missing:
+                return  # 已是最新
 
-        missing_set = set(missing_dates)
-        updated = 0
-        skipped = 0
-        failed = 0
-        total = len(stock_codes)
+            print(f"K线自动补全: 缺失 {len(missing)} 个交易日, 按天批量拉取中...")
 
-        for i, code in enumerate(stock_codes):
-            try:
-                last_date = latest_by_code.get(code, '00000000')
-                # 跳过数据已完整的股票
-                if last_date >= missing_end:
-                    skipped += 1
-                    if (i + 1) % 500 == 0:
-                        print(f"  K线补全: [{i+1}/{total}] 已跳过{skipped}只")
-                    continue
+            # Step 3: 按天批量拉取（0.6秒/天，远快于逐只股票）
+            result = update_data_fast.fetch_and_save_missing_dates(missing, delay=0.6)
 
-                df = self.db.fetch_by_tushare(code, missing_start, missing_end)
-                if df is not None and not df.empty:
-                    self.db.save_kline_data(code, df)
-                    updated += 1
-                else:
-                    failed += 1
+            # Step 4: 重载内存数据
+            self._load_trade_calendar()
+            self._load_zt_from_db()
+            self._merge_zt_data()
 
-                if (i + 1) % 100 == 0:
-                    print(f"  K线补全: [{i+1}/{total}] 已更新{updated}只, 跳过{skipped}只")
-
-                time.sleep(0.3)
-            except Exception:
-                failed += 1
-
-        if updated > 0 or failed > 0:
-            print(f"K线自动补全完成: 更新{updated}只, 跳过{skipped}只, 失败{failed}只")
-        else:
-            print(f"K线数据已全部最新 ({skipped}只无需更新)")
+            print(f"K线自动补全完成: 拉取 {result.get('success', 0)}/{len(missing)} 天,"
+                  f" 新增 {result.get('records', 0)} 条记录")
+        except Exception as e:
+            print(f"K线自动补全出错: {e}")
 
 
 def main():

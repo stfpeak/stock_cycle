@@ -27,6 +27,13 @@
 | 概率计算分母 bug | 分母=有效观测天数(能查到 lag 日期的天数)而非 len-lag |
 | K线 DB 日期格式不匹配(含横线 vs 无横线) | SQL 查询时格式化为 `YYYY-MM-DD` |
 | bottleneck 版本过低(pandas warning) | pip install --upgrade bottleneck 1.3.5→1.6.0 |
+| 同花顺热股/概念API返回空数组 | venv 缺 `adata` 模块，`import adata` 被 try/except 吞掉，静默返回 [] |
+| 封板时间 999999 占位符 | 数据源用 999999 表示"未知"，前端 fmtTime 对 >=999999 返回 --:-- |
+
+## Technical Lessons Learned
+- **venv 依赖检查**：Python 方法内 `import` 在 try/except 中失败会被吞掉，服务不报错但功能静默失效。部署后必须 `pip list | grep adata` 显式验证
+- **前端预取缓存**：`_cachedFetch` 必须添加空数组保护（`Array.isArray(data) && data.length === 0` 时不缓存），否则预取拿到空结果后永久没数据
+- **云主机排查流**：`ps aux` → `ss -tlnp` → `curl localhost` → 对比 venv/system python 的依赖差异
 
 ## Technical Decisions
 | Decision | Rationale |

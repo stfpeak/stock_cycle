@@ -40,8 +40,17 @@ Phase 4
 - [ ] 支持联动结果、涨停统计等导出
 - **Status:** pending
 
+### Phase 6: 前端Tab数据预取缓存 + 云主机故障排查
+- [x] `_cachedFetch` + `_prefetchAllTabs` 实现前端数据预取缓存
+- [x] 将所有 `load*()` 的 `fetch` 替换为 `_cachedFetch`
+- [x] `_cachedFetch` 空数组 `[]` 不缓存（避免预取空数据后永久没数据）
+- [x] 数据更新后 `_clearTabCache()` 清空缓存
+- [x] 排查同花顺热股Top100/概念Top20空数据问题：venv 缺少 `adata` 模块
+- [x] 错别字修正：首版屠龙 → 首板屠龙
+- **Status:** complete
+
 ## Key Questions
-1. FastAPI 具体版本号和兼容错误信息是什么？
+1. ~~FastAPI 具体版本号和兼容错误信息是什么？~~（已弃用，改用 simple 版）
 2. T+0 联动阈值如何定义？同日涨停即算联动还是需要时间间隔？
 3. 热力图数据量级多少，是否需要前端分页？
 

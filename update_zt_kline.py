@@ -4,9 +4,15 @@
 ====================
 从data/zt_pool/读取所有历史上过涨停的股票，批量更新其近1年K线数据到数据库。
 
-使用方式：
+**推荐使用快速模式**（按天批量拉取全市场，单次请求获取5000+只股票）：
+    python update_zt_kline.py --fast
+
+**传统模式**（逐只更新，慢）：
     python update_zt_kline.py            # 增量更新（默认）
     python update_zt_kline.py --full     # 强制全量更新
+
+也推荐直接使用 update_data_fast.py：
+    python update_data_fast.py
 """
 
 import os
@@ -134,13 +140,44 @@ def update_zt_stocks_kline(full_update=False, start_date=None, end_date=None, de
 
 def main():
     parser = argparse.ArgumentParser(description="更新涨停池股票K线数据")
-    parser.add_argument('--full', action='store_true', help='强制全量更新')
-    parser.add_argument('--start', type=str, default=None, help='开始日期 YYYYMMDD')
-    parser.add_argument('--end', type=str, default=None, help='结束日期 YYYYMMDD')
-    parser.add_argument('--delay', type=float, default=0.3, help='请求间隔秒数')
-    parser.add_argument('--codes', nargs='*', help='指定股票代码，默认全部涨停池')
+
+    # 新增：快速模式组 vs 传统模式组
+    fast_group = parser.add_argument_group('快速模式（推荐）')
+    fast_group.add_argument('--fast', action='store_true',
+                            help='使用按天批量拉取模式（pro.daily(trade_date=...)，单次请求获取全市场5000+只，极快）')
+
+    slow_group = parser.add_argument_group('传统模式（逐只更新，慢）')
+    slow_group.add_argument('--full', action='store_true', help='强制全量更新')
+    slow_group.add_argument('--start', type=str, default=None, help='开始日期 YYYYMMDD')
+    slow_group.add_argument('--end', type=str, default=None, help='结束日期 YYYYMMDD')
+    slow_group.add_argument('--delay', type=float, default=0.3, help='请求间隔秒数')
+    slow_group.add_argument('--codes', nargs='*', help='指定股票代码，默认全部涨停池')
+    slow_group.add_argument('--reclaim', action='store_true', help='回收数据库空间（去重+VACUUM）')
 
     args = parser.parse_args()
+
+    # 快速模式：按天批量拉取
+    if args.fast:
+        print("使用快速模式（按天批量拉取）...")
+        try:
+            import update_data_fast
+            added = update_data_fast.extend_trade_calendar()
+            missing = update_data_fast.get_db_missing_dates()
+            if missing:
+                result = update_data_fast.fetch_and_save_missing_dates(missing, delay=0.6)
+                print(f"\n完成: {result.get('success', 0)}/{len(missing)} 天, "
+                      f"新增 {result.get('records', 0)} 条记录")
+            else:
+                print("所有数据已是最新")
+        except Exception as e:
+            print(f"快速更新失败: {e}")
+        return
+
+    if args.reclaim:
+        from kline_database import KlineDB
+        db = KlineDB()
+        db.reclaim_space()
+        return
 
     if args.codes:
         # 更新指定股票
