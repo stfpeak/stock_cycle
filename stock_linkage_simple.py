@@ -9,6 +9,7 @@
 import os
 import sys
 import json
+import sqlite3
 import threading
 import time
 import importlib
@@ -111,9 +112,90 @@ def _parse_chain_count(tag):
     return 1
 
 
-def _analyze_limit_rows(q, date_start=None, date_end=None):
+def _analyze_abnormal_movement(lookback=20):
+    """分析近N个交易日涨幅>9%的异动股票，按最后一次异动日期分组"""
+    # 1. 获取日期范围（多取5天做buffer）
+    start_idx = max(0, len(finder.trade_dates) - lookback - 5)
+    start_date = finder.trade_dates[start_idx]
+    start_date_str = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
+
+    # 2. 批量SQL查询kline数据库
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT stock_code, trade_date, change_pct
+        FROM kline_daily
+        WHERE trade_date >= ? AND change_pct > 9
+        ORDER BY stock_code, trade_date
+    """, [start_date_str])
+    rows = cursor.fetchall()
+    conn.close()
+
+    # 3. 按股票分组，找到最后一个涨幅>9%的日期
+    raw = {}
+    for code, date, pct in rows:
+        d = date.replace('-', '')
+        if code not in raw:
+            raw[code] = []
+        raw[code].append({'date': d, 'pct': pct})
+
+    # 4. 按最后异动日期分组（只保留近lookback个交易日内的异动）
+    valid_dates = set(finder.trade_dates[-lookback:])
+    by_last_date = {}
+    by_last_date_info = {}  # {code: {'date': YYYYMMDD, 'pct': float}}
+    for code, days in raw.items():
+        valid_days = [d for d in days if d['date'] in valid_dates]
+        if not valid_days:
+            continue
+        last_date = valid_days[-1]['date']
+        # 过滤ST股票
+        name = finder.get_stock_name(code)
+        if name.startswith('ST') or name.startswith('*ST'):
+            continue
+        # 只保留主板（00/60）和创业板科创板（30/68），过滤北交所/三板等
+        if not (code.startswith('00') or code.startswith('60') or code.startswith('30') or code.startswith('68')):
+            continue
+        if last_date not in by_last_date:
+            by_last_date[last_date] = []
+        by_last_date[last_date].append(code)
+        by_last_date_info[code] = {
+            'date': f"{last_date[:4]}-{last_date[4:6]}-{last_date[6:]}",
+            'pct': round(valid_days[-1]['pct'], 2)
+        }
+
+    # 5. 获取股票信息（名称、概念等）
+    all_stocks = {}
+    for codes in by_last_date.values():
+        for code in codes:
+            if code not in all_stocks:
+                name = finder.get_stock_name(code)
+                concepts = finder.get_stock_concepts(code)
+                info = by_last_date_info.get(code, {})
+                all_stocks[code] = {
+                    'code': code,
+                    'name': name,
+                    'concepts': concepts,
+                    'last_alert_date': info.get('date', ''),
+                    'last_alert_pct': info.get('pct', 0)
+                }
+
+    # 6. 日期转为YYYY-MM-DD格式并按倒序排列
+    result = {}
+    for date_str in sorted(by_last_date.keys(), reverse=True):
+        display_date = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+        result[display_date] = [all_stocks[c] for c in by_last_date[date_str] if c in all_stocks]
+
+    return {
+        'dates': list(result.keys()),
+        'data': result,
+        'update_time': datetime.now().strftime('%m-%d %H:%M')
+    }
+
+
+def _analyze_limit_rows(q, date_start=None, date_end=None, no_st=None):
     """搜索涨停理由并进行综合分析(概念频度/个股频度/日期分布/连板总结)。
-    支持单关键词、OR(|)、AND(&)三种模式 + 日期范围过滤。
+    支持单关键词、OR(|)、AND(&)三种模式 + 日期范围过滤 + ST过滤。
     返回完整搜索结果（无限制）+ kw_results（用于OR模式分段展示）。
     """
     search_result = _search_limit_rows(q)
@@ -135,11 +217,25 @@ def _analyze_limit_rows(q, date_start=None, date_end=None):
             filtered = [r for r in filtered if (r.get('trade_date', '') or '') <= de]
         return filtered
 
+    # ST过滤函数
+    def _filter_st(rows):
+        if not rows:
+            return rows
+        if no_st == '1':
+            return [r for r in rows if 'ST' not in (r.get('name', '') or '').upper()]
+        return rows
+
     # 应用日期过滤
     results = _filter_dates(results)
     if mode == 'or' and kw_results:
         for kw in keywords:
             kw_results[kw] = _filter_dates(kw_results.get(kw, []))
+
+    # 应用ST过滤
+    results = _filter_st(results)
+    if mode == 'or' and kw_results:
+        for kw in keywords:
+            kw_results[kw] = _filter_st(kw_results.get(kw, []))
 
     total_hits = len(results)
 
@@ -440,7 +536,76 @@ input[type=text] {
     color: #eee;
     font-size: 15px;
 }
+input[type=date] {
+    width: 100%;
+    padding: 9px 10px;
+    border: 2px solid #0f3460;
+    border-radius: 8px;
+    background: #1a1a2e;
+    color: #eee;
+    font-size: 14px;
+    font-family: inherit;
+    appearance: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    min-height: 38px;
+    box-sizing: border-box;
+}
+input[type=date]::-webkit-calendar-picker-indicator {
+    filter: invert(0.7);
+    cursor: pointer;
+    padding: 4px;
+}
+input[type=date]::-webkit-datetime-edit { color: #eee; }
+input[type=date]::-webkit-datetime-edit-fields-wrapper { color: #eee; }
+input[type=date]::-webkit-datetime-edit-text { color: #888; }
+input[type=checkbox] {
+    width: 16px;
+    height: 16px;
+    accent-color: #00d4ff;
+    cursor: pointer;
+    vertical-align: middle;
+    margin-right: 4px;
+}
 input:focus { border-color: #00d4ff; outline: none; }
+.checkbox-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: #ccc;
+    font-size: 0.9em;
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+    padding: 8px 0;
+}
+.filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+}
+.date-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.date-group label {
+    display: inline;
+    margin-bottom: 0;
+    color: #aaa;
+    font-size: 0.85em;
+}
+.date-group input[type=date] {
+    width: 140px;
+}
+.btn-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
 
 /* Search Suggestions */
 .suggestions {
@@ -530,6 +695,11 @@ button:disabled { background: #555; cursor: not-allowed; }
     .peak-item { padding: 3px 8px; font-size: 0.75em; }
     .rhythm-cell { min-width: 28px; height: 28px; font-size: 0.65em; }
     .event-row td { padding: 6px 8px; }
+    .date-group { width: 100%; }
+    .date-group input[type=date] { flex: 1; min-width: 0; width: auto; }
+    .filter-bar { flex-direction: column; align-items: stretch; }
+    .btn-group { width: 100%; }
+    .btn-group button { flex: 1; }
 }
 
 /* Result */
@@ -911,6 +1081,17 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 .np-board-header.gem { background: #3a1a3a; color: #f48fb1; }
 .np-board-header.star { background: #1a3a1a; color: #81c784; }
 .np-board-header.bj { background: #3a3a1a; color: #ffd54f; }
+.np-board-header.other { background: #2a2a1a; color: #ffcc80; }
+.np-board-header.gem_star { background: #2a1a3a; color: #ce93d8; }
+
+/* Collapsible board header */
+.np-board-header.collapsible { cursor: pointer; user-select: none; transition: background 0.2s; }
+.np-board-header.collapsible:hover { filter: brightness(1.3); }
+.np-board-header .board-arrow { margin-left: auto; color: #888; font-size: 0.8em; transition: transform 0.2s; }
+.np-board-header.collapsed .board-arrow { transform: rotate(-90deg); }
+.np-board-body { overflow: hidden; transition: max-height 0.3s ease; }
+.np-board-body.collapsed { max-height: 0 !important; }
+
 
 .np-board-divider {
     text-align: center; color: #00d4ff; font-size: 0.95em;
@@ -921,15 +1102,13 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 }
 
 .np-card-grid {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(var(--np-cols, 4), minmax(0, 1fr));
     gap: 16px;
-    justify-content: center;
     margin-bottom: 20px;
 }
 .np-card {
-    width: 480px;
-    flex-shrink: 0;
+    min-width: 0;
     border-radius: 12px;
     padding: 14px;
     border: 1px solid #0f3460;
@@ -1041,7 +1220,7 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 .np-sidebar {
     position: sticky;
     top: 20px;
-    width: 130px;
+    width: 150px;
     flex-shrink: 0;
     background: rgba(15,52,96,0.55);
     backdrop-filter: blur(8px);
@@ -1050,6 +1229,8 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
     border: 1px solid rgba(0,212,255,0.12);
     padding: 8px 0;
     z-index: 10;
+    max-height: 90vh;
+    overflow-y: auto;
 }
 .np-sidebar-item {
     display: block;
@@ -1175,9 +1356,17 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 .kline-modal-nav-btn.disabled { color: #444; cursor: not-allowed; background: transparent; }
 
 /* 股票K线弹窗 */
-.ds-stock-kline-section { margin-bottom: 16px; }
-.ds-stock-kline-label { color: #888; font-size: 0.85em; margin-bottom: 6px; }
+.ds-stock-kline-section { margin-bottom: 16px; position: relative; }
+.ds-stock-kline-label { color: #888; font-size: 0.85em; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
 .ds-stock-kline-img { width: 100%; border-radius: 8px; border: 1px solid #0f3460; background: #fff; }
+.img-refresh-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: #0f3460; border: 1px solid rgba(0,212,255,0.2);
+    color: #aaa; font-size: 0.7em; cursor: pointer;
+    transition: all 0.2s; line-height: 1; padding: 0;
+}
+.img-refresh-btn:hover { background: #00d4ff; color: #0a1628; border-color: #00d4ff; }
 .stock-detail-tag { display:inline-block; background:#0f3460; border:1px solid #00d4ff; padding:2px 10px; border-radius:12px; font-size:0.82em; color:#b0d4ff; margin:2px; }
 .stock-detail-date-chip { display:inline-block; background:rgba(0,212,255,0.1); border:1px solid #0f3460; padding:1px 8px; border-radius:10px; font-size:0.78em; color:#888; }
 /* 表格行鼠标悬浮高亮 - 同名称高亮 */
@@ -1457,7 +1646,7 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 .concept-kline-cell .sk-code { font-size: 10px; opacity: 0.8; padding: 1px 6px; border-radius: 8px; background: rgba(255,255,255,0.15); }
 .concept-kline-cell .kline-img { width: 100%; height: auto; border-radius: 4px; background: #fff; margin-bottom: 3px; display: block; border: 1px solid #0f3460; }
 .concept-kline-cell .kline-img.min { margin-bottom: 0; }
-.concept-kline-cell .min-fallback { display: none; }
+.concept-kline-cell .min-fallback { display: flex; align-items: center; justify-content: center; height: 48px; background: rgba(255,255,255,0.05); border-radius: 4px; color: #888; font-size: 12px; border: 1px dashed #333; margin-bottom: 3px; }
 
 /* 日期分布图 */
 .dist-chart { margin: 8px 0; }
@@ -1515,6 +1704,7 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 
     <div class="tabs">
         <div class="tab active" onclick="switchTab('realtime')">📡 实时</div>
+        <div class="tab" onclick="switchTab('alertmon')">⚠ 异动跟踪</div>
         <div class="tab" onclick="switchTab('npattern')">N字战法</div>
         <div class="tab" onclick="switchTab('linkage')">联动查询</div>
         <div class="tab" onclick="switchTab('concept')">概念分析</div>
@@ -1525,6 +1715,9 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 
     <div class="tab-content active" id="tab-realtime">
         <div id="realtimeContainer"><div class="loading">加载实时看板...</div></div>
+    </div>
+    <div class="tab-content" id="tab-alertmon">
+        <div id="alertmonContainer"></div>
     </div>
     <div class="tab-content" id="tab-npattern">
         <div id="npatternContainer"><div class="loading">加载N字战法分析中...</div></div>
@@ -1546,6 +1739,14 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
                     <button onclick="doConceptSearch()">分析概念</button>
                 </div>
             </div>
+            <div class="filter-bar" style="margin-top:6px;">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="conceptSourceThs" checked>THS
+                </label>
+                <label class="checkbox-label">
+                    <input type="checkbox" id="conceptSourceReason" checked>涨停理由
+                </label>
+            </div>
         </div>
         <div id="topConceptsBadges"></div>
         <div id="conceptResult"><div class="empty">输入概念名称进行分析</div></div>
@@ -1558,15 +1759,18 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
                     <input type="text" id="deepSearchInput" placeholder="支持单关键词、OR(|)、AND(&)。如: 光刻胶、算力|AI、机器人&军工" autocomplete="off">
                     <div class="suggestions" id="deepSearchSuggestions"></div>
                 </div>
-                <div class="input-item" style="max-width: 140px;">
-                    <label>开始日期</label>
+            </div>
+            <div class="filter-bar">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="noStCheck" checked>不含ST
+                </label>
+                <div class="date-group">
+                    <label>开始</label>
                     <input type="date" id="deepSearchDateStart">
-                </div>
-                <div class="input-item" style="max-width: 140px;">
-                    <label>结束日期</label>
+                    <label>结束</label>
                     <input type="date" id="deepSearchDateEnd">
                 </div>
-                <div style="display: flex; align-items: flex-end; gap: 6px;">
+                <div class="btn-group">
                     <button onclick="doDeepSearch()">搜索</button>
                     <button onclick="resetDeepSearch()" class="btn-con">重置</button>
                 </div>
@@ -1651,6 +1855,7 @@ function _prefetchAllTabs() {
     _cachedFetch('/api/lianban_ladder?top_n=10');
     _cachedFetch('/api/recommend?top_n=30');
     _cachedFetch('/api/n_pattern');
+    _cachedFetch('/api/abnormal_movement');
 }
 
 // Tab switching
@@ -1659,12 +1864,13 @@ function switchTab(tab) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
     if (tab === 'realtime') document.querySelectorAll('.tab')[0].classList.add('active');
-    else if (tab === 'npattern') document.querySelectorAll('.tab')[1].classList.add('active');
-    else if (tab === 'linkage') document.querySelectorAll('.tab')[2].classList.add('active');
-    else if (tab === 'concept') document.querySelectorAll('.tab')[3].classList.add('active');
-    else if (tab === 'deepsearch') document.querySelectorAll('.tab')[4].classList.add('active');
-    else if (tab === 'recommend') document.querySelectorAll('.tab')[5].classList.add('active');
-    else if (tab === 'stats') document.querySelectorAll('.tab')[6].classList.add('active');
+    else if (tab === 'alertmon') document.querySelectorAll('.tab')[1].classList.add('active');
+    else if (tab === 'npattern') document.querySelectorAll('.tab')[2].classList.add('active');
+    else if (tab === 'linkage') document.querySelectorAll('.tab')[3].classList.add('active');
+    else if (tab === 'concept') document.querySelectorAll('.tab')[4].classList.add('active');
+    else if (tab === 'deepsearch') document.querySelectorAll('.tab')[5].classList.add('active');
+    else if (tab === 'recommend') document.querySelectorAll('.tab')[6].classList.add('active');
+    else if (tab === 'stats') document.querySelectorAll('.tab')[7].classList.add('active');
     document.getElementById('tab-' + tab).classList.add('active');
 
     if (tab === 'realtime') loadRealtime();
@@ -1672,6 +1878,7 @@ function switchTab(tab) {
     if (tab === 'stats') loadStats();
     if (tab === 'recommend') loadRecommend();
     if (tab === 'concept') loadTopConcepts();
+    if (tab === 'alertmon') loadAlertMonitor();
     if (tab === 'deepsearch') {
         // focus input if already has content
         var dsInput = document.getElementById('deepSearchInput');
@@ -1680,6 +1887,132 @@ function switchTab(tab) {
         }
     }
     if (tab === 'linkage') loadLinkageDefaultSections();
+}
+
+// ===== 异动跟踪 =====
+
+function loadAlertMonitor() {
+    var container = document.getElementById('alertmonContainer');
+    container.innerHTML = '<div class="loading">分析异动股票中...</div>';
+
+    _cachedFetch('/api/abnormal_movement').then(function(data) {
+        if (!data || !data.dates || data.dates.length === 0) {
+            container.innerHTML = '<div class="result"><div class="error">暂无异动数据</div></div>';
+            return;
+        }
+
+        var html = '<div class="result" id="am-nav-top">';
+        html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;">';
+        html += '<h3 style="color:#ff6b6b;margin:0;">\u26a0 \u5f02\u52a8\u8ddf\u8e2a</h3>';
+        html += '<span style="color:#888;font-size:0.85em;">\u8fd120\u4ea4\u6613\u65e5\u6da8\u5e45>9% | \u6309\u6700\u540e\u5f02\u52a8\u65e5\u671f\u5206\u7ec4</span>';
+        html += '</div>';
+
+        // Sidebar + main content
+        html += '<div class="np-wrapper">';
+        html += '<nav class="np-sidebar" id="alertmonSidebar">';
+        data.dates.forEach(function(date) {
+            html += '<a class="np-sidebar-item" onclick="scrollToNpSection(\\x27am-section-' + date + '\\x27)">' + date + '</a>';
+            _boardSubKeys.forEach(function(bk) {
+                if (bk === 'other') return;
+                html += '<a class="np-sidebar-subitem" onclick="scrollToNpSection(\\x27am-section-' + date + '-' + bk + '\\x27)">' + _boardSubLabels[bk] + '</a>';
+            });
+        });
+        html += '</nav>';
+
+        html += '<div class="np-main-content">';
+        html += '<div id="am-cat-results">';
+
+        // Render each date
+        data.dates.forEach(function(date) {
+            var stocks = data.data[date] || [];
+            var boards = _npSplitByBoard(stocks);
+            var hasAny = boards.main_board.length > 0 || boards.gem_star.length > 0;
+            if (!hasAny) return;
+
+            html += '<div class="np-section" id="am-section-' + date + '">';
+            html += '<div class="np-cat-header" onclick="toggleNpCategory(this)">';
+            html += '<span class="cat-icon">\U0001f4c5</span>';
+            html += '<span class="cat-name">' + date + '</span>';
+            html += '<span class="cat-count">' + stocks.length + '\u53ea</span>';
+            html += '<span class="cat-arrow">\u25bc</span>';
+            html += '</div>';
+            html += '<div class="np-cat-body">';
+
+            var boardDefs = [
+                {key: 'main_board', label: '\u4e3b\u677f', cls: 'main'},
+                {key: 'gem_star', label: '\u521b\u4e1a\u677f/\u79d1\u521b\u677f', cls: 'gem_star'}
+            ];
+            boardDefs.forEach(function(board) {
+                var bStocks = boards[board.key] || [];
+                if (bStocks.length === 0) return;
+                var secId = 'am-section-' + date + '-' + board.key;
+
+                html += '<div class="np-board-section">';
+                html += '<div class="np-board-header collapsible ' + board.cls + '" onclick="toggleAlertmonBoard(this)" data-np-board="' + secId + '">';
+                html += board.label + ' (' + bStocks.length + '\u53ea)';
+                html += '<span class="board-arrow">\u25bc</span>';
+                html += '</div>';
+                html += '<div class="np-board-body collapsed" id="' + secId + '">';
+                html += '<div class="np-card-grid">';
+
+                // Render cards — same structure as N字战法
+                bStocks.forEach(function(s) {
+                    var code = s.code || (s.ts_code ? s.ts_code.split('.')[0] : '');
+                    var name = s.name || '';
+                    var concepts = s.concepts || [];
+                    var alertDate = s.last_alert_date || '';
+                    var alertPct = s.last_alert_pct || 0;
+
+                    html += '<div class="np-card">';
+                    html += '<div class="np-card-header">';
+                    html += '<div>';
+                    html += '<span class="np-card-code" data-code="' + code + '" data-name="' + name + '">' + code + '</span>';
+                    html += '<span class="np-card-name">' + name + '</span>';
+                    html += '</div>';
+                    html += '<div><span class="np-card-badge lianban">\u5f02\u52a8</span></div>';
+                    html += '</div>';
+                    // Concepts badges
+                    html += '<div class="np-card-badges">';
+                    concepts.forEach(function(c) {
+                        html += '<span class="np-card-badge">' + (typeof c === 'object' ? c.name : c) + '</span>';
+                    });
+                    html += '</div>';
+                    // Async detail loading (shared with N字战法 loadNpCardDetails)
+                    html += '<div class="am-detail-placeholder" data-am-code="' + code + '" data-alert-date="' + alertDate + '" data-alert-pct="' + alertPct + '"><div class="empty" style="padding:8px;">\u5c55\u5f00\u540e\u52a0\u8f7d\u8be6\u60c5</div></div>';
+                    html += '</div>';
+                });
+
+                html += '</div></div></div>'; // card-grid, board-body, board-section
+            });
+
+            html += '<div class="np-back-top" onclick="scrollToNpSection(\\x27am-nav-top\\x27)">\u2191 \u56de\u5230\u9876\u90e8</div>';
+            html += '</div></div>'; // cat-body, section
+        });
+
+        html += '</div></div></div>'; // cat-results, main-content, wrapper
+
+        if (data.update_time) {
+            html += '<div class="np-update-time">\u66f4\u65b0\u65f6\u95f4: ' + data.update_time + '</div>';
+        }
+        html += '</div>'; // result
+        container.innerHTML = html;
+
+        // Apply current column count
+        document.querySelectorAll('.np-card-grid').forEach(function(g) {
+            g.style.setProperty('--np-cols', _npGridCols);
+        });
+
+        // Collapse all date categories by default (lazy load)
+        setTimeout(function() {
+            document.querySelectorAll('#am-cat-results .np-cat-header').forEach(function(h) {
+                if (!h.classList.contains('collapsed')) {
+                    h.classList.add('collapsed');
+                    var body = h.nextElementSibling;
+                    if (body) body.style.display = 'none';
+                }
+            });
+        }, 50);
+    });
 }
 
 // ZT filter state
@@ -2378,6 +2711,10 @@ function doConceptSearch() {
     var q = document.getElementById('conceptQueryInput').value.trim();
     if (!q) { alert('请输入概念（细分）名称'); return; }
 
+    var useThs = document.getElementById('conceptSourceThs').checked;
+    var useReason = document.getElementById('conceptSourceReason').checked;
+    if (!useThs && !useReason) { alert('请至少选择一个搜索来源'); return; }
+
     _conceptSearched = true;
     var container = document.getElementById('conceptResult');
     container.innerHTML = '<div class="loading">分析中...</div>';
@@ -2389,16 +2726,16 @@ function doConceptSearch() {
     var ds = s.getFullYear() + '-' + String(s.getMonth()+1).padStart(2,'0') + '-' + String(s.getDate()).padStart(2,'0');
 
     Promise.all([
-        fetch('/api/reason_search?q=' + encodeURIComponent(q) + '&date_start=' + ds + '&date_end=' + de).then(function(r){return r.json();}),
-        fetch('/api/concept_zt_stats?concept=' + encodeURIComponent(q)).then(function(r){return r.json().catch(function(){return null;});}),
-        fetch('/api/concept_linkage?concept=' + encodeURIComponent(q) + '&top_n=50').then(function(r){return r.json().catch(function(){return null;});})
+        useReason ? fetch('/api/reason_search?q=' + encodeURIComponent(q) + '&date_start=' + ds + '&date_end=' + de).then(function(r){return r.json();}) : Promise.resolve(null),
+        useThs ? fetch('/api/concept_zt_stats?concept=' + encodeURIComponent(q)).then(function(r){return r.json().catch(function(){return null;});}) : Promise.resolve(null),
+        useThs ? fetch('/api/concept_linkage?concept=' + encodeURIComponent(q) + '&top_n=50').then(function(r){return r.json().catch(function(){return null;});}) : Promise.resolve(null)
     ]).then(function(results) {
         var reasonData = results[0];
         var stats = results[1];
         var linkage = results[2];
 
-        var hasReason = reasonData && reasonData.total_hits > 0;
-        var hasConcept = stats && stats.total_stocks > 0;
+        var hasReason = useReason && reasonData && reasonData.total_hits > 0;
+        var hasConcept = useThs && stats && stats.total_stocks > 0;
 
         if (!hasReason && !hasConcept) {
             container.innerHTML = '<div class="result"><div class="empty">未匹配到结果</div></div>';
@@ -2420,17 +2757,19 @@ function doConceptSearch() {
         }
         html += '</div>';
 
-        // 概念峰值涨停日
-        html += '<div class="section-header"><h3>峰值涨停日</h3></div>';
-        if (hasConcept && stats.peak_dates && stats.peak_dates.length > 0) {
-            html += '<div style="margin-bottom: 15px;">';
-            html += '<div class="peak-list" style="display:inline-flex;">';
-            stats.peak_dates.slice(0, 6).forEach(function(p) {
-                html += '<span class="peak-item"><span class="peak-date">' + p.date + '</span> <span class="peak-count">' + p.count + '股</span></span>';
-            });
-            html += '</div></div>';
-        } else {
-            html += '<div style="color:#484f58;font-size:0.85em;margin-bottom:15px;padding:8px 0;">暂无峰值数据</div>';
+        // 概念峰值涨停日（仅THS来源）
+        if (useThs) {
+            html += '<div class="section-header"><h3>峰值涨停日</h3></div>';
+            if (hasConcept && stats.peak_dates && stats.peak_dates.length > 0) {
+                html += '<div style="margin-bottom: 15px;">';
+                html += '<div class="peak-list" style="display:inline-flex;">';
+                stats.peak_dates.slice(0, 6).forEach(function(p) {
+                    html += '<span class="peak-item"><span class="peak-date">' + p.date + '</span> <span class="peak-count">' + p.count + '股</span></span>';
+                });
+                html += '</div></div>';
+            } else {
+                html += '<div style="color:#484f58;font-size:0.85em;margin-bottom:15px;padding:8px 0;">暂无峰值数据</div>';
+            }
         }
 
         // 涨停节奏网格
@@ -2590,9 +2929,10 @@ function doConceptSearch() {
         }
         html += '</div>';
 
-        // 涨停理由匹配的股票列表
-        html += '<div class="section-header"><h3>涨停理由相关股票</h3></div>';
-        if (hasReason && reasonData.stock_freq && reasonData.stock_freq.length > 0) {
+        // 涨停理由匹配的股票列表（仅涨停理由来源）
+        if (useReason) {
+            html += '<div class="section-header"><h3>涨停理由相关股票</h3></div>';
+            if (hasReason && reasonData.stock_freq && reasonData.stock_freq.length > 0) {
             html += '<table><tr><th>#</th><th>名称</th><th>涨停次数</th><th>最高连板</th><th>最近涨停</th></tr>';
             reasonData.stock_freq.forEach(function(s, i) {
                 html += '<tr><td>' + (i+1) + '</td>';
@@ -2604,6 +2944,7 @@ function doConceptSearch() {
             html += '</table>';
         } else {
             html += '<div style="color:#484f58;font-size:0.85em;padding:8px 0;">暂无涨停理由匹配数据</div>';
+        }
         }
 
         // 联动对（优先使用概念联动，否则从涨停理由数据构建）
@@ -2743,16 +3084,18 @@ function doConceptSearch() {
             html += '<div style="color:#484f58;font-size:0.85em;padding:8px 0;">暂无联动对数据</div>';
         }
 
-        // 相关概念关键词
-        html += '<div class="section-header"><h3>相关概念关键词</h3></div>';
-        if (hasReason && reasonData.concept_freq && reasonData.concept_freq.length > 0) {
-            html += '<div class="freq-chips">';
-            reasonData.concept_freq.slice(0, 15).forEach(function(c) {
-                html += '<span class="freq-chip" onclick="document.getElementById(\\x27conceptQueryInput\\x27).value=\\x27' + c.concept.replace(/'/g,'') + '\\x27;doConceptSearch();">' + c.concept + ' <span class="count">' + c.count + '</span></span>';
-            });
-            html += '</div>';
-        } else {
-            html += '<div style="color:#484f58;font-size:0.85em;padding:8px 0;">暂无关键词数据</div>';
+        // 相关概念关键词（仅涨停理由来源）
+        if (useReason) {
+            html += '<div class="section-header"><h3>相关概念关键词</h3></div>';
+            if (hasReason && reasonData.concept_freq && reasonData.concept_freq.length > 0) {
+                html += '<div class="freq-chips">';
+                reasonData.concept_freq.slice(0, 15).forEach(function(c) {
+                    html += '<span class="freq-chip" onclick="document.getElementById(\\x27conceptQueryInput\\x27).value=\\x27' + c.concept.replace(/'/g,'') + '\\x27;doConceptSearch();">' + c.concept + ' <span class="count">' + c.count + '</span></span>';
+                });
+                html += '</div>';
+            } else {
+                html += '<div style="color:#484f58;font-size:0.85em;padding:8px 0;">暂无关键词数据</div>';
+            }
         }
 
         html += '</div>';
@@ -3259,17 +3602,69 @@ function loadRecommend() {
             html += r.buy_advice;
             html += '</div>';
 
+            // 涨停理由（异步加载）
+            html += '<div class="rec-detail" data-rec-detail="' + r.code + '"><div class="empty" style="padding:4px 0;font-size:0.85em;color:#888;">加载涨停理由中...</div></div>';
             html += '</div>';
         });
 
         html += '</div>';
         container.innerHTML = html;
+        setTimeout(function() { loadRecDetails(); }, 200);
     }).catch(function(e) {
         container.innerHTML = '<div class="result"><div class="error">推荐加载失败: ' + e.message + '</div></div>';
     });
 }
 
 // ========== 创业板/科创板套利 ==========
+// 异步加载推荐股票的历史涨停理由
+function loadRecDetails() {
+    var codes = [];
+    document.querySelectorAll('[data-rec-detail]').forEach(function(el) {
+        var c = el.getAttribute('data-rec-detail');
+        if (c && codes.indexOf(c) === -1) codes.push(c);
+    });
+    if (codes.length === 0) return;
+    fetch('/api/stock_detail_batch?codes=' + codes.join(','))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            document.querySelectorAll('[data-rec-detail]').forEach(function(el) {
+                var code = el.getAttribute('data-rec-detail');
+                var detail = data[code];
+                if (detail && detail.limit_rows && detail.limit_rows.length > 0) {
+                    var rows = detail.limit_rows;
+                    var h = '<div style="margin-top:8px;border-top:1px solid #2a2a3e;padding-top:8px;">';
+                    h += '<div style="font-size:0.85em;color:#aaa;margin-bottom:4px;">涨停理由（共' + rows.length + '条, 最新在前）</div>';
+                    h += '<div style="max-height:320px;overflow-y:auto;font-size:0.85em;">';
+                    // rows已是时间倒序，索引0为最新
+                    for (var i = 0; i < rows.length; i++) {
+                        var r = rows[i];
+                        var date = (r.trade_date || '').length === 8 ? r.trade_date.slice(0,4) + '-' + r.trade_date.slice(4,6) + '-' + r.trade_date.slice(6,8) : (r.trade_date || '');
+                        var desc = r.lu_desc || '';
+                        var tag = r.tag || '';
+                        if (desc) {
+                            h += '<div style="padding:3px 0;border-bottom:1px solid #252540;">';
+                            h += '<span style="color:#ff6b6b;">' + date + '</span> ';
+                            if (tag) h += '<span class="rec-tag" style="font-size:0.8em;padding:1px 5px;margin:0 4px 0 0;">' + tag + '</span>';
+                            h += '<span style="color:#ccc;">' + desc + '</span>';
+                            h += '</div>';
+                        }
+                    }
+                    h += '</div></div>';
+                    el.innerHTML = h;
+                } else {
+                    el.innerHTML = '<div class="empty" style="padding:4px 0;font-size:0.85em;color:#555;">暂无涨停理由数据</div>';
+                }
+                el.removeAttribute('data-rec-detail');
+            });
+        })
+        .catch(function() {
+            document.querySelectorAll('[data-rec-detail]').forEach(function(el) {
+                el.innerHTML = '<div class="empty" style="padding:4px 0;font-size:0.85em;color:#555;">加载失败</div>';
+                el.removeAttribute('data-rec-detail');
+            });
+        });
+}
+
 function loadGemArbitrage(stockCode) {
     var container = document.getElementById('gemArbitrageContainer');
     if (!container) return;
@@ -3409,13 +3804,28 @@ document.getElementById('conceptQueryInput').addEventListener('keypress', functi
 var _npData = null;
 var _npCatKeys = ['tld', '0-2', '2-5', '5-8', '8-10', '10+'];
 var _npCatLabels = {'tld': '屠龙刀战法', '0-2': '0~2%', '2-5': '2~5%', '5-8': '5~8%', '8-10': '8~10%', '10+': '10%+'};
-var _npGridCols = 2;
+var _boardSubLabels = {main_board: '主板', gem_star: '创业板/科创板', other: '其他'};
+var _boardSubKeys = ['main_board', 'gem_star', 'other'];
+var _npGridCols = 4;
 var _npObserver = null;
 var _ztWindowData = null;  // cached zt_window data
 var _npDetailData = {};
 var _npDetailLoading = false;
 function loadNpCardDetails() {
     if (_npDetailLoading) return;
+    // 先渲染已有缓存数据的卡片（无需API请求）
+    document.querySelectorAll('[data-np-detail]').forEach(function(el) {
+        var c = el.getAttribute('data-np-detail');
+        if (c && _npDetailData[c]) {
+            var alertDate = el.getAttribute('data-alert-date') || '';
+            var alertPct = parseFloat(el.getAttribute('data-alert-pct')) || 0;
+            var alertInfo = alertDate ? {date: alertDate, pct: alertPct} : null;
+            el.innerHTML = _renderCardDetailContent(c, _npDetailData[c], alertInfo);
+            el.removeAttribute('data-np-detail');
+            el.removeAttribute('data-alert-date');
+            el.removeAttribute('data-alert-pct');
+        }
+    });
     var codes = [];
     document.querySelectorAll('[data-np-detail]').forEach(function(el) {
         var c = el.getAttribute('data-np-detail');
@@ -3430,13 +3840,20 @@ function loadNpCardDetails() {
             document.querySelectorAll('[data-np-detail]').forEach(function(el) {
                 var c = el.getAttribute('data-np-detail');
                 if (_npDetailData[c]) {
-                    el.innerHTML = _renderCardDetailContent(c, _npDetailData[c]);
+                    var alertDate = el.getAttribute('data-alert-date') || '';
+                    var alertPct = parseFloat(el.getAttribute('data-alert-pct')) || 0;
+                    var alertInfo = alertDate ? {date: alertDate, pct: alertPct} : null;
+                    el.innerHTML = _renderCardDetailContent(c, _npDetailData[c], alertInfo);
                     el.removeAttribute('data-np-detail');
+                    el.removeAttribute('data-alert-date');
+                    el.removeAttribute('data-alert-pct');
                 }
             });
             _npDetailLoading = false;
+            // 继续处理剩余未加载的卡片（异步添加的卡片可能被上一轮跳过）
+            setTimeout(function() { loadNpCardDetails(); }, 50);
         })
-        .catch(function() { _npDetailLoading = false; });
+        .catch(function() { _npDetailLoading = false; setTimeout(function() { loadNpCardDetails(); }, 50); });
 }
 
 // Sidebar nav items (excluding alert — added separately)
@@ -3493,9 +3910,21 @@ function loadNPattern() {
 
         // Sidebar nav
         html += '<nav class="np-sidebar" id="npSidebar">';
+        var _catWithBoard = ['tld', '0-2', '2-5', '5-8', '8-10', '10+'];
         _npSidebarItems.forEach(function(item) {
             var targetId = item.key === 'alert' ? 'np-section-alert' : 'np-section-' + item.key;
             html += '<a class="np-sidebar-item" data-np-section="' + targetId + '" onclick="scrollToNpSection(\\x27' + targetId + '\\x27)">' + item.label + '</a>';
+            // Add board sub-items for ALL categories
+            _boardSubKeys.forEach(function(bk) {
+                var boardSecId;
+                if (_catWithBoard.indexOf(item.key) >= 0) {
+                    boardSecId = 'np-section-' + item.key + '-' + bk;
+                } else {
+                    // Categories without board breakdown link to parent section
+                    boardSecId = targetId;
+                }
+                html += '<a class="np-sidebar-subitem" data-np-cat="' + item.key + '" onclick="scrollToNpSection(\\x27' + boardSecId + '\\x27)">' + _boardSubLabels[bk] + '</a>';
+            });
         });
         html += '</nav>';
 
@@ -3517,9 +3946,14 @@ function loadNPattern() {
         html += '</div>'; // .result
         container.innerHTML = html;
 
+        // Apply current column count
+        document.querySelectorAll('.np-card-grid').forEach(function(g) {
+            g.style.setProperty('--np-cols', _npGridCols);
+        });
+
         // Default collapse all categories
         setTimeout(function() {
-            document.querySelectorAll('.np-cat-header').forEach(function(h) {
+            document.querySelectorAll('#am-cat-results .np-cat-header').forEach(function(h) {
                 if (!h.classList.contains('collapsed')) {
                     h.classList.add('collapsed');
                     var body = h.nextElementSibling;
@@ -3533,10 +3967,9 @@ function loadNPattern() {
             _npCatKeys.forEach(function(ck) {
                 var cat = data.categories[ck];
                 if (!cat) return;
-                ['main_board', 'gem', 'star', 'bj'].forEach(function(bk) {
-                    (cat[bk] || []).forEach(function(stock) {
-                        renderNpKline('npk_' + stock.code, stock.klines);
-                    });
+                var allStocks = (cat.main_board || []).concat(cat.gem || []).concat(cat.star || []).concat(cat.bj || []);
+                allStocks.forEach(function(stock) {
+                    renderNpKline('npk_' + stock.code, stock.klines);
                 });
             });
             // Render alert klines
@@ -3798,10 +4231,70 @@ function renderAlertNpCard(s, type) {
     return html;
 }
 
+// 按板块分组（主板/创业板科创板/其他），9开头归入其他
+function _npSplitByBoard(stocks) {
+    var boards = {main_board: [], gem_star: [], other: []};
+    for (var i = 0; i < stocks.length; i++) {
+        var s = stocks[i];
+        var code = (s.ts_code || s.code || '').split('.')[0];
+        if (code.startsWith('00') || code.startsWith('60')) {
+            boards.main_board.push(s);
+        } else if (code.startsWith('30') || code.startsWith('68')) {
+            boards.gem_star.push(s);
+        } else {
+            boards.other.push(s);
+        }
+    }
+    return boards;
+}
+
+// 异动跟踪：展开板块时懒加载卡片详情
+function toggleAlertmonBoard(el) {
+    el.classList.toggle('collapsed');
+    var body = el.nextElementSibling;
+    if (body) body.classList.toggle('collapsed');
+
+    // 懒加载：只展开时才加载
+    if (body && !body.classList.contains('collapsed')) {
+        setTimeout(function() {
+            var newCodes = [];
+            body.querySelectorAll('.am-detail-placeholder').forEach(function(ph) {
+                var code = ph.getAttribute('data-am-code');
+                if (code) {
+                    ph.setAttribute('data-np-detail', code);
+                    // Restore alert-date/pct attributes for loadNpCardDetails
+                    var alertDate = ph.getAttribute('data-alert-date') || '';
+                    var alertPct = ph.getAttribute('data-alert-pct') || '0';
+                    if (alertDate) ph.setAttribute('data-alert-date', alertDate);
+                    if (alertPct) ph.setAttribute('data-alert-pct', alertPct);
+                    if (!_npDetailData[code] && newCodes.indexOf(code) === -1) newCodes.push(code);
+                }
+            });
+            if (newCodes.length > 0) {
+                _npDetailLoading = false;
+            }
+            loadNpCardDetails();
+        }, 150);
+    }
+}
+
+// 切换板块折叠/展开
+function toggleNpBoard(el) {
+    el.classList.toggle('collapsed');
+    var body = el.nextElementSibling;
+    if (body) {
+        body.classList.toggle('collapsed');
+    }
+}
+
 function renderNpCategory(cat, catKey) {
     if (!cat) return '';
-    var total = (cat.main_board || []).length + (cat.gem || []).length + (cat.star || []).length + (cat.bj || []).length;
-    if (total === 0) return '';
+    // Collect all stocks from all boards
+    var allStocks = (cat.main_board || []).concat(cat.gem || []).concat(cat.star || []).concat(cat.bj || []);
+    if (allStocks.length === 0) return '';
+
+    // Re-split by code prefix
+    var boards = _npSplitByBoard(allStocks);
 
     // Icon/color for categories
     var catIcons = {'tld': '🔪', '0-2': '🟢', '2-5': '🟡', '5-8': '🟠', '8-10': '🔴', '10+': '⛔'};
@@ -3811,28 +4304,32 @@ function renderNpCategory(cat, catKey) {
     html += '<div class="np-cat-header" onclick="toggleNpCategory(this)" data-np-cat="' + catKey + '">';
     html += '<span class="cat-icon">' + icon + '</span>';
     html += '<span class="cat-name">' + cat.name + '</span>';
-    html += '<span class="cat-count">' + total + '只</span>';
+    html += '<span class="cat-count">' + allStocks.length + '只</span>';
     html += '<span class="cat-arrow">▼</span>';
     html += '</div>';
 
     html += '<div class="np-cat-body" id="np-cat-body-' + catKey + '">';
 
-    var boards = [
+    var boardDefs = [
         {key: 'main_board', label: '主板', cls: 'main'},
-        {key: 'gem', label: '创业板', cls: 'gem'},
-        {key: 'star', label: '科创板', cls: 'star'},
-        {key: 'bj', label: '北交所', cls: 'bj'}
+        {key: 'gem_star', label: '创业板/科创板', cls: 'gem_star'},
+        {key: 'other', label: '其他', cls: 'other'}
     ];
 
-    boards.forEach(function(board) {
-        var stocks = cat[board.key] || [];
+    boardDefs.forEach(function(board) {
+        var stocks = boards[board.key] || [];
         if (stocks.length === 0) return;
 
+        var secId = 'np-section-' + catKey + '-' + board.key;
         html += '<div class="np-board-section">';
-        html += '<div class="np-board-header ' + board.cls + '">' + board.label + ' (' + stocks.length + '只)</div>';
+        html += '<div class="np-board-header collapsible ' + board.cls + '" onclick="toggleNpBoard(this)" data-np-board="' + secId + '">';
+        html += board.label + ' (' + stocks.length + '只)';
+        html += '<span class="board-arrow">▼</span>';
+        html += '</div>';
+        html += '<div class="np-board-body" id="' + secId + '">';
         html += '<div class="np-card-grid">';
 
-        stocks.forEach(function(s, i) {
+        stocks.forEach(function(s) {
             var starCls = s.is_lianban2plus ? ' star-card' : '';
             var tldCls = s.is_tld_shouban ? ' tld-shouban-card' : (s.is_tld ? ' tld-card' : '');
             var nwCls = s.is_nw_pattern ? ' nw-card' : '';
@@ -3861,46 +4358,12 @@ function renderNpCategory(cat, catKey) {
             });
             html += '</div>';
 
-            // == OLD CONTENT (keep for reversion) ==
-            // Metrics row
-            // html += '<div class="np-metrics">';
-            // html += '<div class="np-metric"><div class="label">基准</div><div class="value">' + s.base_price.toFixed(2) + '</div></div>';
-            // html += '<div class="np-metric"><div class="label">连板顶</div><div class="value">' + s.top_price.toFixed(2) + '</div></div>';
-            // html += '<div class="np-metric"><div class="label">最大回调</div><div class="value positive">' + s.max_pullback_pct.toFixed(1) + '%</div></div>';
-            // html += '<div class="np-metric"><div class="label">当前回调</div><div class="value positive">' + s.current_pullback_pct.toFixed(1) + '%</div></div>';
-            // html += '</div>';
-            // // Pullback progress bar
-            // var pullbarPct = Math.min(s.current_pullback_pct / 15 * 100, 100);
-            // var fillCls = 'shallow';
-            // if (s.current_pullback_pct >= 8) fillCls = 'severe';
-            // else if (s.current_pullback_pct >= 5) fillCls = 'deep';
-            // else if (s.current_pullback_pct >= 2) fillCls = 'normal';
-            // html += '<div class="np-pullback-bar"><div class="np-pullback-fill ' + fillCls + '" style="width:' + pullbarPct + '%"></div></div>';
-            // // NW double-bottom metrics
-            // if (s.is_nw_pattern) {
-            //     html += '<div class="np-nw-metrics">';
-            //     html += '<div class="np-nw-metric" style="text-align:center;"><div class="label">M点价格</div><div class="value" style="color:#ff5722;">' + (s.pullback_low ? s.pullback_low.toFixed(2) : '-') + '</div></div>';
-            //     html += '<div class="np-nw-metric" style="text-align:center;"><div class="label">M2价格</div><div class="value" style="color:#ff9800;">' + (s.nw_m2_price ? s.nw_m2_price.toFixed(2) : '-') + '</div></div>';
-            //     html += '<div class="np-nw-metric" style="text-align:center;"><div class="label">反弹%</div><div class="value" style="color:#81c784;">' + (s.nw_recovery_pct ? s.nw_recovery_pct.toFixed(1) + '%' : '-') + '</div></div>';
-            //     html += '<div class="np-nw-metric" style="text-align:center;"><div class="label">M-M2收敛</div><div class="value" style="color:#00d4ff;">确认</div></div>';
-            //     html += '</div>';
-            // }
-            // // K-line canvas
-            // var canvasIdNp = 'npk_' + s.code;
-            // html += '<div class="np-kline-container">';
-            // html += '<canvas id="' + canvasIdNp + '" height="200"></canvas>';
-            // html += '</div>';
-            // html += '<button class="np-kline-toggle" data-kline-id="' + canvasIdNp + '">收起K线</button>';
-            // var latestDate = getKlineLatestDate(s.klines);
-            // if (latestDate) html += '<div class="np-kline-latest">最新: <span>' + latestDate + '</span></div>';
-            // == END OLD CONTENT ==
-
             html += '<div data-np-detail="' + s.code + '"><div class="empty" style="padding:8px;">加载中...</div></div>';
 
             html += '</div>'; // .np-card
         });
 
-        html += '</div></div>'; // .np-card-grid, .np-board-section
+        html += '</div></div></div>'; // .np-card-grid, .np-board-body, .np-board-section
     });
 
     // Back to top
@@ -4007,10 +4470,9 @@ function filterNPattern() {
             _npCatKeys.forEach(function(ck) {
                 var cat = filteredData.categories[ck];
                 if (!cat) return;
-                ['main_board', 'gem', 'star', 'bj'].forEach(function(bk) {
-                    (cat[bk] || []).forEach(function(stock) {
-                        renderNpKline('npk_' + stock.code, stock.klines);
-                    });
+                var allStocks = (cat.main_board || []).concat(cat.gem || []).concat(cat.star || []).concat(cat.bj || []);
+                allStocks.forEach(function(stock) {
+                    renderNpKline('npk_' + stock.code, stock.klines);
                 });
             });
             // Render alert klines
@@ -4033,11 +4495,14 @@ function filterNPattern() {
 // Set grid columns (card width stays fixed, centered layout)
 function setNpGridCols(n) {
     _npGridCols = n;
-    // Update button active state only
+    // Update button active state
     document.querySelectorAll('.np-grid-tog button').forEach(function(b) {
         b.classList.toggle('active', parseInt(b.getAttribute('data-cols')) === n);
     });
-    // Card size stays fixed at 480px; centering handles layout naturally
+    // Apply column count to all card grids via CSS variable
+    document.querySelectorAll('.np-card-grid').forEach(function(g) {
+        g.style.setProperty('--np-cols', n);
+    });
 }
 
 // Helper to find kline data for a canvas ID
@@ -4517,7 +4982,7 @@ function renderNpSimpleCard(s, prefix) {
     return html;
 }
 
-function _renderCardDetailContent(code, detail) {
+function _renderCardDetailContent(code, detail, alertInfo) {
     if (!detail || !detail.limit_rows) return '<div class="empty" style="padding:8px;">暂无数据</div>';
     var h = '';
     // 涨停理由表
@@ -4537,12 +5002,21 @@ function _renderCardDetailContent(code, detail) {
         h += '<span style="color:#666;font-size:0.85em;">近3个月无涨停</span>';
     }
     h += '</div></div>';
+    // 异动信息（紧挨日K线图上方）
+    if (alertInfo && alertInfo.date) {
+        var pctColor = alertInfo.pct >= 10 ? '#ff6b6b' : '#ff9800';
+        var pctSign = alertInfo.pct > 0 ? '+' : '';
+        h += '<div class="ds-stock-kline-section" style="padding:6px 12px;background:rgba(255,107,107,0.06);border:1px solid rgba(255,107,107,0.15);border-radius:6px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;">';
+        h += '<span style="color:#aaa;font-size:0.85em;">\u6700\u8fd1\u5f02\u52a8\u65e5: <span style="color:#fff;font-weight:bold;">' + alertInfo.date + '</span></span>';
+        h += '<span style="color:' + pctColor + ';font-weight:bold;font-size:1em;">' + pctSign + alertInfo.pct.toFixed(2) + '%</span>';
+        h += '</div>';
+    }
     // 日K线图
-    h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">日K线图（新浪）</div>';
-    h += '<img src="' + sinaKlineImg(code) + '" class="ds-stock-kline-img" loading="lazy" onerror="this.remove()"></div>';
+    h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">日K线图（新浪）<button class="img-refresh-btn" onclick="reloadSinaImg(this)" title="重新加载">⟳</button></div>';
+    h += '<img data-orig-src="' + sinaKlineImg(code) + '" src="' + sinaKlineImg(code) + '" class="ds-stock-kline-img" loading="lazy" onerror="retryImg(this)"></div>';
     // 分时图
-    h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">分时图（新浪）</div>';
-    h += '<img src="' + sinaMinImg(code) + '" class="ds-stock-kline-img" loading="lazy" onerror="this.remove()"></div>';
+    h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">分时图（新浪）<button class="img-refresh-btn" onclick="reloadSinaImg(this)" title="重新加载">⟳</button></div>';
+    h += '<img data-orig-src="' + sinaMinImg(code) + '" src="' + sinaMinImg(code) + '" class="ds-stock-kline-img" loading="lazy" onerror="retryImg(this)"></div>';
     // 查询联动按钮
     h += '<div style="text-align:center;padding:8px 0;">';
     h += '<button onclick="modalQueryLinkage(\\x27' + code + '\\x27)" style="background:#00d4ff;color:#0a1628;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">查询联动</button>';
@@ -4740,8 +5214,8 @@ function renderNpHotConceptButtons() {
 
 // ===== 15日涨停板 二级导航 =====
 function initZtSubNav() {
-    // Remove old zt sub-nav items
-    document.querySelectorAll('.np-sidebar-subitem').forEach(function(el) { el.remove(); });
+    // Remove only zt sub-nav items (those with data-np-cat="zt")
+    document.querySelectorAll('.np-sidebar-subitem[data-np-cat="zt"]').forEach(function(el) { el.remove(); });
 
     var boardLabels = { 'main': '主板', 'gem': '创业板', 'star': '科创板' };
     var boardKeys = ['main', 'gem', 'star'];
@@ -4759,6 +5233,7 @@ function initZtSubNav() {
         var subItem = document.createElement('a');
         subItem.className = 'np-sidebar-subitem';
         subItem.setAttribute('data-np-section', 'zt-board-' + bk);
+        subItem.setAttribute('data-np-cat', 'zt');
         subItem.textContent = boardLabels[bk];
         subItem.onclick = function() { scrollToNpSection('zt-board-' + bk); };
         refNode.parentNode.insertBefore(subItem, refNode.nextSibling);
@@ -5605,6 +6080,31 @@ function sinaMinImg(ts_code) {
     return 'https://image.sinajs.cn/newchart/min/n/' + getSinaCode(ts_code) + '.png?' + getSinaTs();
 }
 
+// 手动刷新新浪K线/分时图（btn = button element）
+function reloadSinaImg(btn) {
+    var img = btn.parentNode.nextElementSibling;
+    if (!img) return;
+    var src = img.getAttribute('data-orig-src') || img.src;
+    img.src = src.replace(/\?\d*$/, '') + '?' + Date.now();
+}
+
+// 图片加载失败重试（最多3次，逐次增加延迟）
+function retryImg(img, maxRetries) {
+    if (maxRetries === undefined) maxRetries = 3;
+    var retries = parseInt(img.getAttribute('data-retry') || '0');
+    if (retries >= maxRetries) {
+        var fallback = document.createElement('div');
+        fallback.className = 'min-fallback';
+        fallback.textContent = '暂无分时数据';
+        img.parentNode.replaceChild(fallback, img);
+        return;
+    }
+    img.setAttribute('data-retry', String(retries + 1));
+    // 用新时间戳重试
+    var newSrc = img.src.replace(/\?\d*$/, '') + '?' + Date.now();
+    setTimeout(function() { img.src = newSrc; }, (retries + 1) * 1000);
+}
+
 // 渲染K线网格
 function renderDeepKlineGrid(hits, forceTs) {
     if (!hits || hits.length === 0) return '<div class="empty" style="padding:10px 0;">暂无含代码的标的</div>';
@@ -5627,8 +6127,8 @@ function renderDeepKlineGrid(hits, forceTs) {
             var srcM = forceTs ? murl.replace(/\?\d*$/, '') + '?' + forceTs : murl;
             cells += '<div class="concept-kline-cell">' +
                 '<div class="sk-header"><span class="sk-name">' + s.name + '</span><span class="sk-code">' + s.code.replace('.SH','').replace('.SZ','') + '</span></div>' +
-                '<img class="kline-img" src="' + srcK + '" onerror="this.remove()">' +
-                '<img class="kline-img min" src="' + srcM + '" onerror="this.remove()">' +
+                '<img class="kline-img" src="' + srcK + '" onerror="retryImg(this)">' +
+                '<img class="kline-img min" src="' + srcM + '" onerror="retryImg(this)">' +
                 '</div>';
         }
         rows.push('<div class="concept-kline-grid">' + cells + '</div>');
@@ -5747,6 +6247,8 @@ function doDeepSearch() {
     var url = '/api/reason_search?q=' + encodeURIComponent(q);
     if (dateStart) url += '&date_start=' + encodeURIComponent(dateStart);
     if (dateEnd) url += '&date_end=' + encodeURIComponent(dateEnd);
+    var noSt = document.getElementById('noStCheck');
+    url += '&no_st=' + (noSt && noSt.checked ? '1' : '0');
     fetch(url)
         .then(function(r) { return r.json(); })
         .then(function(data) {
@@ -5755,6 +6257,44 @@ function doDeepSearch() {
         .catch(function(e) {
             el.innerHTML = '<div class="error">搜索失败: ' + e.message + '</div>';
         });
+}
+
+function _splitByBoard(rows) {
+    var boards = {main_board: [], gem_star: [], other: []};
+    for (var i = 0; i < rows.length; i++) {
+        var r = rows[i];
+        var code = (r.ts_code || '').split('.')[0];
+        if (code.startsWith('00') || code.startsWith('60')) {
+            boards.main_board.push(r);
+        } else if (code.startsWith('30') || code.startsWith('68')) {
+            boards.gem_star.push(r);
+        } else {
+            boards.other.push(r);
+        }
+    }
+    return boards;
+}
+
+function _renderBoardSection(boardRows, boardSecId, boardLabel, highlightKw, secIdPrefix) {
+    if (boardRows.length === 0) return '';
+    var stats = _computeDeepStats(boardRows);
+    var statsHtml = _renderDeepStats(stats, boardRows.length);
+    var tableRows = _renderSearchTable(boardRows, highlightKw);
+    var klineSecId = secIdPrefix ? secIdPrefix + '-' + boardSecId : boardSecId;
+    var h = '';
+    h += '<div class="board-section">';
+    h += '<div class="board-section-title" style="font-weight:bold;font-size:14px;margin:10px 0 6px;color:#333;">【' + boardLabel + '】共 ' + boardRows.length + ' 只</div>';
+    h += statsHtml;
+    h += '<div style="display:flex;gap:6px;margin-bottom:8px;">';
+    h += '<button class="concept-btn" onclick="toggleDeepKlines(\\x27' + klineSecId + '\\x27)">题材走势</button>';
+    h += '<button class="concept-btn" onclick="refreshDeepKlines(\\x27' + klineSecId + '\\x27)" title="刷新K线图">⟳</button>';
+    h += '</div>';
+    h += '<div id="ds-kline-wrap-' + klineSecId + '" class="concept-kline-wrap" style="max-height:0;overflow:hidden"></div>';
+    h += '<div style="overflow-x:auto;">';
+    h += tableRows;
+    h += '</div>';
+    h += '</div>';
+    return h;
 }
 
 function renderFullDeepSearch(data, rawQuery) {
@@ -5769,45 +6309,37 @@ function renderFullDeepSearch(data, rawQuery) {
 
     var html = '<div class="ds-result-count">共 ' + totalHits + ' 条结果</div>';
 
+    var boardLabels = {main_board: '主板', gem_star: '创业板/科创板', other: '其他'};
+
     if (mode === 'or' && keywords.length > 1) {
-        // OR模式：每个关键词独立分段
+        // OR模式：每个关键词独立分段，其下再按板块分组
         for (var i = 0; i < keywords.length; i++) {
             var kw = keywords[i];
             var kwRows = kwResults[kw] || [];
             if (kwRows.length === 0) continue;
-            var secId = kw.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_');
-            _sectionReasonHits[secId] = kwRows;
-            var stats = _computeDeepStats(kwRows);
-            var statsHtml = _renderDeepStats(stats, kwRows.length);
-            var tableRows = _renderSearchTable(kwRows, kw);
+            var secIdPrefix = kw.replace(/[^a-zA-Z0-9\u4e00-\u9fa5]/g, '_');
             html += '<div class="or-section">';
             html += '<div class="or-section-title">🔍 "' + highlightText(kw, kw) + '" — 共 ' + kwRows.length + ' 条</div>';
-            html += statsHtml;
-            html += '<div style="display:flex;gap:6px;margin-bottom:8px;">';
-            html += '<button class="concept-btn" onclick="toggleDeepKlines(\\x27' + secId + '\\x27)">题材走势</button>';
-            html += '<button class="concept-btn" onclick="refreshDeepKlines(\\x27' + secId + '\\x27)" title="刷新K线图">⟳</button>';
-            html += '</div>';
-            html += '<div id="ds-kline-wrap-' + secId + '" class="concept-kline-wrap" style="max-height:0;overflow:hidden"></div>';
-            html += '<div style="overflow-x:auto;">';
-            html += tableRows;
-            html += '</div>';
+            var boards = _splitByBoard(kwRows);
+            var boardIds = ['main_board', 'gem_star', 'other'];
+            for (var b = 0; b < boardIds.length; b++) {
+                var bid = boardIds[b];
+                var secId = secIdPrefix + '-' + bid;
+                _sectionReasonHits[secId] = boards[bid];
+                html += _renderBoardSection(boards[bid], bid, boardLabels[bid], kw, secIdPrefix);
+            }
             html += '</div>';
             if (i < keywords.length - 1) html += '<hr class="or-divider">';
         }
     } else {
-        // AND/单关键词模式
-        var stats = _computeDeepStats(results);
-        var statsHtml = _renderDeepStats(stats, totalHits);
-        var tableRows = _renderSearchTable(results, rawQuery);
-        html += statsHtml;
-        html += '<div style="display:flex;gap:6px;margin-bottom:8px;">';
-        html += '<button class="concept-btn" onclick="toggleDeepKlines()">题材走势</button>';
-        html += '<button class="concept-btn" onclick="refreshDeepKlines()" title="刷新K线图">⟳</button>';
-        html += '</div>';
-        html += '<div id="ds-kline-wrap-all" class="concept-kline-wrap" style="max-height:0;overflow:hidden"></div>';
-        html += '<div style="overflow-x:auto;">';
-        html += tableRows;
-        html += '</div>';
+        // AND/单关键词模式：按板块分组
+        var boards = _splitByBoard(results);
+        var boardIds = ['main_board', 'gem_star', 'other'];
+        for (var b = 0; b < boardIds.length; b++) {
+            var bid = boardIds[b];
+            _sectionReasonHits[bid] = boards[bid];
+            html += _renderBoardSection(boards[bid], bid, boardLabels[bid], rawQuery, '');
+        }
     }
 
     // 不再渲染子视图
@@ -5977,11 +6509,11 @@ function renderStockDetail(data, name, code) {
         html += '</table></div>';
     }
     // Row 5: 日K线图
-    html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">日K线图（新浪）</div>';
-    html += '<img src="' + sinaKlineImg(code) + '" class="ds-stock-kline-img" loading="lazy" onerror="this.remove()"></div>';
+    html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">日K线图（新浪）<button class="img-refresh-btn" onclick="reloadSinaImg(this)" title="重新加载">⟳</button></div>';
+    html += '<img data-orig-src="' + sinaKlineImg(code) + '" src="' + sinaKlineImg(code) + '" class="ds-stock-kline-img" loading="lazy" onerror="retryImg(this)"></div>';
     // Row 6: 分时图
-    html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">分时图（新浪）</div>';
-    html += '<img src="' + sinaMinImg(code) + '" class="ds-stock-kline-img" loading="lazy" onerror="this.remove()"></div>';
+    html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">分时图（新浪）<button class="img-refresh-btn" onclick="reloadSinaImg(this)" title="重新加载">⟳</button></div>';
+    html += '<img data-orig-src="' + sinaMinImg(code) + '" src="' + sinaMinImg(code) + '" class="ds-stock-kline-img" loading="lazy" onerror="retryImg(this)"></div>';
     // Row 7: 查询联动按钮
     html += '<div style="text-align:center;padding:8px 0;">';
     html += '<button onclick="modalQueryLinkage(\\x27' + code + '\\x27)" style="background:#00d4ff;color:#0a1628;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">查询联动</button>';
@@ -6338,11 +6870,25 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._respond_json({'status': 'done', 'msg': _update_progress_msg}, cors_headers)
 
+        elif path == '/api/abnormal_movement':
+            try:
+                lookback = int(query.get('lookback', ['20'])[0])
+                cache_key = 'abnormal_movement_' + str(lookback)
+                result = _get_cached(cache_key)
+                if result is None:
+                    result = _analyze_abnormal_movement(lookback)
+                    _set_cache(cache_key, result)
+                self._respond_json(result, cors_headers)
+            except Exception as e:
+                import traceback
+                self._respond_json({'error': str(e), 'traceback': traceback.format_exc()}, cors_headers)
+
         elif path == '/api/reason_search':
             q = query.get('q', [''])[0].strip()
             date_start = query.get('date_start', [None])[0]
             date_end = query.get('date_end', [None])[0]
-            result = _analyze_limit_rows(q, date_start, date_end)
+            no_st = query.get('no_st', [None])[0]
+            result = _analyze_limit_rows(q, date_start, date_end, no_st)
             self._respond_json(result, cors_headers)
 
         elif path == '/api/reason_suggest':
