@@ -662,7 +662,7 @@ button:disabled { background: #555; cursor: not-allowed; }
 /* Tabs */
 .tabs { display: flex; gap: 0; margin: 15px 0; }
 .tab {
-    padding: 9px 20px;
+    padding: 9px 24px;
     background: #1a1a2e;
     border: 1px solid #0f3460;
     cursor: pointer;
@@ -1673,15 +1673,6 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 #updateHint.hint-error { color: #ff5252; }
 #updateHint.hint-skip { color: #666; }
 
-/* Top concepts badges area */
-#topConceptsBadges { margin-bottom: 10px; }
-#topConceptsBadges .badge {
-    cursor: pointer; transition: all 0.15s;
-}
-#topConceptsBadges .badge:hover {
-    border-color: #ff6b6b; transform: translateY(-1px);
-}
-
 /* 涨停深挖 Tab */
 .reason-hl { background: #ffd54f; color: #1a1a2e; padding: 1px 4px; border-radius: 3px; font-weight: bold; }
 .tag-badge { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 0.78em; margin: 1px 2px; font-weight: bold; }
@@ -1850,23 +1841,6 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
         </span>
     </p>
 
-    <div class="search-box">
-        <div class="input-row">
-            <div class="input-item">
-                <label>股票代码或名称</label>
-                <input type="text" id="stockInput" placeholder="如: 600396 或 华电辽能" autocomplete="off">
-                <div class="suggestions" id="suggestions"></div>
-            </div>
-            <div class="input-item">
-                <label>限定概念（可选）</label>
-                <input type="text" id="conceptInput" placeholder="如: 绿色电力">
-            </div>
-            <div style="display: flex; align-items: flex-end;">
-                <button onclick="doSearch()">查询联动</button>
-            </div>
-        </div>
-    </div>
-
     <div class="tabs">
         <div class="tab active" onclick="switchTab('realtime')">📡 实时</div>
         <div class="tab" onclick="switchTab('alertmon')">⚠ 异动跟踪</div>
@@ -1888,6 +1862,18 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
         <div id="npatternContainer"><div class="loading">加载N字战法分析中...</div></div>
     </div>
     <div class="tab-content" id="tab-linkage">
+        <div class="search-box">
+            <div class="input-row">
+                <div class="input-item">
+                    <label>股票代码或名称</label>
+                    <input type="text" id="linkageStockInput" placeholder="如: 600396 或 华电辽能" autocomplete="off">
+                    <div class="suggestions" id="linkageSuggestions"></div>
+                </div>
+                <div style="display: flex; align-items: flex-end;">
+                    <button onclick="doLinkageSearch()">查询联动</button>
+                </div>
+            </div>
+        </div>
         <div id="resultContainer">
             <div id="linkageDefaultSections"><div class="loading">加载默认联动数据...</div></div>
         </div>
@@ -1913,7 +1899,7 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
                 </label>
             </div>
         </div>
-        <div id="topConceptsBadges"></div>
+        <div id="topConceptTable"></div>
         <div id="conceptResult"><div class="empty">输入概念名称进行分析</div></div>
     </div>
     <div class="tab-content" id="tab-deepsearch">
@@ -2055,7 +2041,18 @@ function switchTab(tab) {
     if (tab === 'npattern') loadNPattern();
     if (tab === 'stats') loadStats();
     if (tab === 'recommend') loadRecommend();
-    if (tab === 'concept') loadTopConcepts();
+    if (tab === 'concept') {
+        _conceptSearched = false;
+        _hotConceptSortCol = '';
+        _hotConceptSortDir = -1;
+        // 恢复topConceptTable显示
+        var tt = document.getElementById('topConceptTable');
+        if (tt) tt.style.display = '';
+        // 清空搜索结果
+        var cr = document.getElementById('conceptResult');
+        if (cr) cr.innerHTML = '<div class="empty">输入概念名称进行分析</div>';
+        loadTopConcepts();
+    }
     if (tab === 'alertmon') loadAlertMonitor();
     if (tab === 'deepsearch') {
         // focus input if already has content
@@ -2197,19 +2194,6 @@ function loadAlertMonitor() {
 var _activeZtFilters = [];
 var _currentQueryConcept = '';
 
-// Search suggestions
-var suggestTimer = null;
-document.getElementById('stockInput').addEventListener('input', function() {
-    clearTimeout(suggestTimer);
-    var q = this.value.trim();
-    if (q.length < 1) { document.getElementById('suggestions').classList.remove('active'); return; }
-    suggestTimer = setTimeout(function() {
-        fetch('/api/search?q=' + encodeURIComponent(q))
-            .then(r => r.json())
-            .then(renderSuggestions);
-    }, 200);
-});
-
 // Concept autocomplete
 var conceptNames = [];
 fetch('/api/concepts').then(function(r) { return r.json(); }).then(function(names) {
@@ -2219,11 +2203,12 @@ fetch('/api/concepts').then(function(r) { return r.json(); }).then(function(name
 // Close suggestions when clicking outside
 document.addEventListener('click', function(e) {
     if (!e.target.closest('.input-item')) {
-        document.getElementById('suggestions').classList.remove('active');
         var cs = document.getElementById('conceptSuggestions');
         if (cs) cs.classList.remove('active');
         var dss = document.getElementById('deepSearchSuggestions');
         if (dss) dss.classList.remove('active');
+        var ls = document.getElementById('linkageSuggestions');
+        if (ls) ls.classList.remove('active');
     }
 });
 
@@ -2245,25 +2230,8 @@ document.getElementById('conceptQueryInput').addEventListener('input', function(
     el.innerHTML = html;
     el.classList.add('active');
 });
-
-function renderSuggestions(items) {
-    var el = document.getElementById('suggestions');
-    if (!items || items.length === 0) { el.classList.remove('active'); return; }
-    var html = '';
-    items.slice(0, 10).forEach(function(item) {
-        html += '<div class="suggestion-item" data-code="' + item.code + '" data-name="' + item.name + '">';
-        html += '<span><span class="sug-code">' + item.code + '</span> ' + item.name + '</span>';
-        html += '<span class="sug-meta">涨停' + item.zt_count + '次 | ' + item.concept_count + '概念</span>';
-        html += '</div>';
-    });
-    el.innerHTML = html;
-    el.classList.add('active');
-}
-
 function selectStock(code, name) {
-    document.getElementById('stockInput').value = code + ' (' + name + ')';
-    document.getElementById('suggestions').classList.remove('active');
-    doSearch();
+    doSearch(code, '');
 }
 
 // Global event delegation for stock rows, concept tabs, sortable headers, and show-all
@@ -2439,6 +2407,9 @@ document.addEventListener('click', function(e) {
                 }
                 setCardContext(stocks, clickedIdx);
                 showStockCard(code, name || code);
+            } else if (currentTab === 'realtime') {
+                // 实时tab点击股票 → 显示N字战法样式的详细卡片（涨停理由+3月统计+日K/分时图）
+                showRealtimeCardDetail(code, name || code);
             } else {
                 // 构建卡片导航上下文：从当前tab收集所有可见的[data-code]
                 var tabContainer = document.querySelector('.tab-content.active, #tab-' + currentTab) || document;
@@ -2471,10 +2442,59 @@ document.addEventListener('click', function(e) {
     }
 });
 
-// Main search
-function doSearch() {
-    var raw = document.getElementById('stockInput').value.trim();
-    var concept = document.getElementById('conceptInput').value.trim();
+// Linkage tab — stock autocomplete
+var _linkageSuggestTimer = null;
+document.getElementById('linkageStockInput').addEventListener('input', function() {
+    var self = this;
+    if (_linkageSuggestTimer) clearTimeout(_linkageSuggestTimer);
+    _linkageSuggestTimer = setTimeout(function() {
+        var q = self.value.trim();
+        var el = document.getElementById('linkageSuggestions');
+        if (q.length < 1) { el.classList.remove('active'); return; }
+        fetch('/api/stock_search?q=' + encodeURIComponent(q))
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (data.length === 0) { el.classList.remove('active'); return; }
+                var html = '';
+                data.forEach(function(s) {
+                    html += '<div class="suggestion-item" onclick="doLinkageSearchWithVal(\\x27' + s.code + '\\x27)">';
+                    html += '<span>' + s.code + ' ' + s.name + '</span>';
+                    html += '</div>';
+                });
+                el.innerHTML = html;
+                el.classList.add('active');
+            })
+            .catch(function() { el.classList.remove('active'); });
+    }, 200);
+});
+function doLinkageSearchWithVal(val) {
+    document.getElementById('linkageSuggestions').classList.remove('active');
+    document.getElementById('linkageStockInput').value = val;
+    doSearch(val, '');
+}
+
+// Linkage tab search — reads from linkageStockInput
+function doLinkageSearch() {
+    var input = document.getElementById('linkageStockInput');
+    if (!input) return;
+    var val = input.value.trim();
+    if (!val) { alert('请输入股票代码或名称'); return; }
+    doSearch(val, '');
+}
+
+// Main search — accepts optional stockVal and conceptVal params for progammatic calls
+function doSearch(stockVal, conceptVal) {
+    var raw = (stockVal || '').trim();
+    var concept = (conceptVal || '').trim();
+    if (!raw) {
+        // Fallback to DOM input (legacy support for inline onclick without params)
+        var si = document.getElementById('stockInput');
+        if (si) raw = si.value.trim();
+    }
+    if (!concept && !conceptVal) {
+        var ci = document.getElementById('conceptInput');
+        if (ci) concept = ci.value.trim();
+    }
     if (!raw) { alert('请输入股票代码、名称或概念名称'); return; }
 
     var codeMatch = raw.match(/(\\d{6})/);
@@ -3281,6 +3301,18 @@ function doConceptSearch() {
 
         html += '</div>';
         container.innerHTML = html;
+
+        // 搜索时隐藏上方的Top20独立表格，只在结果下方显示
+        var topTable = document.getElementById('topConceptTable');
+        if (topTable) topTable.style.display = 'none';
+        // 搜索后始终在结果下方显示Top20热门概念板块
+        if (_hotConceptsData && _hotConceptsData.length > 0) {
+            var topHtml = '<div class="result top20-section" style="margin-top:20px;border-top:1px solid #0f3460;padding-top:15px;">';
+            topHtml += '<div style="margin-bottom:8px;color:#888;font-size:0.85em;">📈 同花顺热门概念板块 Top20</div>';
+            topHtml += renderHotConceptTable(_hotConceptsData);
+            topHtml += '</div>';
+            container.innerHTML += topHtml;
+        }
     });
 }
 
@@ -3975,11 +4007,11 @@ function renderGemArbitrageContent() {
 }
 
 // Enter key
-document.getElementById('stockInput').addEventListener('keypress', function(e) {
-    if (e.key === 'Enter') { document.getElementById('suggestions').classList.remove('active'); doSearch(); }
-});
-document.getElementById('conceptInput').addEventListener('keypress', function(e) { if (e.key === 'Enter') doSearch(); });
 document.getElementById('conceptQueryInput').addEventListener('keypress', function(e) { if (e.key === 'Enter') doConceptSearch(); });
+var linkageInput = document.getElementById('linkageStockInput');
+if (linkageInput) {
+    linkageInput.addEventListener('keypress', function(e) { if (e.key === 'Enter') doLinkageSearch(); });
+}
 
 // ===== N字战法 =====
 var _npData = null;
@@ -4089,23 +4121,18 @@ function loadNPattern() {
         // --- Sidebar + Main content wrapper ---
         html += '<div class="np-wrapper">';
 
-        // Sidebar nav
+        // Sidebar nav with board sub-items
         html += '<nav class="np-sidebar" id="npSidebar">';
-        var _catWithBoard = ['tld', '0-2', '2-5', '5-8', '8-10', '10+'];
         _npSidebarItems.forEach(function(item) {
             var targetId = item.key === 'alert' ? 'np-section-alert' : 'np-section-' + item.key;
             html += '<a class="np-sidebar-item" data-np-section="' + targetId + '" onclick="scrollToNpSection(\\x27' + targetId + '\\x27)">' + item.label + '</a>';
-            // Add board sub-items for ALL categories
-            _boardSubKeys.forEach(function(bk) {
-                var boardSecId;
-                if (_catWithBoard.indexOf(item.key) >= 0) {
-                    boardSecId = 'np-section-' + item.key + '-' + bk;
-                } else {
-                    // Categories without board breakdown link to parent section
-                    boardSecId = targetId;
-                }
-                html += '<a class="np-sidebar-subitem" data-np-cat="' + item.key + '" onclick="scrollToNpSection(\\x27' + boardSecId + '\\x27)">' + _boardSubLabels[bk] + '</a>';
-            });
+            // Board sub-items for main categories (tld, 0-2, 2-5, 5-8, 8-10, 10+)
+            if (_npCatKeys.indexOf(item.key) !== -1) {
+                _boardSubKeys.forEach(function(bk) {
+                    var subTarget = 'np-section-' + item.key + '-' + bk;
+                    html += '<a class="np-sidebar-subitem" data-np-section="' + subTarget + '" onclick="scrollToNpSection(\\x27' + subTarget + '\\x27)">' + _boardSubLabels[bk] + '</a>';
+                });
+            }
         });
         html += '</nav>';
 
@@ -4448,15 +4475,94 @@ function toggleAlertmonBoard(el) {
     }
 }
 
-// 切换板块折叠/展开
+function renderNpCategory(cat, catKey) {
+    if (!cat) return '';
+    // Collect all stocks from all boards
+    var allStocks = (cat.main_board || []).concat(cat.gem || []).concat(cat.star || []).concat(cat.bj || []);
+    if (allStocks.length === 0) return '';
+
+    // Icon/color for categories
+    var catIcons = {'tld': '🔪', '0-2': '🟢', '2-5': '🟡', '5-8': '🟠', '8-10': '🔴', '10+': '⛔'};
+    var icon = catIcons[catKey] || '📊';
+
+    var html = '<div class="np-section" id="np-section-' + catKey + '">';
+    html += '<div class="np-cat-header collapsed" onclick="toggleNpCategory(this)" data-np-cat="' + catKey + '">';
+    html += '<span class="cat-icon">' + icon + '</span>';
+    html += '<span class="cat-name">' + cat.name + '</span>';
+    html += '<span class="cat-count">' + allStocks.length + '只</span>';
+    html += '<span class="cat-arrow">▼</span>';
+    html += '</div>';
+
+    html += '<div class="np-cat-body collapsed" id="np-cat-body-' + catKey + '">';
+
+    // Split by board and render board sections
+    var boards = _npSplitByBoard(allStocks);
+    var boardDefs = [
+        {key: 'main_board', label: '主板', cls: 'main'},
+        {key: 'gem_star', label: '创业板/科创板', cls: 'gem_star'},
+        {key: 'other', label: '其他', cls: 'other'}
+    ];
+    boardDefs.forEach(function(board) {
+        var bStocks = boards[board.key] || [];
+        if (bStocks.length === 0) return;
+        var secId = 'np-section-' + catKey + '-' + board.key;
+
+        html += '<div class="np-board-section" id="' + secId + '">';
+        html += '<div class="np-board-header collapsible collapsed ' + board.cls + '" onclick="toggleNpBoard(this)" data-np-board="' + secId + '">';
+        html += board.label + ' (' + bStocks.length + '\u53ea)';
+        html += '<span class="board-arrow">\u25bc</span>';
+        html += '</div>';
+        html += '<div class="np-board-body collapsed">';
+        html += '<div class="np-card-grid">';
+
+        bStocks.forEach(function(s) {
+            var starCls = s.is_lianban2plus ? ' star-card' : '';
+            var tldCls = s.is_tld_shouban ? ' tld-shouban-card' : (s.is_tld ? ' tld-card' : '');
+            var nwCls = s.is_nw_pattern ? ' nw-card' : '';
+            html += '<div class="np-card' + starCls + tldCls + nwCls + '">';
+
+            // Header: code, name, badges
+            html += '<div class="np-card-header">';
+            html += '<div>';
+            html += '<span class="np-card-code" data-code="' + s.code + '" data-name="' + s.name + '">' + s.code + '</span>';
+            html += '<span class="np-card-name">' + s.name + '</span>';
+            if (s.is_lianban2plus) html += '<span style="margin-left:4px;color:#ffc107;">\u2b50</span>';
+            if (s.is_oscillation) html += '<span style="margin-left:4px;color:#00d4ff;font-size:0.85em;">\u27f3</span>';
+            if (s.has_zha_ban) html += '<span style="margin-left:4px;color:#ff9800;font-size:0.85em;">\u26a0</span>';
+            if (s.is_tld_shouban) html += '<span class="tld-shouban-badge">\u9996\u677f\u5c60\u9f99</span>';
+            else if (s.is_tld) html += '<span class="tld-badge">\u5c60\u9f99\u5200</span>';
+            if (s.is_nw_pattern) html += '<span class="nw-badge">N+W\u53cc\u5e95</span>';
+            html += '</div>';
+            html += '<div><span class="np-card-badge lianban">' + s.lianban_count + '\u8fde\u677f</span><button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + s.code + '\\x27)" title="\u653e\u5927\u5361\u7247">\u2b36</button></div>';
+            html += '</div>';
+
+            // Concepts badges
+            html += '<div class="np-card-badges">';
+            var concepts = s.concepts || [];
+            concepts.forEach(function(c) {
+                html += '<span class="np-card-badge">' + c + '</span>';
+            });
+            html += '</div>';
+
+            html += '<div class="np-detail-placeholder" data-np-code="' + s.code + '"><div class="empty" style="padding:8px;">\u52a0\u8f7d\u8be6\u60c5...</div></div>';
+
+            html += '</div>'; // .np-card
+        });
+
+        html += '</div></div></div>'; // .np-card-grid, .np-board-body, .np-board-section
+    });
+
+    html += '<div class="np-back-top" onclick="scrollToNpSection(\\x27np-nav-top\\x27)">\u2191 \u56de\u5230\u9876\u90e8</div>';
+    html += '</div></div>'; // .np-cat-body, .np-section
+    return html;
+}
+
+// N字战法：展开/收起板块二级目录，展开时懒加载卡片详情
 function toggleNpBoard(el) {
     el.classList.toggle('collapsed');
     var body = el.nextElementSibling;
-    if (body) {
-        body.classList.toggle('collapsed');
-    }
-
-    // 展开时延迟加载卡片详情
+    if (body) body.classList.toggle('collapsed');
+    // 展开时加载本板块的卡片详情
     if (body && !body.classList.contains('collapsed')) {
         setTimeout(function() {
             var newCodes = [];
@@ -4475,92 +4581,6 @@ function toggleNpBoard(el) {
     }
 }
 
-function renderNpCategory(cat, catKey) {
-    if (!cat) return '';
-    // Collect all stocks from all boards
-    var allStocks = (cat.main_board || []).concat(cat.gem || []).concat(cat.star || []).concat(cat.bj || []);
-    if (allStocks.length === 0) return '';
-
-    // Re-split by code prefix
-    var boards = _npSplitByBoard(allStocks);
-
-    // Icon/color for categories
-    var catIcons = {'tld': '🔪', '0-2': '🟢', '2-5': '🟡', '5-8': '🟠', '8-10': '🔴', '10+': '⛔'};
-    var icon = catIcons[catKey] || '📊';
-
-    var html = '<div class="np-section" id="np-section-' + catKey + '">';
-    html += '<div class="np-cat-header collapsed" onclick="toggleNpCategory(this)" data-np-cat="' + catKey + '">';
-    html += '<span class="cat-icon">' + icon + '</span>';
-    html += '<span class="cat-name">' + cat.name + '</span>';
-    html += '<span class="cat-count">' + allStocks.length + '只</span>';
-    html += '<span class="cat-arrow">▼</span>';
-    html += '</div>';
-
-    html += '<div class="np-cat-body collapsed" id="np-cat-body-' + catKey + '">';
-
-    var boardDefs = [
-        {key: 'main_board', label: '主板', cls: 'main'},
-        {key: 'gem_star', label: '创业板/科创板', cls: 'gem_star'},
-        {key: 'other', label: '其他', cls: 'other'}
-    ];
-
-    boardDefs.forEach(function(board) {
-        var stocks = boards[board.key] || [];
-        if (stocks.length === 0) return;
-
-        var secId = 'np-section-' + catKey + '-' + board.key;
-        html += '<div class="np-board-section">';
-        html += '<div class="np-board-header collapsible ' + board.cls + '" onclick="toggleNpBoard(this)" data-np-board="' + secId + '">';
-        html += board.label + ' (' + stocks.length + '只)';
-        html += '<span class="board-arrow">▼</span>';
-        html += '</div>';
-        html += '<div class="np-board-body" id="' + secId + '">';
-        html += '<div class="np-card-grid">';
-
-        stocks.forEach(function(s) {
-            var starCls = s.is_lianban2plus ? ' star-card' : '';
-            var tldCls = s.is_tld_shouban ? ' tld-shouban-card' : (s.is_tld ? ' tld-card' : '');
-            var nwCls = s.is_nw_pattern ? ' nw-card' : '';
-            html += '<div class="np-card' + starCls + tldCls + nwCls + '">';
-
-            // Header: code, name, badges
-            html += '<div class="np-card-header">';
-            html += '<div>';
-            html += '<span class="np-card-code" data-code="' + s.code + '" data-name="' + s.name + '">' + s.code + '</span>';
-            html += '<span class="np-card-name">' + s.name + '</span>';
-            if (s.is_lianban2plus) html += '<span style="margin-left:4px;color:#ffc107;">⭐</span>';
-            if (s.is_oscillation) html += '<span style="margin-left:4px;color:#00d4ff;font-size:0.85em;">⟳</span>';
-            if (s.has_zha_ban) html += '<span style="margin-left:4px;color:#ff9800;font-size:0.85em;">⚠</span>';
-            if (s.is_tld_shouban) html += '<span class="tld-shouban-badge">首板屠龙</span>';
-            else if (s.is_tld) html += '<span class="tld-badge">屠龙刀</span>';
-            if (s.is_nw_pattern) html += '<span class="nw-badge">N+W双底</span>';
-            html += '</div>';
-            html += '<div><span class="np-card-badge lianban">' + s.lianban_count + '连板</span><button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + s.code + '\\x27)" title="放大卡片">⛶</button></div>';
-            html += '</div>';
-
-            // Concepts badges (全部展示)
-            html += '<div class="np-card-badges">';
-            var concepts = s.concepts || [];
-            concepts.forEach(function(c) {
-                html += '<span class="np-card-badge">' + c + '</span>';
-            });
-            html += '</div>';
-
-            html += '<div class="np-detail-placeholder" data-np-code="' + s.code + '"><div class="empty" style="padding:8px;">展开后加载详情</div></div>';
-
-            html += '</div>'; // .np-card
-        });
-
-        html += '</div></div></div>'; // .np-card-grid, .np-board-body, .np-board-section
-    });
-
-    // Back to top
-    html += '<div class="np-back-top" onclick="scrollToNpSection(\\x27np-nav-top\\x27)">↑ 回到顶部</div>';
-
-    html += '</div></div>'; // .np-cat-body, .np-section
-    return html;
-}
-
 function toggleNpCategory(el) {
     var wasCollapsed = el.classList.contains('collapsed');
     el.classList.toggle('collapsed');
@@ -4574,24 +4594,7 @@ function toggleNpCategory(el) {
             body.style.display = 'none';
         }
     }
-
-    // 展开时加载所有板体中的卡片详情
-    if (body && wasCollapsed) {
-        setTimeout(function() {
-            var newCodes = [];
-            body.querySelectorAll('.np-detail-placeholder').forEach(function(ph) {
-                var code = ph.getAttribute('data-np-code');
-                if (code) {
-                    ph.setAttribute('data-np-detail', code);
-                    if (!_npDetailData[code] && newCodes.indexOf(code) === -1) newCodes.push(code);
-                }
-            });
-            if (newCodes.length > 0) {
-                _npDetailLoading = false;
-            }
-            loadNpCardDetails();
-        }, 150);
-    }
+    // 展开一级目录只显示二级目录（board headers），卡片详情由toggleNpBoard加载
 }
 
 function toggleNpKline(canvasId) {
@@ -5184,7 +5187,7 @@ function renderNpSimpleCard(s, prefix) {
     // if (latestDate) html += '<div class="np-kline-latest">最新: <span>' + latestDate + '</span></div>';
     // == END OLD CONTENT ==
 
-    html += '<div class="np-detail-placeholder" data-np-code="' + s.code + '"><div class="empty" style="padding:8px;">展开后加载详情</div></div>';
+    html += '<div class="np-detail-placeholder" data-np-code="' + s.code + '"><div class="empty" style="padding:8px;">加载详情...</div></div>';
 
     html += '</div>';
     return html;
@@ -5484,8 +5487,9 @@ function loadNpZtWindow() {
 
         // Re-init sidebar observer to include new section
         initNpSidebar();
-        // Add sub-nav for 15日涨停 board categories
+        // 初始化15日涨停二级导航
         initZtSubNav();
+        // 加载新板块的卡片详情
         loadNpCardDetails();
     }).catch(function(e) {
         console.error('15日涨停板加载失败:', e);
@@ -5618,8 +5622,7 @@ function showStockCard(code, name, skipLoading) {
         navBtn.style.cssText = 'padding:8px 20px;font-size:0.9em;';
         navBtn.onclick = function() {
             closeKlineModal();
-            document.getElementById('stockInput').value = code + ' ' + stockName;
-            doSearch();
+            doSearch(code, '');
         };
         btnDiv.appendChild(navBtn);
         metricsEl.parentNode.appendChild(btnDiv);
@@ -5638,11 +5641,15 @@ function closeKlineModal() {
 
 // 键盘快捷键：左右箭头切换卡片，Esc关闭
 document.addEventListener('keydown', function(e) {
-    var modal = document.getElementById('klineModal');
-    if (!modal.classList.contains('active')) return;
-    if (e.key === 'ArrowLeft') { navigateCard(-1); e.preventDefault(); }
-    else if (e.key === 'ArrowRight') { navigateCard(1); e.preventDefault(); }
-    else if (e.key === 'Escape') { closeKlineModal(); e.preventDefault(); }
+    var klineModal = document.getElementById('klineModal');
+    var enlargeModal = document.getElementById('enlargeCardModal');
+    if (klineModal && klineModal.classList.contains('active')) {
+        if (e.key === 'ArrowLeft') { navigateCard(-1); e.preventDefault(); }
+        else if (e.key === 'ArrowRight') { navigateCard(1); e.preventDefault(); }
+        else if (e.key === 'Escape') { closeKlineModal(); e.preventDefault(); }
+    } else if (enlargeModal && enlargeModal.classList.contains('active')) {
+        if (e.key === 'Escape') { closeEnlargeCardModal(); e.preventDefault(); }
+    }
 });
 
 // ===== Real-time Dashboard =====
@@ -6118,8 +6125,10 @@ function renderHotRank100Table(stocks) {
     if (!stocks || stocks.length === 0) return '<div class="empty" style="padding:15px;">暂无数据</div>';
     var html = '<table class="rt-zt-table"><tr><th>排名</th><th>代码</th><th>名称</th><th>涨幅</th><th>热度值</th><th>标签</th><th>概念</th></tr>';
     stocks.forEach(function(s) {
-        var pctColor = s.change_pct >= 0 ? '#ff6b6b' : '#4caf50';
-        var pctStr = (s.change_pct > 0 ? '+' : '') + s.change_pct.toFixed(2) + '%';
+        var cp = s.change_pct;
+        if (cp === null || cp === undefined) cp = 0;
+        var pctColor = cp >= 0 ? '#ff6b6b' : '#4caf50';
+        var pctStr = (cp > 0 ? '+' : '') + cp.toFixed(2) + '%';
         var popLabel = s.pop_tag ? '<span class="badge badge-pool" style="font-size:0.75em;">' + s.pop_tag + '</span>' : '';
         html += '<tr class="clickable" data-code="' + s.code + '" data-name="' + s.name + '">';
         html += '<td style="color:#888;">' + s.rank + '</td>';
@@ -6145,14 +6154,28 @@ function sortHotConcept(col) {
         _hotConceptSortCol = col;
         _hotConceptSortDir = -1; // 切换列时默认降序
     }
-    if (_hotConceptsData) {
+    if (!_hotConceptsData) return;
+    if (_conceptSearched) {
+        // 搜索模式下：更新 conceptResult 中的Top20区域
         var rc = document.getElementById('conceptResult');
-        if (!_conceptSearched && rc) {
+        if (!rc) return;
+        var topSection = rc.querySelector('.top20-section');
+        if (topSection) {
+            topSection.innerHTML = '<div style="margin-bottom:8px;color:#888;font-size:0.85em;">📈 同花顺热门概念板块 Top20</div>';
+            topSection.innerHTML += renderHotConceptTable(_hotConceptsData);
+        }
+    } else {
+        // 默认模式下：更新顶部的topConceptTable
+        var tc = document.getElementById('topConceptTable');
+        if (tc) {
             var html = '<div class="result">';
             html += '<div style="margin-bottom:8px;color:#888;font-size:0.85em;">📈 同花顺热门概念板块 Top20 — 点击概念名称查看详细分析，或在上方搜索框输入概念</div>';
             html += renderHotConceptTable(_hotConceptsData);
+            html += '<div style="margin-top:20px;padding:15px;background:#0d1b36;border-radius:8px;">';
+            html += '<div style="color:#888;font-size:0.85em;">&#128161; 在上方搜索框输入概念（细分）名称即可搜索，支持同花顺概念和涨停理由关键词</div>';
             html += '</div>';
-            rc.innerHTML = html;
+            html += '</div>';
+            tc.innerHTML = html;
         }
     }
 }
@@ -6175,8 +6198,10 @@ function renderHotConceptTable(concepts) {
     html += '<th class="sortable" onclick="sortHotConcept(&#39;hot_value&#39;)">热度值' + arrow('hot_value') + '</th>';
     html += '<th>标签</th></tr>';
     concepts.forEach(function(c) {
-        var pctColor = c.change_pct >= 0 ? '#ff6b6b' : '#4caf50';
-        var pctStr = (c.change_pct > 0 ? '+' : '') + c.change_pct.toFixed(2) + '%';
+        var cp = c.change_pct;
+        if (cp === null || cp === undefined) cp = 0;
+        var pctColor = cp >= 0 ? '#ff6b6b' : '#4caf50';
+        var pctStr = (cp > 0 ? '+' : '') + cp.toFixed(2) + '%';
         var tagLabel = c.hot_tag ? '<span class="badge" style="background:#0f3460;color:#88c0ff;font-size:0.75em;">' + c.hot_tag + '</span>' : '';
         html += '<tr>';
         html += '<td style="color:#888;">' + c.rank + '</td>';
@@ -6274,10 +6299,12 @@ function loadLinkageDefaultSections() {
 }
 
 // ===== Concept Top20 auto-load =====
+var _topConceptTableLoaded = false;
 function loadTopConcepts() {
-    var container = document.getElementById('topConceptsBadges');
+    var container = document.getElementById('topConceptTable');
+    if (!container) return;
     // 防止重复加载
-    if (container.getAttribute('data-loaded') === 'true') return;
+    if (_topConceptTableLoaded) return;
     container.innerHTML = '<div class="loading" style="padding:8px;">加载热门概念...</div>';
 
     // 并行加载本地统计Top20 + 同花顺热门概念Top20
@@ -6289,30 +6316,22 @@ function loadTopConcepts() {
         var hotConcepts = results[1] || [];
         _hotConceptsData = hotConcepts;
 
-        container.setAttribute('data-loaded', 'true');
+        _topConceptTableLoaded = true;
 
-        // Badges (来自本地统计Top20)
-        var topConcepts = (data && data.top_concepts) || [];
-        var badgesHtml = '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px;">';
-        topConcepts.forEach(function(c) {
-            var ztCnt = c.zt_stock_count || 0;
-            var stkCnt = c.total_stocks || 0;
-            badgesHtml += '<span class="badge badge-pool top-concept-btn" data-concept="' + c.concept.replace(/"/g, '') + '" style="cursor:pointer;font-size:0.82em;padding:4px 10px;">' + c.concept + ' <span style="color:#ff6b6b;">' + ztCnt + '</span> <span style="color:#555;font-size:0.8em;">/' + stkCnt + '</span></span>';
-        });
-        badgesHtml += '</div>';
-        container.innerHTML = badgesHtml;
+        // 渲染同花顺热门概念板块Top20表格
+        var html = '<div class="result">';
+        html += '<div style="margin-bottom:8px;color:#888;font-size:0.85em;">📈 同花顺热门概念板块 Top20 — 点击概念名称查看详细分析，或在上方搜索框输入概念</div>';
+        html += renderHotConceptTable(hotConcepts);
+        html += '<div style="margin-top:20px;padding:15px;background:#0d1b36;border-radius:8px;">';
+        html += '<div style="color:#888;font-size:0.85em;">&#128161; 在上方搜索框输入概念（细分）名称即可搜索，支持同花顺概念和涨停理由关键词</div>';
+        html += '</div>';
+        html += '</div>';
+        container.innerHTML = html;
 
-        // Default 内容: 显示同花顺热门概念板块Top20
+        // 如果还未搜索，也填充 conceptResult 的初始内容（兼容旧版）
         var resultContainer = document.getElementById('conceptResult');
-        if (!_conceptSearched && resultContainer) {
-            var html = '<div class="result">';
-            html += '<div style="margin-bottom:8px;color:#888;font-size:0.85em;">📈 同花顺热门概念板块 Top20 — 点击概念名称查看详细分析，或在上方搜索框输入概念</div>';
-            html += renderHotConceptTable(hotConcepts);
-            html += '<div style="margin-top:20px;padding:15px;background:#0d1b36;border-radius:8px;">';
-            html += '<div style="color:#888;font-size:0.85em;">&#128161; 在上方搜索框输入概念（细分）名称即可搜索，支持同花顺概念和涨停理由关键词</div>';
-            html += '</div>';
-            html += '</div>';
-            resultContainer.innerHTML = html;
+        if (!_conceptSearched && resultContainer && !resultContainer.querySelector('.result')) {
+            // empty state already shown in HTML, no need to overwrite
         }
     }).catch(function(e) {
         container.innerHTML = '';
@@ -6417,8 +6436,7 @@ function afterUpdateDone(isError) {
     _clearTabCache();
     loadDataStatus();  // 刷新顶部数据状态
     // 清除前端data-loaded缓存
-    var tb = document.getElementById('topConceptsBadges');
-    if (tb) tb.removeAttribute('data-loaded');
+    _topConceptTableLoaded = false;
     var ld = document.getElementById('linkageDefaultSections');
     if (ld) ld.removeAttribute('data-loaded');
     // 原地刷新当前标签页
@@ -6993,11 +7011,41 @@ function renderStockDetail(data, name, code) {
 }
 function modalQueryLinkage(code) {
     closeDsStockModal();
-    document.getElementById('stockInput').value = code;
-    doSearch();
+    doSearch(code, '');
 }
 function closeDsStockModal() {
     document.getElementById('dsStockModal').classList.remove('active');
+}
+
+// 实时tab点击股票 → 显示N字战法样式详细卡片（涨停理由+3月统计+日K/分时图）
+var _realtimeCardFetchId = 0;
+function showRealtimeCardDetail(code, name) {
+    var fetchId = ++_realtimeCardFetchId;
+    var modal = document.getElementById('enlargeCardModal');
+    var body = document.getElementById('enlargeCardModalBody');
+    // 显示加载状态
+    body.innerHTML = '<div style="padding:20px;text-align:center;color:#888;">正在获取 ' + code + ' ' + name + ' 数据...</div>';
+    modal.classList.add('active');
+
+    fetch('/api/stock_detail_batch?codes=' + encodeURIComponent(code))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (fetchId !== _realtimeCardFetchId) return; // 过时fetch丢弃
+            var detail = data && data[code];
+            if (!detail || !detail.limit_rows) {
+                body.innerHTML = '<div style="padding:20px;text-align:center;color:#888;">暂无数据</div>';
+                return;
+            }
+            var html = '<div style="padding:12px 16px;">';
+            html += '<h3 style="margin:0 0 8px 0;color:#00d4ff;">' + code + ' ' + name + '</h3>';
+            html += _renderCardDetailContent(code, detail, null);
+            html += '</div>';
+            body.innerHTML = html;
+        })
+        .catch(function() {
+            if (fetchId !== _realtimeCardFetchId) return;
+            body.innerHTML = '<div style="padding:20px;text-align:center;color:#888;">请求失败</div>';
+        });
 }
 
 // 卡片内容放大弹框
@@ -7073,6 +7121,19 @@ document.addEventListener('mouseout', function(e) {
 '''
 
 
+def _clean_nan(obj):
+    """递归将 NaN 替换为 None（null），确保 JSON 序列化不出 NaN 非法值"""
+    if isinstance(obj, float):
+        return None if (obj != obj) else obj  # NaN != NaN
+    elif isinstance(obj, dict):
+        return {k: _clean_nan(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [_clean_nan(v) for v in obj]
+    elif isinstance(obj, tuple):
+        return tuple(_clean_nan(v) for v in obj)
+    return obj
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -7107,9 +7168,11 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == '/api/recent_trade_dates':
             n = int(query.get('n', ['30'])[0])
-            # 只返回 _limit_rows 中有数据的日期
-            csv_dates = sorted(_limit_rows_by_date.keys(), reverse=True)
-            recent = csv_dates[:n]
+            # 合并交易日历 + CSV中有数据的日期，按倒序排列
+            trade_dates = set(getattr(finder, 'all_trade_dates', []))
+            csv_dates = set(_limit_rows_by_date.keys())
+            all_dates = sorted(trade_dates | csv_dates, reverse=True)
+            recent = all_dates[:n]
             self._respond_json(recent, cors_headers)
 
         elif path == '/api/history_zt_by_date':
@@ -7120,25 +7183,53 @@ class Handler(BaseHTTPRequestHandler):
             result = _get_cached('history_zt_' + date_str)
             if result is None:
                 rows = _limit_rows_by_date.get(date_str, [])
-                seen_codes = {}
-                result = []
-                for r in rows:
-                    code = r.get('ts_code', '').replace('.SH','').replace('.SZ','').replace('.BJ','')
-                    if code in seen_codes:
-                        continue
-                    seen_codes[code] = True
-                    concepts = finder.get_stock_concepts(code)
-                    lianban = _parse_chain_count(r.get('tag', ''))
-                    result.append({
-                        'code': code,
-                        'name': r.get('name', ''),
-                        'lianban': lianban,
-                        'first_time': 999999,
-                        'zb_count': 0,
-                        'concepts': list(concepts),
-                        'concept_count': len(concepts),
-                        'trade_date': date_str,
-                    })
+                if rows:
+                    # 从CSV获取
+                    seen_codes = {}
+                    result = []
+                    for r in rows:
+                        code = r.get('ts_code', '').replace('.SH','').replace('.SZ','').replace('.BJ','')
+                        if code in seen_codes:
+                            continue
+                        seen_codes[code] = True
+                        concepts = finder.get_stock_concepts(code)
+                        lianban = _parse_chain_count(r.get('tag', ''))
+                        result.append({
+                            'code': code,
+                            'name': r.get('name', ''),
+                            'lianban': lianban,
+                            'first_time': 999999,
+                            'zb_count': 0,
+                            'concepts': list(concepts),
+                            'concept_count': len(concepts),
+                            'trade_date': date_str,
+                        })
+                else:
+                    # CSV无数据，用akshare实时拉取
+                    try:
+                        import akshare as ak
+                        import pandas as pd
+                        df = ak.stock_zt_pool_em(date=date_str)
+                        if df is not None and not df.empty:
+                            result = []
+                            for _, row in df.iterrows():
+                                code = str(int(row['代码'])).zfill(6)
+                                concepts = finder.get_stock_concepts(code)
+                                result.append({
+                                    'code': code,
+                                    'name': str(row['名称']),
+                                    'lianban': int(row['连板数']) if pd.notna(row.get('连板数')) else 0,
+                                    'first_time': int(row['首次封板时间']) if pd.notna(row.get('首次封板时间')) else 999999,
+                                    'zb_count': int(row['炸板次数']) if pd.notna(row.get('炸板次数')) else 0,
+                                    'concepts': list(concepts),
+                                    'concept_count': len(concepts),
+                                    'trade_date': date_str,
+                                })
+                            result.sort(key=lambda x: x['first_time'])
+                        else:
+                            result = []
+                    except Exception:
+                        result = []
                 _set_cache('history_zt_' + date_str, result)
             self._respond_json(result, cors_headers)
 
@@ -7599,6 +7690,26 @@ class Handler(BaseHTTPRequestHandler):
                     'total_rows': len(limit_rows_all),
                 }, cors_headers)
 
+        elif path == '/api/stock_search':
+            q = query.get('q', [''])[0].strip().upper()
+            results = []
+            if q:
+                # search by code (exact prefix match first)
+                for code, name in finder.stock_name_map.items():
+                    if code.startswith(q) or q in name.upper():
+                        results.append({'code': code, 'name': name})
+                        if len(results) >= 15:
+                            break
+                # if too few results from prefix, also search by name fragment
+                if len(results) < 8:
+                    for code, name in finder.stock_name_map.items():
+                        if code not in [r['code'] for r in results]:
+                            if q in code or q in name.upper():
+                                results.append({'code': code, 'name': name})
+                                if len(results) >= 15:
+                                    break
+            self._respond_json(results, cors_headers)
+
         elif path == '/api/stock_detail_batch':
             codes_str = query.get('codes', [''])[0].strip()
             codes = [c.strip() for c in codes_str.split(',') if c.strip()]
@@ -7633,7 +7744,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _respond_json(self, data, extra_headers=None):
-        body = json.dumps(data, ensure_ascii=False).encode('utf-8')
+        body = json.dumps(_clean_nan(data), ensure_ascii=False).encode('utf-8')
         self._respond(200, body, 'application/json; charset=utf-8', extra_headers)
 
     def log_message(self, format, *args):
