@@ -42,6 +42,17 @@ except Exception as e:
     print(f"加载涨停理由CSV失败: {e}")
     _limit_rows = []
 
+# 建dict索引：按交易日分组（大幅减少线性扫描）
+_limit_rows_by_date = {}
+_limit_rows_by_code = {}
+for _r in _limit_rows:
+    _d = _r.get('trade_date', '')
+    if _d:
+        _limit_rows_by_date.setdefault(_d, []).append(_r)
+    _c = (_r.get('ts_code', '') or '').replace('.SH','').replace('.SZ','').replace('.BJ','')
+    if _c:
+        _limit_rows_by_code.setdefault(_c, []).append(_r)
+
 def _search_limit_rows(q):
     """搜索涨停理由数据。支持单关键词、OR(|)、AND(&)三种模式。
     返回 {results: [...], mode: 'single'|'or'|'and', query: str}
@@ -1355,6 +1366,37 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 .kline-modal-nav-btn:hover { color: #00d4ff; background: rgba(0,212,255,0.1); }
 .kline-modal-nav-btn.disabled { color: #444; cursor: not-allowed; background: transparent; }
 
+.np-enlarge-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; border-radius: 50%; margin-left: 4px;
+    background: rgba(0,212,255,0.12); border: 1px solid rgba(0,212,255,0.25);
+    color: #00d4ff; font-size: 0.7em; cursor: pointer;
+    transition: all 0.2s; line-height: 1; padding: 0; vertical-align: middle;
+}
+.np-enlarge-btn:hover { background: #00d4ff; color: #0a1628; }
+/* 卡片内容放大弹框 */
+.enlarge-card-modal { max-width: 700px; }
+.enlarge-card-btn {
+    position: absolute; top: 4px; right: 4px; z-index: 5;
+    width: 28px; height: 28px; border-radius: 50%;
+    background: rgba(0,212,255,0.15); border: 1px solid rgba(0,212,255,0.3);
+    color: #00d4ff; font-size: 0.85em; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.2s; line-height: 1; padding: 0;
+}
+.enlarge-card-btn:hover { background: #00d4ff; color: #0a1628; }
+.enlarged-card-content .ds-stock-kline-img { width: 100%; min-height: 200px; }
+.enlarged-card-content .ds-stock-kline-section { margin-bottom: 20px; }
+.enlarged-card-content .concept-kline-grid { grid-template-columns: 1fr; }
+.enlarged-card-content .kline-img { width: 100%; min-height: 180px; border-radius: 8px; border: 1px solid #0f3460; background: #fff; margin-bottom: 8px; }
+.enlarged-card-content .sk-header { margin-bottom: 10px; }
+.enlarged-card-content .sk-name { font-size: 1.2em; color: #00d4ff; font-weight: bold; }
+.enlarged-card-content .sk-code { font-size: 0.9em; color: #888; margin-left: 8px; }
+@media (max-width: 600px) {
+    .enlarge-card-modal { max-width: 100%; width: 98%; padding: 16px; }
+    .enlarged-card-content .ds-stock-kline-img { min-height: 150px; }
+}
+
 /* 股票K线弹窗 */
 .ds-stock-kline-section { margin-bottom: 16px; position: relative; }
 .ds-stock-kline-label { color: #888; font-size: 0.85em; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
@@ -1443,8 +1485,32 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
     font-size: 0.78em;
     margin: 1px 2px;
     border: 1px solid transparent;
-    white-space: normal;
-    word-break: break-all;
+    white-space: nowrap;
+}
+.lu-chip-clickable {
+    cursor: pointer;
+    transition: all 0.15s;
+    border-color: #5a3a00;
+}
+.lu-chip-clickable:hover {
+    background: #5a3a00;
+    color: #ffc107;
+    border-color: #ffa726;
+    box-shadow: 0 0 6px rgba(255,167,38,0.3);
+}
+.lu-chip-freq {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255,167,38,0.15);
+    color: #ffcc80;
+    font-size: 0.75em;
+    min-width: 14px;
+    height: 14px;
+    border-radius: 7px;
+    padding: 0 4px;
+    margin-left: 2px;
+    vertical-align: middle;
 }
 
 .rt-section {
@@ -1478,6 +1544,105 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
     color: #fff; text-align: center; padding: 6px;
     border-radius: 8px; font-size: 0.85em; margin-bottom: 12px;
 }
+
+/* Refresh icon for realtime section headings */
+.rt-refresh-icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer; font-size: 0.85em;
+    margin-left: auto; opacity: 0.5;
+    transition: all 0.2s;
+    width: 24px; height: 24px; border-radius: 50%;
+    user-select: none;
+}
+.rt-refresh-icon:hover {
+    opacity: 1; color: #ff9800;
+    background: rgba(255,152,0,0.12);
+}
+.rt-refresh-icon:active {
+    transform: scale(0.9);
+}
+.rt-refresh-icon.spinning {
+    animation: rt-spin 0.6s linear infinite;
+}
+@keyframes rt-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* Auto-refresh toggle button */
+.rt-auto-refresh-btn {
+    display: inline-flex; align-items: center; gap: 4px;
+    cursor: pointer; border: 1px solid rgba(255,255,255,0.25);
+    border-radius: 16px; padding: 3px 12px;
+    font-size: 0.8em; color: rgba(255,255,255,0.7);
+    background: rgba(255,255,255,0.08);
+    transition: all 0.3s; white-space: nowrap;
+    line-height: 1.4;
+}
+.rt-auto-refresh-btn:hover {
+    border-color: #00d4ff; color: #00d4ff;
+    background: rgba(0,212,255,0.1);
+}
+.rt-auto-refresh-btn.active {
+    background: rgba(0,212,255,0.15);
+    border-color: #00d4ff; color: #00d4ff;
+    box-shadow: 0 0 10px rgba(0,212,255,0.2);
+}
+.rt-auto-refresh-btn.active .rt-pulse-dot {
+    display: inline-block;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #00d4ff;
+    animation: rt-pulse 1.5s ease-in-out infinite;
+}
+@keyframes rt-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.3; transform: scale(0.6); }
+}
+
+/* Toast notification */
+.rt-toast {
+    position: fixed; top: 20px; right: 20px; z-index: 99999;
+    padding: 10px 18px; border-radius: 10px; font-size: 0.85em;
+    color: #fff; max-width: 320px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    transform: translateX(120%); opacity: 0;
+    transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+    pointer-events: none;
+}
+.rt-toast.show { transform: translateX(0); opacity: 1; }
+.rt-toast.info { background: linear-gradient(135deg, #1a3a6a, #0f3460); border: 1px solid #00d4ff; }
+.rt-toast.warning { background: linear-gradient(135deg, #5a3a00, #7a4a00); border: 1px solid #ffc107; }
+
+/* Word frequency timeline */
+.wf-timeline {
+    display: flex; gap: 8px; overflow-x: auto; padding: 8px 4px 4px 4px;
+}
+.wf-day {
+    flex: 0 0 auto; min-width: 130px; max-width: 160px;
+    background: rgba(0,0,0,0.15); border-radius: 8px; padding: 8px;
+    border: 1px solid #0f3460;
+}
+.wf-day-header {
+    font-size: 0.75em; color: #888; text-align: center;
+    padding-bottom: 6px; margin-bottom: 6px;
+    border-bottom: 1px solid #0f3460;
+    white-space: nowrap;
+}
+.wf-tag {
+    display: inline-block; font-size: 0.72em;
+    padding: 2px 5px; margin: 1px;
+    border-radius: 3px; cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+.wf-tag:hover {
+    transform: scale(1.05); box-shadow: 0 0 6px rgba(0,212,255,0.3);
+}
+.wf-tag-high { background: rgba(255,107,107,0.2); color: #ff6b6b; border: 1px solid rgba(255,107,107,0.3); }
+.wf-tag-mid { background: rgba(255,167,38,0.15); color: #ffa726; border: 1px solid rgba(255,167,38,0.2); }
+.wf-tag-low { background: rgba(0,212,255,0.1); color: #4fc3f7; border: 1px solid rgba(0,212,255,0.15); }
+.wf-tag .wf-count { font-size: 0.75em; opacity: 0.6; margin-left: 1px; }
+.wf-day-empty { color: #555; font-size: 0.75em; text-align: center; padding: 10px 0; }
 
 /* Update status bar */
 #updateArea {
@@ -1815,6 +1980,17 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
         <div id="klineModalCanvas" style="margin-top:12px;"><canvas id="klineModalChart" height="280"></canvas></div>
     </div>
 </div>
+
+<!-- 卡片内容放大弹框 -->
+<div id="enlargeCardModal" class="kline-modal-overlay" onclick="if(event.target===this)closeEnlargeCardModal()">
+    <div class="kline-modal enlarge-card-modal">
+        <div class="kline-modal-header">
+            <span class="kline-modal-close" onclick="closeEnlargeCardModal()">&times;</span>
+        </div>
+        <div id="enlargeCardModalBody"></div>
+    </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 <script>
@@ -1873,7 +2049,9 @@ function switchTab(tab) {
     else if (tab === 'stats') document.querySelectorAll('.tab')[7].classList.add('active');
     document.getElementById('tab-' + tab).classList.add('active');
 
-    if (tab === 'realtime') loadRealtime();
+    if (tab === 'realtime') {
+        if (!_realtimeLoaded) loadRealtime();
+    }
     if (tab === 'npattern') loadNPattern();
     if (tab === 'stats') loadStats();
     if (tab === 'recommend') loadRecommend();
@@ -1969,7 +2147,7 @@ function loadAlertMonitor() {
                     html += '<span class="np-card-code" data-code="' + code + '" data-name="' + name + '">' + code + '</span>';
                     html += '<span class="np-card-name">' + name + '</span>';
                     html += '</div>';
-                    html += '<div><span class="np-card-badge lianban">\u5f02\u52a8</span></div>';
+                    html += '<div><span class="np-card-badge lianban">\u5f02\u52a8</span><button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + code + '\\x27)" title="放大卡片">⛶</button></div>';
                     html += '</div>';
                     // Concepts badges
                     html += '<div class="np-card-badges">';
@@ -2233,6 +2411,9 @@ document.addEventListener('click', function(e) {
             return;
         }
     }
+    // 涨停理由标签点击 → 已由 searchLuTag 处理，阻止冒泡到 K线弹框
+    var lc = e.target.closest('.lu-chip-clickable');
+    if (lc) return;
     var el = e.target.closest('[data-code]');
     if (el) {
         var code = el.getAttribute('data-code');
@@ -4168,11 +4349,11 @@ function renderAlertNpCard(s, type) {
     html += '<span class="np-card-name">' + s.name + '</span>';
     html += '</div>';
     if (type === 'zha_ban') {
-        html += '<span class="np-card-badge alert">炸板' + s.zb_count + '次</span></div>';
+        html += '<span class="np-card-badge alert">炸板' + s.zb_count + '次</span><button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + s.code + '\\x27)" title="放大卡片">⛶</button></div>';
     } else {
         var boardLabel = s.board === 'gem' ? '创业板' : '科创板';
         var boardColor = s.board === 'gem' ? 'rgba(244,143,177,0.15);color:#f48fb1' : 'rgba(129,199,132,0.15);color:#81c784';
-        html += '<span class="np-card-badge lianban" style="background:' + boardColor + '">' + boardLabel + '</span></div>';
+        html += '<span class="np-card-badge lianban" style="background:' + boardColor + '">' + boardLabel + '</span><button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + s.code + '\\x27)" title="放大卡片">⛶</button></div>';
     }
 
     // Concepts
@@ -4354,7 +4535,7 @@ function renderNpCategory(cat, catKey) {
             else if (s.is_tld) html += '<span class="tld-badge">屠龙刀</span>';
             if (s.is_nw_pattern) html += '<span class="nw-badge">N+W双底</span>';
             html += '</div>';
-            html += '<div><span class="np-card-badge lianban">' + s.lianban_count + '连板</span></div>';
+            html += '<div><span class="np-card-badge lianban">' + s.lianban_count + '连板</span><button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + s.code + '\\x27)" title="放大卡片">⛶</button></div>';
             html += '</div>';
 
             // Concepts badges (全部展示)
@@ -4712,7 +4893,7 @@ function renderNpZtCard(s) {
     html += '<span class="np-card-code" data-code="' + s.code + '" data-name="' + s.name + '">' + s.code + '</span>';
     html += '<span class="np-card-name">' + s.name + '</span>';
     html += '</div>';
-    html += '<div><span class="np-card-badge lianban">' + s.zt_count + '次涨停</span></div>';
+    html += '<div><span class="np-card-badge lianban">' + s.zt_count + '次涨停</span><button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + s.code + '\\x27)" title="放大卡片">⛶</button></div>';
     html += '</div>';
 
     // Concepts badges
@@ -4899,7 +5080,7 @@ function renderOscCard(s) {
     html += '<span class="np-card-name">' + s.name + '</span>';
     html += '</div>';
     html += '<div><span class="np-card-badge lianban">' + s.lianban_count + '连板</span>';
-    html += '<span class="np-card-badge" style="background:' + scoreColor + ';color:#0a0a1a;">' + s.stabilization_score + '分</span></div>';
+    html += '<span class="np-card-badge" style="background:' + scoreColor + ';color:#0a0a1a;">' + s.stabilization_score + '分</span><button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + s.code + '\\x27)" title="放大卡片">⛶</button></div>';
     html += '</div>';
 
     // Concepts
@@ -4977,6 +5158,7 @@ function renderNpSimpleCard(s, prefix) {
     html += '<span class="np-card-name">' + s.name + '</span>';
     html += '</div>';
     html += '<span class="np-card-badge lianban">' + s.recent_zt_count + '次涨停</span>';
+    html += '<button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + s.code + '\\x27)" title="放大卡片">⛶</button>';
     html += '</div>';
 
     // Concepts
@@ -5010,7 +5192,7 @@ function renderNpSimpleCard(s, prefix) {
 
 function _renderCardDetailContent(code, detail, alertInfo) {
     if (!detail || !detail.limit_rows) return '<div class="empty" style="padding:8px;">暂无数据</div>';
-    var h = '';
+    var h = '<div class="ds-card-detail-wrap" style="position:relative;" data-code="' + code + '">';
     // 涨停理由表
     h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">涨停理由（共' + detail.limit_rows.length + '条）</div>';
     h += '<div style="max-height:210px;overflow-y:auto;">';
@@ -5047,6 +5229,7 @@ function _renderCardDetailContent(code, detail, alertInfo) {
     h += '<div style="text-align:center;padding:8px 0;">';
     h += '<button onclick="modalQueryLinkage(\\x27' + code + '\\x27)" style="background:#00d4ff;color:#0a1628;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">查询联动</button>';
     h += '</div>';
+    h += '</div>'; // close ds-card-detail-wrap
     return h;
 }
 
@@ -5492,7 +5675,10 @@ function loadRealtime() {
         if (apiUnavailable) {
             html += '<div class="refresh-banner" style="background:#5a1a1a;">⚠️ 实时API暂时无法获取数据</div>';
         } else {
-            html += '<div class="refresh-banner">📡 最近交易日: ' + (latestDate || 'N/A') + ' | 今日涨停: ' + ztCountToday + ' 只 | 连板天梯: ' + lianbanLadder.length + ' 只</div>';
+            html += '<div class="refresh-banner" style="display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;">';
+            html += '<span>📡 最近交易日: ' + (latestDate || 'N/A') + ' | 今日涨停: ' + ztCountToday + ' 只 | 连板天梯: ' + lianbanLadder.length + ' 只</span>';
+            html += '<button class="rt-auto-refresh-btn" id="autoRefreshBtn" onclick="toggleAutoRefresh()">⏱ 自动刷新 5分钟</button>';
+            html += '</div>';
         }
 
         // === HEADER SUMMARY ===
@@ -5508,7 +5694,7 @@ function loadRealtime() {
 
         // === 今日涨停（全量显示，按首次封板时间排序） ===
         html += '<div class="rt-section">';
-        html += '<h3>⚡ 今日涨停 <span class="count-badge">' + todayZt.length + '只</span></h3>';
+        html += '<h3>⚡ 今日涨停 <span class="count-badge">' + todayZt.length + '只</span><span class="rt-refresh-icon" onclick="manualRefreshTodayZt()" title="手动刷新今日涨停">↻</span></h3>';
         html += renderTodayZtList(todayZt);
         html += '</div>';
 
@@ -5518,18 +5704,151 @@ function loadRealtime() {
         html += renderLianbanLadderTable(lianbanLadder);
         html += '</div>';
 
-        // === 活跃涨停 Top 100 ===
-        var topStocks = stats.top_stocks || [];
+        // === 历史涨停（15个交易日，按日期选择） ===
+        html += '<div class="rt-section" id="rtHistorySection">';
+        html += '<h3>📅 历史涨停 <span class="count-badge" id="historyZtBadge">加载中...</span>';
+        html += '<span style="margin-left:auto;display:flex;align-items:center;gap:6px;">';
+        html += '<input type="date" id="historyZtDate" style="background:#1a1a2e;border:1px solid #0f3460;border-radius:6px;color:#eee;padding:3px 8px;font-size:0.82em;width:140px;cursor:pointer;" onchange="loadHistoryZtByDate(this.value)"';
+        html += ' title="选择日期查看历史涨停">';
+        html += '</span></h3>';
+        html += '<div id="historyZtList"><div class="loading" style="padding:20px;">选择日期查看历史涨停...</div></div>';
+        html += '</div>';
+
+        // === 涨停理由词频时间线（资金流向分析） ===
         html += '<div class="rt-section">';
-        html += '<h3>📊 活跃涨停 Top 100 <span class="count-badge">' + topStocks.length + '只</span></h3>';
-        html += renderHotStocksTable(topStocks);
+        html += '<h3>🔍 涨停理由词频 · 资金流向 <span class="count-badge" id="wordFreqBadge">近15日</span></h3>';
+        html += '<div id="ztWordFreqTimeline"><div class="loading" style="padding:20px;">加载词频分析...</div></div>';
         html += '</div>';
 
         container.innerHTML = html;
         loadLuReasons();
+        // 加载历史涨停默认日期 + 词频时间线
+        loadHistoryZtByDate();
+        loadZtWordFreqTimeline();
+        _realtimeLoaded = true;
     }).catch(function(e) {
         container.innerHTML = '<div class="error">实时看板加载失败: ' + e.message + '</div>';
+        _realtimeLoaded = true; // 即使失败也标记已加载，避免无限重试
     });
+}
+
+// Manual refresh for 今日涨停 section only
+function manualRefreshTodayZt() {
+    var icon = document.querySelector('.rt-refresh-icon');
+    if (!icon) return;
+    icon.classList.add('spinning');
+
+    fetch('/api/realtime_zt?_t=' + Date.now())
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var section = document.querySelector('.rt-section:first-child');
+            if (section) {
+                section.innerHTML = '<h3>⚡ 今日涨停 <span class="count-badge">' + data.length + '只</span><span class="rt-refresh-icon" onclick="manualRefreshTodayZt()" title="手动刷新今日涨停">↻</span></h3>' + renderTodayZtList(data);
+                // 重新填充新DOM中的涨停理由
+                loadLuReasons();
+            }
+        })
+        .catch(function(e) {
+            console.error('手动刷新失败:', e);
+        })
+        .finally(function() {
+            icon.classList.remove('spinning');
+        });
+}
+
+// Auto refresh state and toggle
+var _autoRefreshTimer = null;
+var _autoRefreshCountdown = null;
+var _autoRefreshRemaining = 0;
+var _autoRefreshActive = false;
+var _realtimeLoaded = false;
+
+function toggleAutoRefresh() {
+    var btn = document.getElementById('autoRefreshBtn');
+    if (!btn) return;
+
+    if (_autoRefreshActive) {
+        // Stop
+        clearInterval(_autoRefreshTimer);
+        clearInterval(_autoRefreshCountdown);
+        _autoRefreshActive = false;
+        _autoRefreshTimer = null;
+        _autoRefreshCountdown = null;
+        btn.innerHTML = '\u23f1 自动刷新 5\u5206\u949f';
+        btn.classList.remove('active');
+        showToast('已停止自动刷新', 'info');
+        return;
+    }
+
+    // Check A-stock trading hours (Beijing time 9:25 ~ 15:00)
+    var now = new Date();
+    var beijingHour = (now.getUTCHours() + 8) % 24;
+    var beijingMin = now.getUTCMinutes();
+    var totalMin = beijingHour * 60 + beijingMin;
+    if (totalMin < 565 || totalMin >= 900) {
+        showToast('\u23f0 \u975e\u4ea4\u6613\u65f6\u6bb5 (9:25~15:00)\uff0c\u81ea\u52a8\u5237\u65b0\u4e0d\u53ef\u7528', 'warning');
+        return;
+    }
+
+    // Start
+    _autoRefreshActive = true;
+    _autoRefreshRemaining = 300;
+    btn.classList.add('active');
+
+    function updateAutoRefreshBtn() {
+        var m = Math.floor(_autoRefreshRemaining / 60);
+        var s = _autoRefreshRemaining % 60;
+        btn.innerHTML = '<span class="rt-pulse-dot"></span> \u81ea\u52a8\u5237\u65b0 (' + m + ':' + (s < 10 ? '0' : '') + s + ')';
+    }
+    updateAutoRefreshBtn();
+
+    _autoRefreshCountdown = setInterval(function() {
+        _autoRefreshRemaining--;
+        if (_autoRefreshRemaining <= 0) {
+            // Check trading hours before each refresh cycle
+            var now = new Date();
+            var h = (now.getUTCHours() + 8) % 24;
+            var m = now.getUTCMinutes();
+            var total = h * 60 + m;
+            if (total < 565 || total >= 900) {
+                // Out of trading hours, auto-stop
+                clearInterval(_autoRefreshTimer);
+                clearInterval(_autoRefreshCountdown);
+                _autoRefreshActive = false;
+                _autoRefreshTimer = null;
+                _autoRefreshCountdown = null;
+                btn.innerHTML = '\u23f1 自动刷新 5\u5206\u949f';
+                btn.classList.remove('active');
+                showToast('\u23f0 \u5df2\u8fc7\u4ea4\u6613\u65f6\u6bb5\uff0c\u81ea\u52a8\u5237\u65b0\u5df2\u505c\u6b62', 'info');
+                return;
+            }
+            _autoRefreshRemaining = 300;
+            manualRefreshTodayZt();
+        }
+        updateAutoRefreshBtn();
+    }, 1000);
+}
+
+// Toast notification helper
+var _toastTimer = null;
+function showToast(msg, type) {
+    type = type || 'info';
+    var el = document.getElementById('rtToast');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'rtToast';
+        el.className = 'rt-toast';
+        document.body.appendChild(el);
+    }
+    el.className = 'rt-toast ' + type;
+    el.textContent = msg;
+    // Force reflow before adding show class
+    void el.offsetWidth;
+    el.classList.add('show');
+    clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(function() {
+        el.classList.remove('show');
+    }, 3500);
 }
 
 // Render helpers for realtime dashboard
@@ -5543,6 +5862,13 @@ function loadLuReasons() {
         var c = el.getAttribute('data-code');
         if (c && !_stockDetailCache[c] && codes.indexOf(c) === -1) codes.push(c);
     });
+    // 先利用缓存渲染已有的数据（再进入tab时走此路径）
+    document.querySelectorAll('.lu-reasons').forEach(function(el) {
+        var c = el.getAttribute('data-code');
+        if (c && _stockDetailCache[c]) {
+            _renderLuReasons(el, c);
+        }
+    });
     if (codes.length === 0) return;
     _stockLuLoading = true;
     fetch('/api/stock_detail_batch?codes=' + codes.join(','))
@@ -5551,30 +5877,158 @@ function loadLuReasons() {
             for (var code in data) { _stockDetailCache[code] = data[code]; }
             document.querySelectorAll('.lu-reasons').forEach(function(el) {
                 var c = el.getAttribute('data-code');
-                if (_stockDetailCache[c]) {
-                    var rows = _stockDetailCache[c].limit_rows || [];
-                    // 去重：lu_desc完全相同的合并为一条
-                    var seen = {};
-                    var uniqueRows = [];
-                    rows.forEach(function(r) {
-                        var desc = r.lu_desc || '';
-                        if (!seen[desc]) { seen[desc] = true; uniqueRows.push(r); }
-                    });
-                    // Show most recent 6 unique limit-up reasons
-                    var reasons = uniqueRows.slice(0, 6).map(function(r) {
-                        return '<span class="lu-chip">' + (r.lu_desc || '') + '</span>';
-                    }).join('');
-                    if (reasons) {
-                        el.innerHTML = '<div style="margin-top:3px;">' + reasons + '</div>';
-                    } else {
-                        el.innerHTML = '<div style="margin-top:3px;"><span class="lu-chip" style="background:transparent;color:#666;font-size:0.75em;">暂无涨停理由</span></div>';
-                    }
-                    el.removeAttribute('data-code');
+                if (c && _stockDetailCache[c]) {
+                    _renderLuReasons(el, c);
                 }
             });
             _stockLuLoading = false;
         })
         .catch(function() { _stockLuLoading = false; });
+}
+
+// Shared helper: render lu reason chips from cache for one element
+function _renderLuReasons(el, code) {
+    var rows = _stockDetailCache[code].limit_rows || [];
+    var seen = {};
+    var freq = {};
+    rows.forEach(function(r) {
+        var desc = r.lu_desc || '';
+        if (seen[desc]) return;
+        seen[desc] = true;
+        desc.split('+').forEach(function(tag) {
+            tag = tag.trim();
+            if (tag) freq[tag] = (freq[tag] || 0) + 1;
+        });
+    });
+    var sortedTags = Object.keys(freq).sort(function(a, b) {
+        return freq[b] - freq[a];
+    }).slice(0, 10);
+    var reasons = sortedTags.map(function(tag) {
+        return '<span class=\"lu-chip lu-chip-clickable\" data-tag=\"' + tag.replace(/"/g, '') + '\" onclick=\"searchLuTag(this)\">' + tag + ' <span class=\"lu-chip-freq\">' + freq[tag] + '</span></span>';
+    }).join('');
+    if (reasons) {
+        el.innerHTML = '<div style=\"margin-top:3px;\">' + reasons + '</div>';
+    } else {
+        el.innerHTML = '<div style=\"margin-top:3px;\"><span class=\"lu-chip\" style=\"background:transparent;color:#666;font-size:0.75em;\">暂无涨停理由</span></div>';
+    }
+    el.removeAttribute('data-code');
+}
+
+// Click a split reason tag -> jump to 涨停深挖 tab and search all history
+function searchLuTag(el) {
+    var tag = el.getAttribute('data-tag');
+    if (!tag) return;
+    switchTab('deepsearch');
+    document.getElementById('deepSearchInput').value = tag;
+    // 默认近2个月，与直接搜索一致
+    var now = new Date();
+    document.getElementById('deepSearchDateEnd').value = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
+    var start = new Date(now);
+    start.setMonth(start.getMonth() - 2);
+    document.getElementById('deepSearchDateStart').value = start.getFullYear() + '-' + String(start.getMonth()+1).padStart(2,'0') + '-' + String(start.getDate()).padStart(2,'0');
+    doDeepSearch();
+}
+
+// ===== 历史涨停（按日期选择） =====
+var _historyTradeDates = [];
+function loadHistoryZtByDate(dateStr) {
+    // If no date provided, fetch trade dates and set default
+    if (!dateStr) {
+        fetch('/api/recent_trade_dates?n=20')
+            .then(function(r) { return r.json(); })
+            .then(function(dates) {
+                _historyTradeDates = dates;
+                // Default: trading day before latestDate
+                var container = document.getElementById('realtimeContainer');
+                var bannerText = container ? container.querySelector('.refresh-banner span') : null;
+                var latestDate = '';
+                if (bannerText) {
+                    var m = bannerText.textContent.match(/交易日:\s*(\d{8})/);
+                    if (m) latestDate = m[1];
+                }
+                var defaultDate = '';
+                if (latestDate && dates.length > 1) {
+                    var idx = dates.indexOf(latestDate);
+                    if (idx > 0) defaultDate = dates[idx - 1];
+                    else defaultDate = dates[0]; // 默认用最新交易日
+                } else {
+                    defaultDate = dates[0] || '';
+                }
+                if (defaultDate) {
+                    var isoDate = defaultDate.slice(0,4) + '-' + defaultDate.slice(4,6) + '-' + defaultDate.slice(6,8);
+                    var input = document.getElementById('historyZtDate');
+                    if (input) { input.value = isoDate; input.setAttribute('data-ymd', defaultDate); }
+                    loadHistoryZtByDate(defaultDate);
+                }
+            });
+        return;
+    }
+    var apiDate = dateStr.replace(/-/g, '');
+    var listEl = document.getElementById('historyZtList');
+    if (listEl) listEl.innerHTML = '<div class="loading" style="padding:15px;">加载 ' + apiDate + ' 涨停数据...</div>';
+    fetch('/api/history_zt_by_date?date=' + apiDate)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var stocks = data || [];
+            var listEl = document.getElementById('historyZtList');
+            var badge = document.getElementById('historyZtBadge');
+            if (badge) badge.textContent = stocks.length + '只';
+            if (listEl) {
+                listEl.innerHTML = renderTodayZtList(stocks);
+                loadLuReasons();
+            }
+        })
+        .catch(function(e) {
+            var listEl = document.getElementById('historyZtList');
+            if (listEl) listEl.innerHTML = '<div class="error" style="padding:15px;">加载失败: ' + e.message + '</div>';
+        });
+}
+
+// ===== 涨停理由词频时间线 =====
+function loadZtWordFreqTimeline() {
+    fetch('/api/zt_word_freq_timeline?days=15')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var container = document.getElementById('ztWordFreqTimeline');
+            if (!container) return;
+            if (!data || data.length === 0) {
+                container.innerHTML = '<div class="empty" style="padding:15px;">暂无数据</div>';
+                return;
+            }
+            var html = '<div class="wf-timeline">';
+            data.forEach(function(day) {
+                if (!day.tags || day.tags.length === 0) {
+                    html += '<div class="wf-day"><div class="wf-day-header">' + day.date.slice(0,4) + '-' + day.date.slice(4,6) + '-' + day.date.slice(6,8) + '</div><div class="wf-day-empty">暂无涨停</div></div>';
+                    return;
+                }
+                var dateLabel = day.date.slice(0,4) + '-' + day.date.slice(4,6) + '-' + day.date.slice(6,8);
+                html += '<div class="wf-day"><div class="wf-day-header">' + dateLabel + '</div>';
+                day.tags.forEach(function(t, idx) {
+                    var level = idx < 3 ? 'high' : (idx < 6 ? 'mid' : 'low');
+                    html += '<span class="wf-tag wf-tag-' + level + '" onclick="searchLuTagFromWf(\\x27' + t.tag.replace(/'/g, '') + '\\x27)" title="搜索: ' + t.tag + '">' + t.tag + ' <span class="wf-count">' + t.count + '</span></span>';
+                });
+                html += '</div>';
+            });
+            html += '</div>';
+            container.innerHTML = html;
+        })
+        .catch(function(e) {
+            var container = document.getElementById('ztWordFreqTimeline');
+            if (container) container.innerHTML = '<div class="error" style="padding:15px;">词频分析加载失败</div>';
+        });
+}
+
+// Click word freq tag -> jump to deep search
+function searchLuTagFromWf(tag) {
+    switchTab('deepsearch');
+    document.getElementById('deepSearchInput').value = tag;
+    // 默认近2个月，与直接搜索一致
+    var now = new Date();
+    document.getElementById('deepSearchDateEnd').value = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
+    var start = new Date(now);
+    start.setMonth(start.getMonth() - 2);
+    document.getElementById('deepSearchDateStart').value = start.getFullYear() + '-' + String(start.getMonth()+1).padStart(2,'0') + '-' + String(start.getDate()).padStart(2,'0');
+    doDeepSearch();
 }
 
 // Helper: render concept chips (全量显示，不省略)
@@ -5627,7 +6081,7 @@ function renderTodayZtList(stocks) {
         var s = String(t).padStart(6, '0');
         return s.slice(0, 2) + ':' + s.slice(2, 4);
     }
-    var html = '<table class="rt-zt-table"><tr><th>#</th><th>代码</th><th style="white-space:nowrap;min-width:90px;">名称</th><th>封板时间</th><th>连板</th><th>概念</th></tr>';
+    var html = '<table class="rt-zt-table"><tr><th>#</th><th>代码</th><th style="white-space:nowrap;min-width:90px;">名称</th><th style="min-width:90px;white-space:nowrap;">封板时间</th><th>连板</th><th>概念</th></tr>';
     stocks.forEach(function(s, i) {
         var lb = s.lianban || 0;
         var rankStr = (i + 1) <= 3 ? ['🥇', '🥈', '🥉'][i] : (i + 1);
@@ -5635,7 +6089,7 @@ function renderTodayZtList(stocks) {
         html += '<td style="font-size:0.9em;">' + rankStr + '</td>';
         html += '<td><strong>' + s.code + '</strong></td>';
         html += '<td style="white-space:nowrap;">' + (s.name || '') + '</td>';
-        html += '<td style="color:#4fc3f7;font-weight:bold;font-size:0.9em;">' + fmtTime(s.first_time) + '</td>';
+        html += '<td style="color:#4fc3f7;font-weight:bold;font-size:0.9em;white-space:nowrap;">' + fmtTime(s.first_time) + '</td>';
         html += '<td>' + renderLbBadge(lb) + '</td>';
         html += '<td>' + renderConceptChips(s.concepts, s.code) + '</td></tr>';
     });
@@ -6142,7 +6596,7 @@ function renderDeepKlineGrid(hits, forceTs) {
             var murl = sinaMinImg(s.code);
             var srcK = forceTs ? kurl.replace(/\?\d*$/, '') + '?' + forceTs : kurl;
             var srcM = forceTs ? murl.replace(/\?\d*$/, '') + '?' + forceTs : murl;
-            cells += '<div class="concept-kline-cell">' +
+            cells += '<div class="concept-kline-cell" onclick="showEnlargedConceptCell(this)" style="cursor:pointer;">' +
                 '<div class="sk-header"><span class="sk-name">' + s.name + '</span><span class="sk-code">' + s.code.replace('.SH','').replace('.SZ','') + '</span></div>' +
                 '<img class="kline-img" src="' + srcK + '" onerror="retryImg(this)">' +
                 '<img class="kline-img min" src="' + srcM + '" onerror="retryImg(this)">' +
@@ -6546,6 +7000,53 @@ function closeDsStockModal() {
     document.getElementById('dsStockModal').classList.remove('active');
 }
 
+// 卡片内容放大弹框
+function showEnlargedCardDetail(code) {
+    var wrap = document.querySelector('.ds-card-detail-wrap[data-code="' + code + '"]');
+    if (!wrap) return;
+    var modal = document.getElementById('enlargeCardModal');
+    var body = document.getElementById('enlargeCardModalBody');
+    // 克隆卡片内容到弹框
+    var clone = wrap.cloneNode(true);
+    // 移除克隆中的放大按钮（原按钮没必要出现在弹框里）
+    var btn = clone.querySelector('.enlarge-card-btn');
+    if (btn) btn.remove();
+    clone.className = 'enlarged-card-content';
+    // 刷新图片时间戳确保最新
+    var imgs = clone.querySelectorAll('img.ds-stock-kline-img');
+    imgs.forEach(function(img) {
+        var orig = img.getAttribute('data-orig-src');
+        if (orig) {
+            var ts = Math.floor(Date.now() / 10000);
+            img.src = orig.split('?')[0] + '?' + ts;
+        }
+    });
+    body.innerHTML = '';
+    body.appendChild(clone);
+    modal.classList.add('active');
+}
+function closeEnlargeCardModal() {
+    document.getElementById('enlargeCardModal').classList.remove('active');
+    document.getElementById('enlargeCardModalBody').innerHTML = '';
+}
+// 题材走势网格细胞放大
+function showEnlargedConceptCell(el) {
+    var modal = document.getElementById('enlargeCardModal');
+    var body = document.getElementById('enlargeCardModalBody');
+    var clone = el.cloneNode(true);
+    clone.style.cursor = 'default';
+    clone.className = 'enlarged-card-content';
+    var imgs = clone.querySelectorAll('img.kline-img');
+    imgs.forEach(function(img) {
+        var ts = Math.floor(Date.now() / 10000);
+        var src = img.getAttribute('src') || '';
+        img.src = src.split('?')[0] + '?' + ts;
+    });
+    body.innerHTML = '';
+    body.appendChild(clone);
+    modal.classList.add('active');
+}
+
 // 表格内同名称股票hover高亮
 document.addEventListener('mouseover', function(e) {
     // 清除所有之前的高亮
@@ -6603,6 +7104,110 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond_json(result or [], cors_headers)
             except Exception as e:
                 self._respond_json([], cors_headers)
+
+        elif path == '/api/recent_trade_dates':
+            n = int(query.get('n', ['30'])[0])
+            # 只返回 _limit_rows 中有数据的日期
+            csv_dates = sorted(_limit_rows_by_date.keys(), reverse=True)
+            recent = csv_dates[:n]
+            self._respond_json(recent, cors_headers)
+
+        elif path == '/api/history_zt_by_date':
+            date_str = query.get('date', [''])[0].strip()
+            if not date_str:
+                self._respond_json([], cors_headers)
+                return
+            result = _get_cached('history_zt_' + date_str)
+            if result is None:
+                rows = _limit_rows_by_date.get(date_str, [])
+                seen_codes = {}
+                result = []
+                for r in rows:
+                    code = r.get('ts_code', '').replace('.SH','').replace('.SZ','').replace('.BJ','')
+                    if code in seen_codes:
+                        continue
+                    seen_codes[code] = True
+                    concepts = finder.get_stock_concepts(code)
+                    lianban = _parse_chain_count(r.get('tag', ''))
+                    result.append({
+                        'code': code,
+                        'name': r.get('name', ''),
+                        'lianban': lianban,
+                        'first_time': 999999,
+                        'zb_count': 0,
+                        'concepts': list(concepts),
+                        'concept_count': len(concepts),
+                        'trade_date': date_str,
+                    })
+                _set_cache('history_zt_' + date_str, result)
+            self._respond_json(result, cors_headers)
+
+        elif path == '/api/zt_word_freq_timeline':
+            n = int(query.get('days', ['15'])[0])
+            # 获取交易日列表（从finder获取，已含2026年所有交易日）
+            trade_dates = getattr(finder, 'all_trade_dates', [])
+            if not trade_dates:
+                # 回退到CSV的日期
+                trade_dates = sorted(_limit_rows_by_date.keys())
+            today_ymd = datetime.now().strftime('%Y%m%d')
+            # 取最近N个交易日（不超过today）
+            valid_dates = [d for d in trade_dates if d <= today_ymd]
+            recent_dates = valid_dates[-n:] if len(valid_dates) >= n else valid_dates
+            # 对每个日期，用akshare获取该日涨停股，再从CSV查该日涨停理由
+            _generic_tags = {
+                'ST板块', '央企', '国企改革', '国企', '外销',
+                '一季报增长', '半年报增长', '三季报增长', '年报预增',
+                '业绩增长', '业绩预增', '中报预增', '年报增长',
+                '低价股', '小盘股', '重整', '回购',
+                '控制权变更', '股权转让', '扭亏为盈', '控制权拟变更',
+                '摘帽', '次新股', '成交量创历史新高', '超500只个股涨停',
+                '重大资产重组', '并购重组', '机器人概念',
+            }
+            result = []
+            for date_str in reversed(recent_dates):
+                # 先查缓存：历史日期用长TTL(4h)，今天用默认(1h)
+                cache_key = 'wf_date_' + date_str
+                is_today = (date_str == today_ymd)
+                cached = _get_cached(cache_key, ttl=3600 if is_today else 14400)
+                if cached is not None:
+                    result.append(cached)
+                    continue
+                # 用akshare获取该日涨停股票code
+                import akshare as ak
+                import pandas as pd
+                day_codes = set()
+                try:
+                    df = ak.stock_zt_pool_em(date=date_str)
+                    if df is not None and not df.empty:
+                        for _, row in df.iterrows():
+                            day_codes.add(str(int(row['代码'])).zfill(6))
+                except Exception:
+                    pass
+                if not day_codes:
+                    # 回退：用CSV中该日的所有股票
+                    for r in _limit_rows_by_date.get(date_str, []):
+                        code = r.get('ts_code', '').replace('.SH','').replace('.SZ','').replace('.BJ','')
+                        day_codes.add(code)
+                # 统计该日这些涨停股所有历史涨停理由
+                freq = {}
+                for code in day_codes:
+                    for r in _limit_rows_by_code.get(code, []):
+                        desc = r.get('lu_desc', '') or ''
+                        for tag in desc.split('+'):
+                            tag = tag.strip()
+                            if tag:
+                                freq[tag] = freq.get(tag, 0) + 1
+                for g in _generic_tags:
+                    freq.pop(g, None)
+                sorted_tags = sorted(freq.items(), key=lambda x: -x[1])
+                day_data = {
+                    'date': date_str,
+                    'tags': [{'tag': t, 'count': c} for t, c in sorted_tags]
+                }
+                _set_cache(cache_key, day_data)
+                result.append(day_data)
+            # Most recent first (leftmost) — loop above builds newest-first already
+            self._respond_json(result, cors_headers)
 
         elif path == '/api/lianban_ladder':
             result = _get_cached('lianban_ladder')
@@ -6997,23 +7602,20 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/stock_detail_batch':
             codes_str = query.get('codes', [''])[0].strip()
             codes = [c.strip() for c in codes_str.split(',') if c.strip()]
-            result = {}
-            for c in codes:
-                # 过滤该股票的所有涨停理由
-                rows = []
-                for r in _limit_rows:
-                    r_code = (r.get('ts_code', '') or '').replace('.SH', '').replace('.SZ', '').replace('.BJ', '')
-                    if r_code == c:
-                        rows.append(r)
-                rows.sort(key=lambda x: x.get('trade_date', '') or '', reverse=True)
-                # 近3个月统计
-                three_months_ago = (datetime.now() - timedelta(days=90)).strftime('%Y%m%d')
-                three_month_rows = [r for r in rows if (r.get('trade_date', '') or '') >= three_months_ago]
-                three_month_dates = sorted(set(r.get('trade_date', '') for r in three_month_rows), reverse=True)
-                result[c] = {
-                    'limit_rows': rows[:20],
-                    'three_month': {'count': len(three_month_dates), 'dates': three_month_dates}
-                }
+            cache_key = 'detail_batch_' + '_'.join(sorted(codes))
+            result = _get_cached(cache_key)
+            if result is None:
+                result = {}
+                for c in codes:
+                    rows = sorted(_limit_rows_by_code.get(c, []), key=lambda x: x.get('trade_date', '') or '', reverse=True)
+                    three_months_ago = (datetime.now() - timedelta(days=90)).strftime('%Y%m%d')
+                    three_month_rows = [r for r in rows if (r.get('trade_date', '') or '') >= three_months_ago]
+                    three_month_dates = sorted(set(r.get('trade_date', '') for r in three_month_rows), reverse=True)
+                    result[c] = {
+                        'limit_rows': rows[:20],
+                        'three_month': {'count': len(three_month_dates), 'dates': three_month_dates}
+                    }
+                _set_cache(cache_key, result)
             self._respond_json(result, cors_headers)
 
         else:
