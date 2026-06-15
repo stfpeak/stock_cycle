@@ -4329,11 +4329,11 @@ function renderNpCategory(cat, catKey) {
 
         var secId = 'np-section-' + catKey + '-' + board.key;
         html += '<div class="np-board-section">';
-        html += '<div class="np-board-header collapsible collapsed ' + board.cls + '" onclick="toggleNpBoard(this)" data-np-board="' + secId + '">';
+        html += '<div class="np-board-header collapsible ' + board.cls + '" onclick="toggleNpBoard(this)" data-np-board="' + secId + '">';
         html += board.label + ' (' + stocks.length + '只)';
         html += '<span class="board-arrow">▼</span>';
         html += '</div>';
-        html += '<div class="np-board-body collapsed" id="' + secId + '">';
+        html += '<div class="np-board-body" id="' + secId + '">';
         html += '<div class="np-card-grid">';
 
         stocks.forEach(function(s) {
@@ -4392,6 +4392,24 @@ function toggleNpCategory(el) {
             body.classList.add('collapsed');
             body.style.display = 'none';
         }
+    }
+
+    // 展开时加载所有板体中的卡片详情
+    if (body && wasCollapsed) {
+        setTimeout(function() {
+            var newCodes = [];
+            body.querySelectorAll('.np-detail-placeholder').forEach(function(ph) {
+                var code = ph.getAttribute('data-np-code');
+                if (code) {
+                    ph.setAttribute('data-np-detail', code);
+                    if (!_npDetailData[code] && newCodes.indexOf(code) === -1) newCodes.push(code);
+                }
+            });
+            if (newCodes.length > 0) {
+                _npDetailLoading = false;
+            }
+            loadNpCardDetails();
+        }, 150);
     }
 }
 
