@@ -3951,17 +3951,6 @@ function loadNPattern() {
             g.style.setProperty('--np-cols', _npGridCols);
         });
 
-        // Default collapse all categories
-        setTimeout(function() {
-            document.querySelectorAll('#am-cat-results .np-cat-header').forEach(function(h) {
-                if (!h.classList.contains('collapsed')) {
-                    h.classList.add('collapsed');
-                    var body = h.nextElementSibling;
-                    if (body) body.style.display = 'none';
-                }
-            });
-        }, 50);
-
         // Render all kline canvases
         setTimeout(function() {
             _npCatKeys.forEach(function(ck) {
@@ -4285,6 +4274,24 @@ function toggleNpBoard(el) {
     if (body) {
         body.classList.toggle('collapsed');
     }
+
+    // 展开时延迟加载卡片详情
+    if (body && !body.classList.contains('collapsed')) {
+        setTimeout(function() {
+            var newCodes = [];
+            body.querySelectorAll('.np-detail-placeholder').forEach(function(ph) {
+                var code = ph.getAttribute('data-np-code');
+                if (code) {
+                    ph.setAttribute('data-np-detail', code);
+                    if (!_npDetailData[code] && newCodes.indexOf(code) === -1) newCodes.push(code);
+                }
+            });
+            if (newCodes.length > 0) {
+                _npDetailLoading = false;
+            }
+            loadNpCardDetails();
+        }, 150);
+    }
 }
 
 function renderNpCategory(cat, catKey) {
@@ -4301,14 +4308,14 @@ function renderNpCategory(cat, catKey) {
     var icon = catIcons[catKey] || '📊';
 
     var html = '<div class="np-section" id="np-section-' + catKey + '">';
-    html += '<div class="np-cat-header" onclick="toggleNpCategory(this)" data-np-cat="' + catKey + '">';
+    html += '<div class="np-cat-header collapsed" onclick="toggleNpCategory(this)" data-np-cat="' + catKey + '">';
     html += '<span class="cat-icon">' + icon + '</span>';
     html += '<span class="cat-name">' + cat.name + '</span>';
     html += '<span class="cat-count">' + allStocks.length + '只</span>';
     html += '<span class="cat-arrow">▼</span>';
     html += '</div>';
 
-    html += '<div class="np-cat-body" id="np-cat-body-' + catKey + '">';
+    html += '<div class="np-cat-body collapsed" id="np-cat-body-' + catKey + '">';
 
     var boardDefs = [
         {key: 'main_board', label: '主板', cls: 'main'},
@@ -4322,11 +4329,11 @@ function renderNpCategory(cat, catKey) {
 
         var secId = 'np-section-' + catKey + '-' + board.key;
         html += '<div class="np-board-section">';
-        html += '<div class="np-board-header collapsible ' + board.cls + '" onclick="toggleNpBoard(this)" data-np-board="' + secId + '">';
+        html += '<div class="np-board-header collapsible collapsed ' + board.cls + '" onclick="toggleNpBoard(this)" data-np-board="' + secId + '">';
         html += board.label + ' (' + stocks.length + '只)';
         html += '<span class="board-arrow">▼</span>';
         html += '</div>';
-        html += '<div class="np-board-body" id="' + secId + '">';
+        html += '<div class="np-board-body collapsed" id="' + secId + '">';
         html += '<div class="np-card-grid">';
 
         stocks.forEach(function(s) {
@@ -4358,7 +4365,7 @@ function renderNpCategory(cat, catKey) {
             });
             html += '</div>';
 
-            html += '<div data-np-detail="' + s.code + '"><div class="empty" style="padding:8px;">加载中...</div></div>';
+            html += '<div class="np-detail-placeholder" data-np-code="' + s.code + '"><div class="empty" style="padding:8px;">展开后加载详情</div></div>';
 
             html += '</div>'; // .np-card
         });
@@ -4922,13 +4929,13 @@ function renderNpSimplePatternSection(stocks, key, label, icon, desc) {
     var total = stocks.length;
 
     var html = '<div class="np-section" id="np-section-' + key + '">';
-    html += '<div class="np-cat-header" onclick="toggleNpCategory(this)" data-np-cat="' + key + '">';
+    html += '<div class="np-cat-header collapsed" onclick="toggleNpCategory(this)" data-np-cat="' + key + '">';
     html += '<span class="cat-icon">' + icon + '</span>';
     html += '<span class="cat-name">' + label + '</span>';
     html += '<span class="cat-count">' + total + '只</span>';
     html += '<span class="cat-arrow">▼</span>';
     html += '</div>';
-    html += '<div class="np-cat-body" id="np-cat-body-' + key + '">';
+    html += '<div class="np-cat-body collapsed" id="np-cat-body-' + key + '">';
     html += '<p style="color:#888;font-size:0.85em;margin:0 0 10px 0;">' + desc + '</p>';
     html += '<div class="np-card-grid" id="simple-grid-' + key + '">';
     for (var i = 0; i < total; i++) {
@@ -4976,7 +4983,7 @@ function renderNpSimpleCard(s, prefix) {
     // if (latestDate) html += '<div class="np-kline-latest">最新: <span>' + latestDate + '</span></div>';
     // == END OLD CONTENT ==
 
-    html += '<div data-np-detail="' + s.code + '"><div class="empty" style="padding:8px;">加载中...</div></div>';
+    html += '<div class="np-detail-placeholder" data-np-code="' + s.code + '"><div class="empty" style="padding:8px;">展开后加载详情</div></div>';
 
     html += '</div>';
     return html;
