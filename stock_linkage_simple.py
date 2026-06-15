@@ -4052,13 +4052,13 @@ function renderNpAlertSection(data) {
     var INIT_SHOW = 10;
 
     var html = '<div class="np-section" id="np-section-alert">';
-    html += '<div class="np-cat-header" onclick="toggleNpCategory(this)" data-np-cat="alert">';
+    html += '<div class="np-cat-header collapsed" onclick="toggleNpCategory(this)" data-np-cat="alert">';
     html += '<span class="cat-icon">⚠</span>';
     html += '<span class="cat-name">额外关注</span>';
     html += '<span class="cat-count">' + totalAlert + '只</span>';
     html += '<span class="cat-arrow">▼</span>';
     html += '</div>';
-    html += '<div class="np-cat-body" id="np-cat-body-alert">';
+    html += '<div class="np-cat-body collapsed" id="np-cat-body-alert">';
 
     // Split zha_ban by board
     var zbByBoard = { 'main': [], 'gem': [], 'star': [] };
@@ -4329,11 +4329,11 @@ function renderNpCategory(cat, catKey) {
 
         var secId = 'np-section-' + catKey + '-' + board.key;
         html += '<div class="np-board-section">';
-        html += '<div class="np-board-header collapsible collapsed ' + board.cls + '" onclick="toggleNpBoard(this)" data-np-board="' + secId + '">';
+        html += '<div class="np-board-header collapsible ' + board.cls + '" onclick="toggleNpBoard(this)" data-np-board="' + secId + '">';
         html += board.label + ' (' + stocks.length + '只)';
         html += '<span class="board-arrow">▼</span>';
         html += '</div>';
-        html += '<div class="np-board-body collapsed" id="' + secId + '">';
+        html += '<div class="np-board-body" id="' + secId + '">';
         html += '<div class="np-card-grid">';
 
         stocks.forEach(function(s) {
@@ -4381,10 +4381,35 @@ function renderNpCategory(cat, catKey) {
 }
 
 function toggleNpCategory(el) {
+    var wasCollapsed = el.classList.contains('collapsed');
     el.classList.toggle('collapsed');
     var body = el.nextElementSibling;
     if (body) {
-        body.style.display = body.style.display === 'none' ? '' : 'none';
+        if (wasCollapsed) {
+            body.classList.remove('collapsed');
+            body.style.display = '';
+        } else {
+            body.classList.add('collapsed');
+            body.style.display = 'none';
+        }
+    }
+
+    // 展开时加载所有可见板体中的卡片详情
+    if (body && wasCollapsed) {
+        setTimeout(function() {
+            var newCodes = [];
+            body.querySelectorAll('.np-detail-placeholder').forEach(function(ph) {
+                var code = ph.getAttribute('data-np-code');
+                if (code) {
+                    ph.setAttribute('data-np-detail', code);
+                    if (!_npDetailData[code] && newCodes.indexOf(code) === -1) newCodes.push(code);
+                }
+            });
+            if (newCodes.length > 0) {
+                _npDetailLoading = false;
+            }
+            loadNpCardDetails();
+        }, 150);
     }
 }
 
@@ -4493,7 +4518,10 @@ function filterNPattern() {
             document.querySelectorAll('.np-cat-header:not(.collapsed)').forEach(function(h) {
                 h.classList.add('collapsed');
                 var body = h.nextElementSibling;
-                if (body) body.style.display = 'none';
+                if (body) {
+                    body.classList.add('collapsed');
+                    body.style.display = 'none';
+                }
             });
         }, 100);
     }
@@ -4603,13 +4631,13 @@ function renderNpZtWindow(ztData) {
     var INIT_SHOW = 50;
 
     var html = '<div class="np-section" id="np-section-zt">';
-    html += '<div class="np-cat-header" onclick="toggleNpCategory(this)" data-np-cat="zt">';
+    html += '<div class="np-cat-header collapsed" onclick="toggleNpCategory(this)" data-np-cat="zt">';
     html += '<span class="cat-icon">📅</span>';
     html += '<span class="cat-name">15日涨停板</span>';
     html += '<span class="cat-count">' + totalAll + '只</span>';
     html += '<span class="cat-arrow">▼</span>';
     html += '</div>';
-    html += '<div class="np-cat-body" id="np-cat-body-zt">';
+    html += '<div class="np-cat-body collapsed" id="np-cat-body-zt">';
 
     // Helper: render one board's sub-section for a time window
     function renderBoardSection(sec, boardKey, stockList) {
@@ -4793,15 +4821,6 @@ function loadNpOscillation() {
             });
         }, 100);
 
-        // Collapse by default
-        setTimeout(function() {
-            var header = oscSection.querySelector('.np-cat-header');
-            if (header && !header.classList.contains('collapsed')) {
-                header.classList.add('collapsed');
-                var body = header.nextElementSibling;
-                if (body) body.style.display = 'none';
-            }
-        }, 50);
         initNpSidebar();
         loadNpCardDetails();
     }).catch(function(e) {
@@ -4819,13 +4838,13 @@ function renderNpOscillation(oscData) {
     var INIT_SHOW = 30;
 
     var html = '<div class="np-section" id="np-section-osc">';
-    html += '<div class="np-cat-header" onclick="toggleNpCategory(this)" data-np-cat="osc">';
+    html += '<div class="np-cat-header collapsed" onclick="toggleNpCategory(this)" data-np-cat="osc">';
     html += '<span class="cat-icon">🌊</span>';
     html += '<span class="cat-name">震荡企稳</span>';
     html += '<span class="cat-count">' + total + '只</span>';
     html += '<span class="cat-arrow">▼</span>';
     html += '</div>';
-    html += '<div class="np-cat-body" id="np-cat-body-osc">';
+    html += '<div class="np-cat-body collapsed" id="np-cat-body-osc">';
     html += '<p style="color:#888;font-size:0.85em;margin:0 0 10px 0;">检测条件：连板≥2 → 回调不低于首板K线中位(不A杀) → 企稳震荡≥5天 → 量缩明显。评分维度：震荡质量(35%)+量缩程度(25%)+均线支撑(20%)+连板高度(20%)</p>';
 
     // 按分类展示
@@ -5280,15 +5299,6 @@ function loadNpZtWindow() {
             });
         }, 100);
 
-        // Collapse by default
-        setTimeout(function() {
-            var header = ztSection.querySelector('.np-cat-header');
-            if (header && !header.classList.contains('collapsed')) {
-                header.classList.add('collapsed');
-                var body = header.nextElementSibling;
-                if (body) body.style.display = 'none';
-            }
-        }, 50);
         // Re-init sidebar observer to include new section
         initNpSidebar();
         // Add sub-nav for 15日涨停 board categories
