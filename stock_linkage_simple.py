@@ -5748,7 +5748,7 @@ function manualRefreshTodayZt() {
     fetch('/api/realtime_zt?_t=' + Date.now())
         .then(function(r) { return r.json(); })
         .then(function(data) {
-            var section = document.querySelector('.rt-section:first-child');
+            var section = document.querySelector('.rt-section');
             if (section) {
                 section.innerHTML = '<h3>⚡ 今日涨停 <span class="count-badge">' + data.length + '只</span><span class="rt-refresh-icon" onclick="manualRefreshTodayZt()" title="手动刷新今日涨停">↻</span></h3>' + renderTodayZtList(data);
                 // 重新填充新DOM中的涨停理由
