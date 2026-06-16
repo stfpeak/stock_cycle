@@ -1123,16 +1123,25 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
     border-radius: 12px;
     padding: 14px;
     border: 1px solid #0f3460;
-    transition: border-color 0.2s;
+    transition: transform 0.2s, box-shadow 0.2s;
     position: relative;
 }
-.np-card:hover { border-color: #00d4ff; }
+.np-card:hover { transform: scale(1.03); }
+/* 股票搜索高亮 — 金色发光边框 */
 .np-card.kpl-stock-highlight {
-    border-color: #ffc107; background: rgba(255, 193, 7, 0.06);
-    box-shadow: 0 0 12px rgba(255, 193, 7, 0.15);
+    border-color: #ffc107 !important;
+    border-width: 2px !important;
+    background: rgba(255, 193, 7, 0.06);
+    box-shadow: 0 0 20px rgba(255, 193, 7, 0.55), 0 0 40px rgba(255, 193, 7, 0.2);
 }
 .np-card.kpl-stock-highlight .np-card-code { color: #ffc107; }
 .np-card.kpl-stock-highlight .np-card-name { color: #fff; }
+
+/* 板块边框颜色 */
+.np-card-board-zhuban { border-color: #42a5f5; }
+.np-card-board-chuangye { border-color: #ff7043; }
+.np-card-board-kechuang { border-color: #ab47bc; }
+.np-card-board-other { border-color: #90a4ae; }
 .np-card.star-card { border-left: 3px solid #ffc107; }
 .np-card.tld-card { border-left: 4px solid #e94560; background: linear-gradient(135deg, #1a1a2e, #2a1020); }
 .np-card.tld-shouban-card { border-left: 4px solid #ff6b6b; background: linear-gradient(135deg, #1a1a2e, #301515); }
@@ -7552,6 +7561,17 @@ function _kplToggleSubtree(el) {
     }
 }
 
+function _kplGetBoardClass(code) {
+    if (!code || code.length < 3) return 'np-card-board-other';
+    var p3 = code.substring(0, 3);
+    if (p3 === '688' || p3 === '689') return 'np-card-board-kechuang';
+    if (p3 === '300' || p3 === '301') return 'np-card-board-chuangye';
+    if (p3 === '600' || p3 === '601' || p3 === '603' || p3 === '605' ||
+        p3 === '000' || p3 === '001' ||
+        p3 === '002' || p3 === '003') return 'np-card-board-zhuban';
+    return 'np-card-board-other';
+}
+
 function _kplRenderCards(cardGrid, stockNames) {
     if (!stockNames || stockNames.length === 0) {
         cardGrid.innerHTML = '<div class="empty" style="grid-column:1/-1;padding:12px;">无标的股票</div>';
@@ -7564,15 +7584,18 @@ function _kplRenderCards(cardGrid, stockNames) {
         var code = _kplNameCodeMap[name] || '';
         if (code) codesWithName.push(code);
         var isHighlighted = _kplHighlightStockName && name.indexOf(_kplHighlightStockName) !== -1;
-        html += '<div class="np-card' + (isHighlighted ? ' kpl-stock-highlight' : '') + '" data-code="' + code + '" data-name="' + _kplEsc(name) + '" data-stock-code="' + code + '" data-stock-name="' + _kplEsc(name) + '">';
+        var boardCls = _kplGetBoardClass(code);
+        html += '<div class="np-card ' + boardCls + (isHighlighted ? ' kpl-stock-highlight' : '') + '" data-code="' + code + '" data-name="' + _kplEsc(name) + '" data-stock-code="' + code + '" data-stock-name="' + _kplEsc(name) + '">';
         html += '<div class="np-card-header"><div>';
-        html += '<span class="np-card-code" data-code="' + code + '" data-name="' + _kplEsc(name) + '">' + (code || '------') + '</span>';
+        html += '<span class="np-card-code" data-code="' + code + '" data-name="' + _kplEsc(name) + '">' + (code || '') + '</span>';
         html += '<span class="np-card-name">' + _kplEsc(name) + '</span>';
         html += '</div>';
-        html += '<div><span class="np-card-badge lianban">0连板</span><button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + code + '\\x27)" title="放大卡片">\u2b36</button></div>';
+        html += '<div><span class="np-card-badge lianban">0连板</span>' + (code ? '<button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + code + '\\x27)" title="放大卡片">\u2b36</button>' : '') + '</div>';
         html += '</div>';
         html += '<div class="np-card-badges"></div>';
-        html += '<div class="np-detail-placeholder" data-np-code="' + code + '"><div class="empty" style="padding:8px;">加载详情...</div></div>';
+        if (code) {
+            html += '<div class="np-detail-placeholder" data-np-code="' + code + '"><div class="empty" style="padding:8px;">加载详情...</div></div>';
+        }
         html += '</div>';
     }
     cardGrid.innerHTML = html;
