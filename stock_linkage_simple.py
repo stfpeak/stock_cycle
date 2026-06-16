@@ -1127,6 +1127,12 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
     position: relative;
 }
 .np-card:hover { border-color: #00d4ff; }
+.np-card.kpl-stock-highlight {
+    border-color: #ffc107; background: rgba(255, 193, 7, 0.06);
+    box-shadow: 0 0 12px rgba(255, 193, 7, 0.15);
+}
+.np-card.kpl-stock-highlight .np-card-code { color: #ffc107; }
+.np-card.kpl-stock-highlight .np-card-name { color: #fff; }
 .np-card.star-card { border-left: 3px solid #ffc107; }
 .np-card.tld-card { border-left: 4px solid #e94560; background: linear-gradient(135deg, #1a1a2e, #2a1020); }
 .np-card.tld-shouban-card { border-left: 4px solid #ff6b6b; background: linear-gradient(135deg, #1a1a2e, #301515); }
@@ -7301,6 +7307,7 @@ var _kplLoading = false;
 var _kplSearchTimer = null;
 var _kplStockMap = {};
 var _kplNodeIdx = 0;
+var _kplHighlightStockName = '';
 
 function loadKplTree() {
     var container = document.getElementById('kplTreeContainer');
@@ -7556,7 +7563,8 @@ function _kplRenderCards(cardGrid, stockNames) {
         var name = stockNames[i];
         var code = _kplNameCodeMap[name] || '';
         if (code) codesWithName.push(code);
-        html += '<div class="np-card" data-code="' + code + '" data-name="' + _kplEsc(name) + '" data-stock-code="' + code + '" data-stock-name="' + _kplEsc(name) + '">';
+        var isHighlighted = _kplHighlightStockName && name.indexOf(_kplHighlightStockName) !== -1;
+        html += '<div class="np-card' + (isHighlighted ? ' kpl-stock-highlight' : '') + '" data-code="' + code + '" data-name="' + _kplEsc(name) + '" data-stock-code="' + code + '" data-stock-name="' + _kplEsc(name) + '">';
         html += '<div class="np-card-header"><div>';
         html += '<span class="np-card-code" data-code="' + code + '" data-name="' + _kplEsc(name) + '">' + (code || '------') + '</span>';
         html += '<span class="np-card-name">' + _kplEsc(name) + '</span>';
@@ -7609,7 +7617,10 @@ function _kplSetupCardClicks(container) {
         if (codeEl) {
             var code = codeEl.getAttribute('data-code');
             var name = codeEl.getAttribute('data-name');
-            if (code) deepSearchShowStock(name, code);
+            if (code) {
+                _kplHighlightStockName = name || '';
+                deepSearchShowStock(name, code);
+            }
         }
     });
 }
@@ -7624,6 +7635,8 @@ function _kplCollapseAll() {
     });
     // Clear card grids
     container.querySelectorAll('.kpl-card-grid').forEach(function(g) { g.innerHTML = ''; });
+    // 清除个股高亮
+    _kplHighlightStockName = '';
 }
 
 function _kplDoSearch(query) {
@@ -7710,6 +7723,9 @@ function _kplDoSearch(query) {
     info.className = 'kpl-search-info';
     info.innerHTML = '找到 <strong>' + matches.length + '</strong> 个匹配概念';
     container.insertBefore(info, container.firstChild);
+
+    // 设置搜索高亮个股名（卡牌匹配时高亮显示）
+    _kplHighlightStockName = query;
 
     // Build l1Key → l1 DOM lookup
     var l1Nodes = container.querySelectorAll('.kpl-node-l1');
@@ -7857,6 +7873,7 @@ function stockQueryFetch(code) {
     ]).then(function(results) {
         var data = results[1];
         var name = data.name || '';
+        _kplHighlightStockName = name;
         container.innerHTML = renderStockQueryPage(data, code, name);
     }).catch(function() {
         container.innerHTML = '<div class="empty">数据加载失败</div>';

@@ -42,6 +42,10 @@ do_sync() {
         --include="data/concept_stock/" \
         --include="data/concept_stock/*.json" \
         --include="data/trade_calendar_2026.json" \
+        --include="invest_logic/" \
+        --include="invest_logic/**" \
+        --exclude="invest_logic/.git/" \
+        --exclude="invest_logic/__pycache__/" \
         --exclude="data/stocks_kline.db" \
         --exclude="__pycache__" \
         --exclude="*.pyc" \
