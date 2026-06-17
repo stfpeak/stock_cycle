@@ -36,6 +36,7 @@ do_sync() {
         --include="*.py" \
         --include="*.json" \
         --include="*.sh" \
+        --include="*.md" \
         --include="data/" \
         --include="data/zt_pool/" \
         --include="data/zt_pool/*.csv" \
