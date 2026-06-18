@@ -16,6 +16,7 @@ import importlib
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -205,7 +206,144 @@ def _analyze_abnormal_movement(lookback=20):
     }
 
 
-def _analyze_limit_rows(q, date_start=None, date_end=None, no_st=None):
+def _screener_lianban_stocks():
+    """筛选连板和大涨股票，返回5个分类用于N字战法页面前置卡片"""
+    import sqlite3, os
+    from datetime import datetime
+
+    lookback_20 = 20
+    lookback_15 = 15
+    lookback_10 = 10
+
+    # 日期范围（多取5天buffer）
+    start_idx_20 = max(0, len(finder.trade_dates) - lookback_20 - 5)
+    start_date_20 = finder.trade_dates[start_idx_20]
+    start_date_20_str = f"{start_date_20[:4]}-{start_date_20[4:6]}-{start_date_20[6:]}"
+
+    # 批量SQL查询kline数据库
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT stock_code, trade_date, change_pct
+        FROM kline_daily
+        WHERE trade_date >= ? AND change_pct > 9
+        ORDER BY stock_code, trade_date
+    """, [start_date_20_str])
+    rows = cursor.fetchall()
+    conn.close()
+
+    # 有效交易日集合
+    valid_dates_20 = set(finder.trade_dates[-lookback_20:])
+    valid_dates_15 = set(finder.trade_dates[-lookback_15:])
+    valid_dates_10 = set(finder.trade_dates[-lookback_10:])
+
+    # 交易日索引（用于连续连板判定）
+    trade_date_idx = {d: i for i, d in enumerate(finder.all_trade_dates)}
+
+    # 按股票分组
+    raw = {}
+    for code, date, pct in rows:
+        d = date.replace('-', '')
+        if d not in valid_dates_20:
+            continue
+        if code not in raw:
+            raw[code] = []
+        raw[code].append({'date': d, 'pct': pct})
+
+    def _max_lianban(dates):
+        """计算给定涨停日期列表的最大连续连板数"""
+        sd = sorted(dates)
+        if not sd:
+            return 0
+        cur = 1
+        mx = 1
+        for i in range(1, len(sd)):
+            d1 = sd[i - 1]
+            d2 = sd[i]
+            idx1 = trade_date_idx.get(d1)
+            idx2 = trade_date_idx.get(d2)
+            if idx1 is not None and idx2 is not None and idx2 - idx1 == 1:
+                cur += 1
+                mx = max(mx, cur)
+            else:
+                cur = 1
+        return mx
+
+    def _get_board(code):
+        if code.startswith(('300', '301')):
+            return 'gem'
+        if code.startswith(('688', '689')):
+            return 'star'
+        if code.startswith(('00', '60', '000', '001', '002', '003', '600', '601', '603', '605')):
+            return 'main'
+        return 'other'
+
+    cat1, cat2, cat3, cat4, cat5 = [], [], [], [], []
+
+    for code, days in raw.items():
+        name = finder.get_stock_name(code)
+        if not name or name.startswith('ST') or name.startswith('*ST'):
+            continue
+
+        board = _get_board(code)
+        if board == 'other':
+            continue
+
+        # 筛选各窗口内的日期
+        days_20 = [d for d in days if d['date'] in valid_dates_20]
+        days_15 = [d for d in days if d['date'] in valid_dates_15]
+        days_10 = [d for d in days if d['date'] in valid_dates_10]
+
+        # 涨停日期（按板块不同阈值）
+        if board == 'main':
+            zt_dates_20 = [d['date'] for d in days_20 if d['pct'] > 9.5]
+        else:
+            zt_dates_20 = [d['date'] for d in days_20 if d['pct'] > 19.5]
+
+        concepts = finder.get_stock_concepts(code)
+        stock_info = {
+            'code': code,
+            'name': name,
+            'concepts': concepts,
+        }
+
+        if board == 'main':
+            max_lb = _max_lianban(zt_dates_20)
+            if max_lb >= 3:
+                stock_info['lianban'] = max_lb
+                cat1.append(stock_info)
+            elif max_lb == 2:
+                stock_info['lianban'] = 2
+                cat2.append(stock_info)
+            elif max_lb >= 1:
+                # 近15日有涨停但无2连板
+                zt_dates_15 = [d['date'] for d in days_15 if d['pct'] > 9.5]
+                if zt_dates_15:
+                    max_lb_15 = _max_lianban(zt_dates_15)
+                    if max_lb_15 < 2:
+                        stock_info['lianban'] = max_lb_15
+                        cat3.append(stock_info)
+        elif board in ('gem', 'star'):
+            if zt_dates_20:
+                cat4.append(stock_info)
+            else:
+                # 近10日涨幅>10%但无涨停
+                has_big = any(10 < d['pct'] <= 19.5 for d in days_10)
+                if has_big:
+                    cat5.append(stock_info)
+
+    return {
+        'sc1': cat1,
+        'sc2': cat2,
+        'sc3': cat3,
+        'sc4': cat4,
+        'sc5': cat5,
+        'update_time': datetime.now().strftime('%m-%d %H:%M')
+    }
+
+
+
     """搜索涨停理由并进行综合分析(概念频度/个股频度/日期分布/连板总结)。
     支持单关键词、OR(|)、AND(&)三种模式 + 日期范围过滤 + ST过滤。
     返回完整搜索结果（无限制）+ kw_results（用于OR模式分段展示）。
@@ -763,6 +901,8 @@ td { padding: 8px 10px; border-bottom: 1px solid #333; }
 tr:hover { background: #1a1a2e; }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover { background: #0f3460; }
+.link-stock-name { cursor:pointer; color:#00d4ff; }
+.link-stock-name:hover { text-decoration:underline; }
 
 /* Sort controls */
 .sort-bar { display: flex; align-items: center; gap: 6px; margin: 10px 0; flex-wrap: wrap; }
@@ -1958,6 +2098,107 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 
 .sq-section { margin:16px 0; }
 .sq-section-title { color:#4fc3f7; font-size:0.9em; font-weight:bold; margin-bottom:8px; padding-bottom:4px; border-bottom:1px solid #0f3460; }
+
+/* ETF 基金 tab */
+.etf-summary { display:flex; gap:16px; padding:12px 16px; background:linear-gradient(135deg,#1a2a4e,#0f3460); border-radius:10px; margin:12px 0; flex-wrap:wrap; align-items:center; }
+.etf-summary-item { color:#b0bec5; font-size:0.85em; }
+.etf-summary-item span { color:#e0e0e0; font-weight:bold; }
+.etf-summary-item .up { color:#ff6b6b; }
+.etf-summary-item .down { color:#4caf50; }
+
+.etf-category { margin:16px 0; }
+.etf-category-title { display:flex; align-items:center; gap:12px; padding:8px 14px; background:linear-gradient(135deg,#1a2a4e,#0f3460); border-left:3px solid #00d4ff; border-radius:4px; margin-bottom:10px; cursor:pointer; user-select:none; }
+.etf-category-title .cat-name { color:#00d4ff; font-weight:bold; font-size:0.9em; }
+.etf-category-title .cat-count { color:#4fc3f7; font-size:0.78em; }
+.etf-category-title .cat-up { color:#ff6b6b; font-size:0.78em; margin-left:auto; }
+.etf-category-title .cat-down { color:#4caf50; font-size:0.78em; }
+
+.etf-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+@media(max-width:900px) { .etf-grid { grid-template-columns:repeat(2,1fr); } }
+@media(max-width:600px) { .etf-grid { grid-template-columns:1fr; } }
+
+.etf-card { background:#16213e; border-radius:8px; border:1px solid #0f3460; padding:10px 12px; transition:border-color 0.15s; cursor:pointer; }
+.etf-card:hover { border-color:#4fc3f7; }
+.etf-card-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+.etf-card-name { color:#e0e0e0; font-weight:bold; font-size:0.88em; }
+.etf-card-code { color:#546e7a; font-size:0.72em; }
+.etf-card-price { margin:4px 0; }
+.etf-card-price-val { color:#e0e0e0; font-size:1.1em; font-weight:bold; }
+.etf-card-price-unit { color:#78909c; font-size:0.72em; margin-left:2px; }
+.etf-change-up { color:#ff6b6b; }
+.etf-change-down { color:#4caf50; }
+.etf-change-zero { color:#78909c; }
+.etf-meta { display:flex; gap:12px; margin-top:4px; font-size:0.75em; color:#546e7a; }
+.etf-meta span { white-space:nowrap; }
+
+.etf-charts { display:flex; gap:6px; margin-top:8px; }
+.etf-chart-col { flex:1; min-width:0; }
+.etf-chart-col img { width:100%; height:auto; display:block; border-radius:4px; cursor:pointer; background:#fff; }
+.etf-chart-col .mini-label { color:#546e7a; font-size:0.62em; text-align:center; margin-bottom:2px; }
+
+/* ETF L2 subcategory */
+.etf-subcategory { margin-left:16px; border-left:2px solid rgba(79,195,247,0.25); padding-left:12px; margin-bottom:8px; }
+.etf-subcategory-title { display:flex; align-items:center; gap:8px; padding:5px 10px; background:rgba(79,195,247,0.06); border-radius:4px; cursor:pointer; font-size:0.82em; color:#80cbc4; transition:background 0.15s; margin-bottom:4px; }
+.etf-subcategory-title:hover { background:rgba(79,195,247,0.12); }
+.etf-subcategory-title .subcat-arrow { font-size:0.65em; color:#4fc3f7; transition:transform 0.2s; }
+.etf-subcategory-title .subcat-name { font-weight:bold; min-width:72px; }
+.etf-subcategory-title .subcat-top3 { margin-left:2em; font-size:0.76em; display:flex; gap:8px; align-items:center; flex-wrap:wrap; flex:1; }
+.etf-subcategory-title .subcat-top3-item { white-space:nowrap; display:inline-flex; align-items:baseline; gap:4px; }
+.etf-subcategory-title .subcat-top3-chg { font-weight:bold; margin-left:2px; border-radius:4px; padding:1px 6px; }
+.etf-subcategory-title .subcat-top3-chg.etf-change-up { color:#fff; background:#c62828; }
+.etf-subcategory-title .subcat-top3-chg.etf-change-down { color:#fff; background:#2e7d32; }
+.etf-subcategory-title .subcat-top3-sep { color:#455a64; font-size:0.8em; }
+.etf-search-wrap { margin:8px 0; }
+.etf-search { width:100%; padding:9px 14px; border-radius:8px; border:1px solid #0f3460; background:rgba(15,52,96,0.4); color:#e0e0e0; font-size:0.85em; outline:none; transition:border-color 0.2s; }
+.etf-search:focus { border-color:#4fc3f7; background:rgba(15,52,96,0.6); }
+.etf-search::placeholder { color:#546e7a; }
+.etf-subcat-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+@media(max-width:900px) { .etf-subcat-grid { grid-template-columns:repeat(2,1fr); } }
+@media(max-width:600px) { .etf-subcat-grid { grid-template-columns:1fr; } }
+
+/* ETF 浮动导航 */
+.etf-wrapper { display:flex; align-items:flex-start; gap:18px; }
+.etf-sidebar {
+    position:sticky; top:20px; width:150px; flex-shrink:0;
+    background:rgba(15,52,96,0.55); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);
+    border-radius:12px; border:1px solid rgba(0,212,255,0.12);
+    padding:8px 0; z-index:10; max-height:90vh; overflow-y:auto;
+}
+.etf-sidebar-item {
+    display:block; padding:7px 12px; font-size:0.78em; color:#888;
+    cursor:pointer; transition:all 0.2s;
+    border-left:3px solid transparent; text-decoration:none; line-height:1.3;
+}
+.etf-sidebar-item:hover { color:#ddd; background:rgba(0,212,255,0.05); }
+.etf-sidebar-item.active { color:#00d4ff; border-left-color:#00d4ff; background:rgba(0,212,255,0.08); }
+.etf-sidebar-subitem {
+    display:block; padding:4px 12px 4px 24px; font-size:0.72em; color:#777;
+    cursor:pointer; transition:all 0.2s; line-height:1.3; text-decoration:none;
+}
+.etf-sidebar-subitem:hover { color:#00d4ff; background:rgba(0,212,255,0.05); }
+.etf-main-content { flex:1; min-width:0; }
+@media(max-width:768px) { .etf-sidebar { display:none; } }
+
+/* ETF 三章节布局 */
+.etf-section { margin:20px 0; }
+.etf-section-title { display:flex; align-items:center; gap:10px; padding:10px 16px; background:linear-gradient(135deg,#1a2a4e,#0f3460); border-radius:10px; margin-bottom:14px; font-size:0.95em; color:#e0e0e0; border-left:4px solid #00d4ff; }
+.etf-section-num { display:inline-flex; align-items:center; justify-content:center; width:24px; height:24px; border-radius:50%; background:#00d4ff; color:#0d1b2a; font-weight:bold; font-size:0.8em; }
+
+/* 关注星标 */
+.etf-watch-star { cursor:pointer; font-size:1.2em; color:#546e7a; margin-left:auto; transition:color 0.2s,transform 0.15s; user-select:none; line-height:1; }
+.etf-watch-star:hover { transform:scale(1.25); }
+.etf-watch-star.etf-watch-star-on { color:#ffd54f; text-shadow:0 0 6px rgba(255,213,79,0.5); }
+
+/* 关注列表 */
+.etf-watch-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+.etf-watch-card { background:#16213e; border-radius:8px; border:1px solid #2a4a6e; padding:10px 12px; transition:border-color 0.15s; cursor:pointer; }
+.etf-watch-card:hover { border-color:#4fc3f7; }
+.etf-watch-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+@media(max-width:1100px) { .etf-watch-grid { grid-template-columns:repeat(3,1fr); } }
+@media(max-width:700px) { .etf-watch-grid { grid-template-columns:repeat(2,1fr); } }
+@media(max-width:450px) { .etf-watch-grid { grid-template-columns:1fr; } }
+
+
 /* sq-tree hierarchy */
 .sq-tree-wrap { background:rgba(0,212,255,0.03); border-radius:12px; border:1px solid #0f3460; padding:8px 0; margin:8px 0; }
 .sq-tree-l1-header {
@@ -2025,6 +2266,7 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
         <div class="tab" onclick="switchTab('kpltree')"><img src="data:image/png;base64,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" style="width:16px;height:16px;vertical-align:middle;margin-right:3px;"> 开盘啦</div>
         <div class="tab" onclick="switchTab('deepsearch')">🔍 涨停深挖</div>
         <div class="tab" onclick="switchTab('stockquery')">📋 个股查询</div>
+        <div class="tab" onclick="switchTab('etf')">📊 ETF基金</div>
         <div class="tab" onclick="switchTab('specialwatch')">⭐ 特别关注</div>
         <div class="tab" onclick="switchTab('recommend')">🔥 推荐</div>
         <div class="tab" onclick="switchTab('stats')">📈 统计</div>
@@ -2136,6 +2378,9 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
             <div class="empty">搜索股票名称或代码查看个股详情</div>
         </div>
     </div>
+    <div class="tab-content" id="tab-etf">
+        <div id="etfContainer"><div class="loading">加载ETF数据...</div></div>
+    </div>
     <div class="tab-content" id="tab-specialwatch">
         <div id="specialwatchContainer"><div class="loading">加载特别关注...</div></div>
     </div>
@@ -2243,9 +2488,10 @@ function switchTab(tab) {
     else if (tab === 'kpltree') document.querySelectorAll('.tab')[5].classList.add('active');
     else if (tab === 'deepsearch') document.querySelectorAll('.tab')[6].classList.add('active');
     else if (tab === 'stockquery') document.querySelectorAll('.tab')[7].classList.add('active');
-    else if (tab === 'specialwatch') document.querySelectorAll('.tab')[8].classList.add('active');
-    else if (tab === 'recommend') document.querySelectorAll('.tab')[9].classList.add('active');
-    else if (tab === 'stats') document.querySelectorAll('.tab')[10].classList.add('active');
+    else if (tab === 'etf') document.querySelectorAll('.tab')[8].classList.add('active');
+    else if (tab === 'specialwatch') document.querySelectorAll('.tab')[9].classList.add('active');
+    else if (tab === 'recommend') document.querySelectorAll('.tab')[10].classList.add('active');
+    else if (tab === 'stats') document.querySelectorAll('.tab')[11].classList.add('active');
     document.getElementById('tab-' + tab).classList.add('active');
 
     if (tab === 'realtime') {
@@ -2277,6 +2523,8 @@ function switchTab(tab) {
     }
     if (tab === 'linkage') loadLinkageDefaultSections();
     if (tab === 'specialwatch') loadSpecialWatch();
+    if (tab !== 'etf' && _etfAutoRefreshActive) toggleEtfAutoRefresh();
+    if (tab === 'etf') { _etfLoaded = false; loadEtfData(); }
 }
 
 // ===== 异动跟踪 =====
@@ -4214,6 +4462,7 @@ var _npObserver = null;
 var _ztWindowData = null;  // cached zt_window data
 var _npDetailData = {};
 var _npDetailLoading = false;
+var _screenerData = null;
 function loadNpCardDetails() {
     if (_npDetailLoading) return;
     // 先渲染已有缓存数据的卡片（无需API请求）
@@ -4260,7 +4509,20 @@ function loadNpCardDetails() {
 }
 
 // Sidebar nav items (excluding alert — added separately)
+var _screenerSidebarKeys = ['sc1', 'sc2', 'sc3', 'sc4', 'sc5'];
+var _screenerSidebarLabels = {
+    'sc1': '主板3连板+',
+    'sc2': '主板2连板',
+    'sc3': '主板涨停（近15交易日，无连板）',
+    'sc4': '创业板/科创板涨停',
+    'sc5': '创业板/科创板异动（10%+）'
+};
 var _npSidebarItems = [
+    {key: 'sc1', label: '主板3连板+'},
+    {key: 'sc2', label: '主板2连板'},
+    {key: 'sc3', label: '主板涨停（近15交易日，无连板）'},
+    {key: 'sc4', label: '创业板/科创板涨停'},
+    {key: 'sc5', label: '创业板/科创板异动（10%+）'},
     {key: 'tld', label: '屠龙刀战法'},
     {key: '0-2', label: '0~2%'},
     {key: '2-5', label: '2~5%'},
@@ -4278,13 +4540,19 @@ function loadNPattern() {
     var container = document.getElementById('npatternContainer');
     container.innerHTML = '<div class="loading">分析N字战法候选股票中...</div>';
 
-    _cachedFetch('/api/n_pattern').then(function(data) {
+    Promise.all([
+        _cachedFetch('/api/n_pattern'),
+        _cachedFetch('/api/lianban_screener')
+    ]).then(function(results) {
+        var data = results[0];
+        var screener = results[1] || {};
         if (!data || data.error || !data.categories) {
             container.innerHTML = '<div class="result"><div class="error">分析失败</div></div>';
             return;
         }
 
         _npData = data;
+        _screenerData = screener;
 
         // --- Summary bar ---
         var html = '<div class="result" id="np-nav-top">';
@@ -4330,7 +4598,7 @@ function loadNPattern() {
         html += '<div class="np-main-content" id="np-main-content">';
         html += renderNpFilterBar();
         html += '<div id="np-cat-results">';
-        html += renderNpResults(data);
+        html += renderNpResults(data, screener);
         html += '</div>';
         html += '</div>'; // .np-main-content
 
@@ -4403,10 +4671,11 @@ function renderNpFilterBar() {
     return html;
 }
 
-// Render the results area (categories + alerts)
-function renderNpResults(data) {
+// Render the results area (categories + screener + alerts)
+function renderNpResults(data, screener) {
     data = data || _npData;
     if (!data) return '';
+    screener = screener || _screenerData || {};
 
     var html = '';
 
@@ -4418,6 +4687,11 @@ function renderNpResults(data) {
         allCount += (cat.main_board || []).length + (cat.gem || []).length + (cat.star || []).length + (cat.bj || []).length;
     });
     html += '<div class="np-filter-count" id="npFilterCount" style="color:#666;font-size:0.82em;margin-bottom:10px;">共 ' + allCount + ' 只</div>';
+
+    // Screener sections (before F4 categories)
+    _screenerSidebarKeys.forEach(function(sk) {
+        html += renderScreenerCategory(screener[sk], sk);
+    });
 
     // Categories
     _npCatKeys.forEach(function(ck) {
@@ -4439,6 +4713,44 @@ function renderNpResults(data) {
     // 震荡企稳 section placeholder (content filled by loadNpOscillation)
     html += '<div id="np-oscillation-section"></div>';
 
+    return html;
+}
+
+// Render a screener category section (collapsible, cards with data-np-detail)
+var _screenerIcons = {'sc1': '\U0001F3C6', 'sc2': '\U0001F4CA', 'sc3': '\U0001F4C9', 'sc4': '\U0001F7E2', 'sc5': '\U0001F525'};
+function renderScreenerCategory(stocks, key) {
+    if (!stocks || stocks.length === 0) return '';
+    var label = _screenerSidebarLabels[key] || key;
+    var icon = _screenerIcons[key] || '\U0001F4CA';
+    var html = '<div class="np-section" id="np-section-' + key + '">';
+    html += '<div class="np-cat-header collapsed" onclick="toggleNpCategory(this)" data-np-cat="' + key + '">';
+    html += '<span class="cat-icon">' + icon + '</span>';
+    html += '<span class="cat-name">' + label + '</span>';
+    html += '<span class="cat-count">' + stocks.length + '\u53ea</span>';
+    html += '<span class="cat-arrow">\u25bc</span>';
+    html += '</div>';
+    html += '<div class="np-cat-body collapsed" id="np-cat-body-' + key + '">';
+    html += '<div class="np-card-grid">';
+    stocks.forEach(function(s) {
+        var code = s.code || '';
+        var name = s.name || '';
+        var lianban = s.lianban || '';
+        var badgeLabel = lianban ? lianban + '\u8fde\u677f' : '';
+        html += '<div class="np-card" data-code="' + code + '" data-name="' + name + '">';
+        html += '<div class="np-card-header">';
+        html += '<div>';
+        html += '<span class="np-card-code" data-code="' + code + '" data-name="' + name + '">' + code + '</span>';
+        html += '<span class="np-card-name">' + name + '</span>';
+        html += '</div>';
+        html += '<div>' + (badgeLabel ? '<span class="np-card-badge lianban">' + badgeLabel + '</span>' : '') + '<button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + code + '\\x27)" title="\u653e\u5927\u5361\u7247">\u2b36</button></div>';
+        html += '</div>';
+        html += '<div class="np-card-badges">';
+        (s.concepts || []).forEach(function(c) { html += '<span class="np-card-badge">' + c + '</span>'; });
+        html += '</div>';
+        html += '<div data-np-detail="' + code + '"><div class="empty" style="padding:8px;">\u52a0\u8f7d\u4e2d...</div></div>';
+        html += '</div>';
+    });
+    html += '</div></div></div>';
     return html;
 }
 
@@ -4870,7 +5182,7 @@ function filterNPattern() {
     // Re-render results area (filter bar stays intact)
     var resultsEl = document.getElementById('np-cat-results');
     if (resultsEl) {
-        resultsEl.innerHTML = renderNpResults(filteredData);
+        resultsEl.innerHTML = renderNpResults(filteredData, _screenerData);
         // Re-render K-lines
         setTimeout(function() {
             _npCatKeys.forEach(function(ck) {
@@ -6358,7 +6670,7 @@ function renderLianbanLadderTable(stocks) {
         html += '<tr class="clickable" data-code="' + s.code + '" data-name="' + s.name + '">';
         html += '<td style="font-size:0.9em;">' + rankIcon + '</td>';
         html += '<td><strong>' + s.code + '</strong></td>';
-        html += '<td>' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code)) + (s.name || '') + '</td>';
+        html += '<td>' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code)) + '<span class="link-stock-name" onclick="event.stopPropagation();stockQueryGoTo(\\x27' + (s.name||'').replace(/'/g,'') + '\\x27)">' + (s.name || '') + '</span></td>';
         html += '<td>' + renderLbBadge(lb) + '</td>';
         html += '<td>' + (s.zt_count || 0) + '</td>';
         html += '<td>' + conceptHtml + '</td></tr>';
@@ -6382,7 +6694,7 @@ function renderTodayZtList(stocks) {
         html += '<tr class="clickable" data-code="' + s.code + '" data-name="' + s.name + '">';
         html += '<td style="font-size:0.9em;">' + rankStr + '</td>';
         html += '<td><strong>' + s.code + '</strong></td>';
-        html += '<td style="white-space:nowrap;">' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code)) + (s.name || '') + '</td>';
+        html += '<td style="white-space:nowrap;">' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code)) + '<span class="link-stock-name" onclick="event.stopPropagation();stockQueryGoTo(\\x27' + (s.name||'').replace(/'/g,'') + '\\x27)">' + (s.name || '') + '</span></td>';
         html += '<td style="color:#4fc3f7;font-weight:bold;font-size:0.9em;white-space:nowrap;">' + fmtTime(s.first_time) + '</td>';
         html += '<td>' + renderLbBadge(lb) + '</td>';
         html += '<td>' + renderConceptChips(s.concepts, s.code) + '</td></tr>';
@@ -6398,7 +6710,7 @@ function renderHotStocksTable(stocks) {
         html += '<tr class="clickable" data-code="' + s.code + '" data-name="' + s.name + '">';
         html += '<td style="color:#888;">' + (i+1) + '</td>';
         html += '<td><strong>' + s.code + '</strong></td>';
-        html += '<td>' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code)) + (s.name || '') + '</td>';
+        html += '<td>' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code)) + '<span class="link-stock-name" onclick="event.stopPropagation();stockQueryGoTo(\\x27' + (s.name||'').replace(/'/g,'') + '\\x27)">' + (s.name || '') + '</span></td>';
         html += '<td style="color:#ff6b6b;font-weight:bold;">' + (s.zt_count || 0) + '次</td>';
         html += '<td>' + renderConceptChips(s.concepts, s.code) + '</td>';
         html += '<td style="color:#888;font-size:0.85em;">' + (s.last_zt || '') + '</td></tr>';
@@ -6420,7 +6732,7 @@ function renderHotRank100Table(stocks) {
         html += '<tr class="clickable" data-code="' + s.code + '" data-name="' + s.name + '">';
         html += '<td style="color:#888;">' + s.rank + '</td>';
         html += '<td><strong>' + s.code + '</strong></td>';
-        html += '<td>' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code)) + s.name + '</td>';
+        html += '<td>' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code)) + '<span class="link-stock-name" onclick="event.stopPropagation();stockQueryGoTo(\\x27' + (s.name||'').replace(/'/g,'') + '\\x27)">' + (s.name || '') + '</span></td>';
         html += '<td style="color:' + pctColor + ';font-weight:bold;">' + pctStr + '</td>';
         html += '<td style="color:#ffc107;">' + (s.hot_value || 0) + '</td>';
         html += '<td>' + popLabel + '</td>';
@@ -6513,17 +6825,17 @@ function loadLinkageDefaultSections() {
 
     Promise.all([
         _cachedFetch('/api/lianban_ladder?top_n=10'),
-        _cachedFetch('/api/today_zt'),
         _cachedFetch('/api/hot_stocks?top_n=100'),
-        _cachedFetch('/api/hot_rank_100'),
-        _cachedFetch('/api/hot_concept_20')
+        _cachedFetch('/api/hot_rank_100')
     ]).then(function(results) {
         container.setAttribute('data-loaded', 'true');
         var ladder = results[0] || [];
-        var todayZt = results[1] || [];
-        var hotStocks = results[2] || [];
-        var hotRank100 = results[3] || [];
-        var hotConcepts = results[4] || [];
+        var hotStocks = results[1] || [];
+        var hotRank100 = results[2] || [];
+
+        var now = new Date();
+        var timeStr = now.toLocaleTimeString('zh-CN', {hour12:false});
+        var timeHtml = '<span style="float:right;color:#888;font-size:0.7em;font-weight:normal;display:inline-flex;align-items:center;gap:4px;">\u66f4\u65b0: ' + timeStr + '<span class="rt-refresh-icon" onclick="refreshLinkageAll()" title="\u5237\u65b0\u5168\u90e8">\u21bb</span></span>';
 
         var html = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;">';
         html += '<div style="color:#888;font-size:0.85em;">⬇ 输入代码/名称搜索联动，或浏览默认数据</div>';
@@ -6531,28 +6843,27 @@ function loadLinkageDefaultSections() {
 
         // 连板天梯 Top 10
         html += '<div class="rt-section">';
-        html += '<h3>🏆 连板天梯 Top 10</h3>';
+        html += '<h3>🏆 连板天梯 Top 10' + timeHtml + '</h3>';
         html += renderLianbanLadderTable(ladder);
-        html += '</div>';
-
-        // 今日涨停 Top 20
-        html += '<div class="rt-section">';
-        html += '<h3>⚡ 今日涨停 Top 20</h3>';
-        html += renderTodayZtList(todayZt.slice(0, 20));
+        html += '<div class="rt-section kpl-tree-node" style="margin-top:-16px;padding-top:8px;">';
+        html += '<div class="kpl-header" onclick="toggleLinkageCards(this)">';
+        html += '<span class="kpl-arrow">&#9660;</span>';
+        html += '<span class="kpl-label" style="color:#4fc3f7;">📈 K线走势 <span class="count-badge">' + ladder.length + '只</span></span></div>';
+        html += '<div class="kpl-children collapsed"><div class="np-card-grid" data-key="ladder" style="--np-cols:4;"><div class="empty" style="grid-column:1/-1;padding:12px;color:#666;">展开后加载</div></div></div></div>';
         html += '</div>';
 
         // 热门涨停 Top 100
         var showAllHotLinkage = window._showAllHot || false;
         var hotLimit = showAllHotLinkage ? hotStocks.length : 20;
         html += '<div class="rt-section">';
-        html += '<h3>🔥 活跃涨停 Top 100</h3>';
+        html += '<h3>🔥 活跃涨停 Top 100' + timeHtml + '</h3>';
         var hotHtml = '<table class="rt-zt-table"><tr><th>#</th><th>代码</th><th>名称</th><th>涨停</th><th>评分</th><th>概念</th><th>周期</th><th>最近涨停</th></tr>';
         hotStocks.slice(0, hotLimit).forEach(function(s, i) {
             var conceptHtml = renderConceptChips(s.concepts, s.code);
             hotHtml += '<tr class="clickable" data-code="' + s.code + '" data-name="' + s.name + '">';
             hotHtml += '<td style="color:#888;">' + (i+1) + '</td>';
             hotHtml += '<td><strong>' + s.code + '</strong></td>';
-            hotHtml += '<td>' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code)) + (s.name || '') + '</td>';
+            hotHtml += '<td>' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code)) + '<span class="link-stock-name" onclick="event.stopPropagation();stockQueryGoTo(\\x27' + (s.name||'').replace(/'/g,'') + '\\x27)">' + (s.name || '') + '</span></td>';
             hotHtml += '<td style="color:#ff6b6b;font-weight:bold;">' + (s.zt_count || 0) + '次</td>';
             hotHtml += '<td><span class="score-badge ' + (s.weighted_score >= 70 ? 'score-high' : (s.weighted_score >= 40 ? 'score-mid' : 'score-low')) + '">' + (s.weighted_score || 0) + '</span></td>';
             hotHtml += '<td>' + conceptHtml + '</td>';
@@ -6564,25 +6875,89 @@ function loadLinkageDefaultSections() {
             hotHtml += '<div style="text-align:center;color:#666;padding:6px;font-size:0.85em;">共' + hotStocks.length + '只，显示' + hotLimit + '只</div>';
         }
         html += hotHtml;
+        html += '<div class="rt-section kpl-tree-node" style="margin-top:-16px;padding-top:8px;">';
+        html += '<div class="kpl-header" onclick="toggleLinkageCards(this)">';
+        html += '<span class="kpl-arrow">&#9660;</span>';
+        html += '<span class="kpl-label" style="color:#4fc3f7;">📈 K线走势 <span class="count-badge">' + hotStocks.length + '只</span></span></div>';
+        html += '<div class="kpl-children collapsed"><div class="np-card-grid" data-key="hotStocks" style="--np-cols:4;"><div class="empty" style="grid-column:1/-1;padding:12px;color:#666;">展开后加载</div></div></div></div>';
         html += '</div>';
 
         // === 同花顺热股Top100 ===
         html += '<div class="rt-section">';
-        html += '<h3>🔥 同花顺热股Top100 <span class="count-badge">' + hotRank100.length + '只</span></h3>';
+        html += '<h3>🔥 同花顺热股Top100 <span class="count-badge">' + hotRank100.length + '只</span>' + timeHtml + '</h3>';
         html += renderHotRank100Table(hotRank100);
-        html += '</div>';
-
-        // === 同花顺热门概念板块Top20 ===
-        html += '<div class="rt-section">';
-        html += '<h3>📈 同花顺热门概念板块Top20 <span class="count-badge">' + hotConcepts.length + '个</span></h3>';
-        html += renderHotConceptTable(hotConcepts);
+        html += '<div class="rt-section kpl-tree-node" style="margin-top:-16px;padding-top:8px;">';
+        html += '<div class="kpl-header" onclick="toggleLinkageCards(this)">';
+        html += '<span class="kpl-arrow">&#9660;</span>';
+        html += '<span class="kpl-label" style="color:#4fc3f7;">📈 K线走势 <span class="count-badge">' + hotRank100.length + '只</span></span></div>';
+        html += '<div class="kpl-children collapsed"><div class="np-card-grid" data-key="hotRank100" style="--np-cols:4;"><div class="empty" style="grid-column:1/-1;padding:12px;color:#666;">展开后加载</div></div></div></div>';
         html += '</div>';
 
         container.innerHTML = html;
+        // Store data for K-line card lazy loading
+        _linkageCardData['ladder'] = ladder;
+        _linkageCardData['hotStocks'] = hotStocks;
+        _linkageCardData['hotRank100'] = hotRank100;
         loadLuReasons();
     }).catch(function(e) {
         container.innerHTML = '<div class="empty">🔍 输入股票代码或名称开始查询联动</div>';
     });
+}
+
+// ===== Linkage Tab - K-line Card Data & Rendering =====
+var _linkageCardData = {};
+
+function renderLinkageCards(stocks) {
+    var html = '';
+    stocks.forEach(function(s) {
+        var code = s.code || '';
+        var name = s.name || '';
+        var concepts = s.concepts || [];
+        var boardCls = _kplGetBoardClass(code);
+        var ztCount = s.zt_count || s.consecutive_lianban || 0;
+        var ztLabel = s.consecutive_lianban ? s.consecutive_lianban + '连板' : (s.zt_count ? s.zt_count + '次涨停' : '0涨停');
+
+        html += '<div class="np-card ' + boardCls + '" data-code="' + code + '" data-name="' + name + '">';
+        html += '<div class="np-card-header">';
+        html += '<div>';
+        html += '<span class="np-card-code" data-code="' + code + '" data-name="' + name + '">' + code + '</span>';
+        html += '<span class="np-card-name">' + name + '</span>';
+        html += '</div>';
+        html += '<span class="np-card-badge lianban">' + ztLabel + '</span><button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + code + '\\x27)" title="放大卡片">⛶</button></div>';
+        html += '<div class="np-card-badges">';
+        concepts.forEach(function(c) { html += '<span class="np-card-badge">' + c + '</span>'; });
+        html += '</div>';
+        html += '<div data-np-detail="' + code + '"><div class="empty" style="padding:8px;">\u52a0\u8f7d\u4e2d...</div></div>';
+        html += '</div>';
+    });
+    return html;
+}
+
+function toggleLinkageCards(el) {
+    var node = el.closest('.kpl-tree-node');
+    if (!node) return;
+    var wasCollapsed = node.classList.contains('collapsed');
+    node.classList.toggle('collapsed');
+    if (wasCollapsed) {
+        var grid = node.querySelector('.np-card-grid');
+        if (grid && !grid.querySelector('.np-card')) {
+            var key = grid.getAttribute('data-key');
+            if (key && _linkageCardData[key]) {
+                grid.innerHTML = renderLinkageCards(_linkageCardData[key]);
+                loadNpCardDetails();
+            }
+        }
+    }
+}
+
+// 联动查询全部默认表手动刷新
+function refreshLinkageAll() {
+    var container = document.getElementById('linkageDefaultSections');
+    if (!container) return;
+    // 清除前端缓存强制重新拉取
+    _clearTabCache();
+    container.removeAttribute('data-loaded');
+    loadLinkageDefaultSections();
 }
 
 // ===== Concept Top20 auto-load =====
@@ -8478,6 +8853,13 @@ function stockQuerySearchName(name) {
             }
         });
 }
+
+// 联动查询点击股票名称 → 跳转到个股查询
+function stockQueryGoTo(name) {
+    switchTab('stockquery');
+    var input = document.getElementById('stockQueryInput');
+    if (input) { input.value = name; stockQueryDoSearch(); }
+}
 function stockQueryFetch(code) {
     var container = document.getElementById('stockQueryResult');
     container.innerHTML = '<div class="loading">加载中...</div>';
@@ -8580,6 +8962,420 @@ function sqJumpToKpl(term) {
         _kplDoSearch(term);
     }
 }
+
+// ===== ETF基金 =====
+var _etfLoaded = false;
+var _etfData = null;
+var _etfObserver = null;
+
+function getEtfSinaCode(code) {
+    if (!code) return '';
+    var c = code.toString().padStart(6, '0');
+    if (c.startsWith('51') || c.startsWith('56') || c.startsWith('58')) return 'sh' + c;
+    return 'sz' + c;
+}
+function etfKlineImg(code) { return 'https://image.sinajs.cn/newchart/daily/n/' + getEtfSinaCode(code) + '.png?' + getSinaTs(); }
+function etfMinImg(code) { return 'https://image.sinajs.cn/newchart/min/n/' + getEtfSinaCode(code) + '.png?' + getSinaTs(); }
+
+// ETF关注（自选）管理
+var _watchList = JSON.parse(localStorage.getItem('etf_watch_list') || '[]');
+function isWatchEtf(code) { return _watchList.indexOf(code) !== -1; }
+function toggleWatchEtf(code) {
+    var idx = _watchList.indexOf(code);
+    if (idx === -1) _watchList.push(code);
+    else _watchList.splice(idx, 1);
+    localStorage.setItem('etf_watch_list', JSON.stringify(_watchList));
+    // Refresh watchlist display if rendered
+    renderWatchlist();
+}
+function renderWatchlist() {
+    var wl = document.getElementById('etfWatchlist');
+    if (!wl) return;
+    if (!_watchList.length) { wl.innerHTML = '<div class="empty" style="padding:20px;color:#546e7a;">点击ETF卡片的星标添加到关注</div>'; return; }
+    // Build map from _etfData
+    var map = {};
+    if (_etfData) _etfData.forEach(function(it) { map[it.code] = it; });
+    var items = [];
+    _watchList.forEach(function(code) {
+        var it = map[code];
+        if (it) items.push(it);
+    });
+    items.sort(function(a, b) { return b.change_pct - a.change_pct; });
+    var h = '<div class="etf-watch-grid">';
+    items.forEach(function(it) {
+        var code = it.code || '';
+        var name = it.name || '';
+        var price = it.price != null ? it.price.toFixed(3) : '--';
+        var chg = it.change_pct || 0;
+        var chgStr = (chg > 0 ? '+' : '') + chg.toFixed(2) + '%';
+        var chgClass = chg > 0 ? 'etf-change-up' : (chg < 0 ? 'etf-change-down' : 'etf-change-zero');
+        var klineSrc = etfKlineImg(code);
+        var minSrc = etfMinImg(code);
+        h += '<div class="etf-watch-card" data-name="' + name + '" data-code="' + code + '" onclick="showEtfDetail(this)"><div class="etf-watch-header"><span class="etf-card-name" title="' + name + '">' + name + '</span><span class="etf-card-code">' + code + '</span><span class="etf-watch-star etf-watch-star-on" onclick="event.stopPropagation();toggleWatchEtf(\\x27' + code + '\\x27)" title="取消关注">\\u2605</span></div>';
+        h += '<div class="etf-card-price"><span class="etf-card-price-val">' + price + '</span></div>';
+        h += '<div style="margin:2px 0;"><span class="' + chgClass + '" style="font-size:0.9em;font-weight:bold;">' + chgStr + '</span></div>';
+        h += '<div class="etf-charts"><div class="etf-chart-col"><div class="mini-label">\\u65E5K</div><img src="' + klineSrc + '" loading="lazy" onerror="retryImg(this,2)" style="cursor:pointer;" onclick="reloadSinaImg(this)" data-orig-src="' + klineSrc + '"></div>';
+        h += '<div class="etf-chart-col"><div class="mini-label">\\u5206\\u65F6</div><img src="' + minSrc + '" loading="lazy" onerror="retryImg(this,2)" style="cursor:pointer;" onclick="reloadSinaImg(this)" data-orig-src="' + minSrc + '"></div></div></div>';
+    });
+    h += '</div>';
+    wl.innerHTML = h;
+}
+
+
+function loadEtfData() {
+    // Clear any existing ETF auto-refresh when re-loading
+    if (_etfAutoRefreshCountdown) {
+        clearInterval(_etfAutoRefreshTimer);
+        clearInterval(_etfAutoRefreshCountdown);
+        _etfAutoRefreshActive = false;
+        _etfAutoRefreshTimer = null;
+        _etfAutoRefreshCountdown = null;
+        var abBtn = document.getElementById('etfAutoRefreshBtn');
+        if (abBtn) { abBtn.innerHTML = '\u23f1 \u81ea\u52a8\u5237\u65b0 5\u5206\u949f'; abBtn.classList.remove('active'); }
+    }
+    if (_etfLoaded && _etfData) { renderEtfTab(_etfData); return; }
+    var container = document.getElementById('etfContainer');
+    container.innerHTML = '<div class="loading">加载ETF数据...</div>';
+    fetch('/api/etf_spot').then(function(r) { return r.json(); }).then(function(data) {
+        _etfData = data;
+        _etfLoaded = true;
+        renderEtfTab(data);
+    }).catch(function(err) {
+        container.innerHTML = '<div class="empty">加载ETF数据失败: ' + err + '</div>';
+    });
+}
+function renderEtfTab(data) {
+    var container = document.getElementById('etfContainer');
+    if (!data || !data.length) { container.innerHTML = '<div class="empty">暂无ETF数据</div>'; return; }
+    var total = data.length;
+    var upCount = 0, downCount = 0, zeroCount = 0;
+    // Build nested map: category -> subcategory -> items[]
+    var cats = {};
+    data.forEach(function(item) {
+        if (item.change_pct > 0) upCount++;
+        else if (item.change_pct < 0) downCount++;
+        else zeroCount++;
+        var cat = item.category || '\u5176\u4ed6';
+        var sub = item.subcategory || '\u5176\u4ed6';
+        if (!cats[cat]) cats[cat] = {};
+        if (!cats[cat][sub]) cats[cat][sub] = [];
+        cats[cat][sub].push(item);
+    });
+    // Refresh banner with stats and controls
+    var h = '<div class="refresh-banner" style="display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;">';
+    h += '<span>ETF\u603b\u6570 <strong>' + total + '</strong> | \u4e0a\u6da8 <strong style="color:#fff;background:#e53935;padding:1px 6px;border-radius:8px;">' + upCount + '</strong> | \u4e0b\u8dcc <strong style="color:#fff;background:#1e88e5;padding:1px 6px;border-radius:8px;">' + downCount + '</strong></span>';
+    h += '<span class="rt-refresh-icon" onclick="manualRefreshEtf()" title="\u624b\u52a8\u5237\u65b0ETF\u6570\u636e" style="opacity:0.7;margin:0 4px;">\u21bb</span>';
+    h += '<button class="rt-auto-refresh-btn" id="etfAutoRefreshBtn" onclick="toggleEtfAutoRefresh()">\u23f1 \u81ea\u52a8\u5237\u65b0 5\u5206\u949f</button>';
+    h += '</div>';
+    // Search box
+    h += '<div class="etf-search-wrap"><input class="etf-search" id="etfSearch" type="text" placeholder="ETF名称或代码模糊搜索..." oninput="etfSearchFilter(this.value)"></div>';
+
+    // ===== Section 1: ETF关注 =====
+    h += '<div class="etf-section" id="etfSec1"><div class="etf-section-title"><span class="etf-section-num">1</span> ETF\\u5173\\u6ce8</div><div id="etfWatchlist"></div></div>';
+    // L2 subcategory display order per L1
+    var subcatOrders = {
+        '\u5bbd\u57fa\u6307\u6570': ['\u79d1\u521b\u677f', '\u521b\u4e1a\u677f', '\u6caa\u6df1300', '\u4e2d\u8bc1500/1000', '\u4e0a\u8bc150/A50', '\u5176\u4ed6\u5bbd\u57fa'],
+        '\u884c\u4e1a\u4e3b\u9898': ['\u82af\u7247', '\u534a\u5bfc\u4f53', '\u96c6\u6210\u7535\u8def', '\u4eba\u5de5\u667a\u80fd', '\u79d1\u6280', '\u4e92\u8054', '\u901a\u4fe1', '\u7b97\u529b', '\u8f6f\u4ef6', '\u8ba1\u7b97\u673a', '\u5927\u6570\u636e', '\u4e91\u8ba1\u7b97', '\u6570\u636e', '\u4fe1\u521b', '\u6570\u5b57', '\u4fe1\u606f', '5G', 'VR', '\u536b\u661f', '\u7269\u8054\u7f51', '\u65b0\u80fd\u6e90', '\u5149\u4f0f', '\u98ce\u7535', '\u9502\u7535', '\u7535\u6c60', '\u80fd\u6e90', '\u7164\u70ad', '\u7535\u529b', '\u77f3\u5316', '\u77f3\u6cb9', '\u5929\u7136\u6c14', '\u98df\u54c1', '\u996e\u6599', '\u767d\u9152', '\u9152', '\u533b\u836f', '\u533b\u7597', '\u751f\u7269', '\u521b\u65b0\u836f', '\u4e2d\u836f', '\u533b', '\u91d1\u878d', '\u94f6\u884c', '\u8bc1\u5238', '\u4fdd\u9669', '\u5730\u4ea7', '\u57fa\u5efa', '\u5efa\u7b51', '\u519b\u5de5', '\u56fd\u9632', '\u592e\u4f01', '\u56fd\u4f01', '\u6539\u9769', '\u56fd\u6539', '\u7ea2\u5229', '\u9f99\u5934', '\u6c7d\u8f66', '\u8f66', '\u667a\u80fd\u9a7e\u9a76', '\u81ea\u52a8\u9a7e\u9a76', '\u667a\u80fd', '\u673a\u5668\u4eba', '\u5de5\u4e1a', '\u673a\u5e8a', '\u5236\u9020', '\u519c\u4e1a', '\u517b\u6b96', '\u7267\u7272', '\u5316\u5de5', '\u94a2\u94c1', '\u6750\u6599', '\u5176\u4ed6\u884c\u4e1a'],
+        '\u8de8\u5883': ['\u7f8e\u80a1', '\u6e2f\u80a1/\u4e2d\u6982', '\u5176\u4ed6\u8de8\u5883'],
+    };
+    // Category priority order (hide 商品/债券/货币)
+    var catOrder = ['\u5bbd\u57fa\u6307\u6570', '\u884c\u4e1a\u4e3b\u9898', '\u8de8\u5883', '\u5176\u4ed6'];
+
+    // Build sidebar navigation
+    var sidebar = '<nav class="etf-sidebar" id="etfSidebar">';
+    for (var sci = 0; sci < catOrder.length; sci++) {
+        var scat = catOrder[sci];
+        if (!cats[scat]) continue;
+        var secId = 'etf-scat-' + sci;
+        sidebar += '<a class="etf-sidebar-item" data-etf-section="' + secId + '" onclick="scrollToEtfSection(\\x27' + secId + '\\x27)">' + scat + '</a>';
+        var sKeys = Object.keys(cats[scat]);
+        // Sort L2 subKeys by best gainer (find max without modifying original array)
+        sKeys.sort(function(a, b) {
+            var aList = cats[scat][a] || [];
+            var bList = cats[scat][b] || [];
+            var aTop = -999, bTop = -999;
+            for (var ai = 0; ai < aList.length; ai++) { if ((aList[ai].change_pct||0) > aTop) aTop = aList[ai].change_pct||0; }
+            for (var bi = 0; bi < bList.length; bi++) { if ((bList[bi].change_pct||0) > bTop) bTop = bList[bi].change_pct||0; }
+            return bTop - aTop;
+        });
+        for (var ssi = 0; ssi < sKeys.length; ssi++) {
+            var ssn = sKeys[ssi];
+            var subSecId = 'etf-scat-' + sci + '-ssub-' + ssi;
+            sidebar += '<a class="etf-sidebar-subitem" data-etf-section="' + subSecId + '" onclick="scrollToEtfSection(\\x27' + subSecId + '\\x27)">' + ssn + '</a>';
+        }
+    }
+    sidebar += '</nav>';
+
+    // Build content
+    var content = '<div class="etf-main-content">';
+    for (var ci = 0; ci < catOrder.length; ci++) {
+        var catName = catOrder[ci];
+        var subcats = cats[catName];
+        if (!subcats) continue;
+        // Flatten all items for L1 summary
+        var allItems = [];
+        var subKeys = Object.keys(subcats);
+        // Sort subcategories by best gainer descending
+        subKeys.sort(function(a, b) {
+            var aList = subcats[a];
+            var bList = subcats[b];
+            var aTop = aList.length > 0 ? (aList[0].change_pct || 0) : -999;
+            var bTop = bList.length > 0 ? (bList[0].change_pct || 0) : -999;
+            return bTop - aTop;
+        });
+        subKeys.forEach(function(sk) {
+            var list = subcats[sk];
+            list.sort(function(a, b) { return b.change_pct - a.change_pct; });
+            allItems = allItems.concat(list);
+        });
+        var catUp = 0, catDown = 0;
+        allItems.forEach(function(it) { if (it.change_pct > 0) catUp++; else if (it.change_pct < 0) catDown++; });
+        var catId = 'etf-scat-' + ci;
+        content += '<div class="etf-category" id="' + catId + '">';
+        content += '<div class="etf-category-title" onclick="var g=document.getElementById(\\x27' + catId + '-body\\x27);g.style.display=g.style.display===\\x27none\\x27?\\x27\\x27:\\x27none\\x27"><span class="cat-name">' + catName + '</span><span class="cat-count">' + allItems.length + '\u53ea</span><span class="cat-up">\u2191' + catUp + '</span><span class="cat-down">\u2193' + catDown + '</span></div>';
+        content += '<div id="' + catId + '-body">';
+        // Render each subcategory
+        for (var si = 0; si < subKeys.length; si++) {
+            var subName = subKeys[si];
+            var subItems = subcats[subName];
+            var subId = catId + '-ssub-' + si;
+            // Top 3 gainers for this subcategory
+            var top3Html = '';
+            var top3Count = Math.min(3, subItems.length);
+            for (var ti = 0; ti < top3Count; ti++) {
+                var tiItem = subItems[ti];
+                var tiChg = tiItem.change_pct || 0;
+                var tiName = tiItem.name || '';
+                var tiCode = tiItem.code || '';
+                var tiClass = tiChg >= 0 ? 'etf-change-up' : 'etf-change-down';
+                top3Html += '<span class="subcat-top3-item"><span class="subcat-top3-name ' + tiClass + '">' + tiName + '(' + tiCode + ')</span><span class="subcat-top3-chg ' + tiClass + '">' + (tiChg > 0 ? '+' : '') + tiChg.toFixed(1) + '%</span></span>';
+                if (ti < top3Count - 1) top3Html += '<span class="subcat-top3-sep">|</span>';
+            }
+            content += '<div class="etf-subcategory" id="' + subId + '">';
+            content += '<div class="etf-subcategory-title" onclick="var g=document.getElementById(\\x27' + subId + '-body\\x27);g.style.display=g.style.display===\\x27none\\x27?\\x27\\x27:\\x27none\\x27"><span class="subcat-arrow">\u25b6</span><span class="subcat-name">' + subName + '</span><span class="subcat-top3">' + top3Html + '</span></div>';
+            content += '<div class="etf-subcat-grid" id="' + subId + '-body" style="display:none">';
+            for (var i = 0; i < subItems.length; i++) {
+                var it = subItems[i];
+                var code = it.code || '';
+                var name = it.name || '';
+                var price = it.price != null ? it.price.toFixed(3) : '--';
+                var chg = it.change_pct != null ? it.change_pct : 0;
+                var chgStr = (chg > 0 ? '+' : '') + chg.toFixed(2) + '%';
+                var chgClass = chg > 0 ? 'etf-change-up' : (chg < 0 ? 'etf-change-down' : 'etf-change-zero');
+                var klineSrc = etfKlineImg(code);
+                var minSrc = etfMinImg(code);
+                content += '<div class="etf-card" data-name="' + name + '" data-code="' + code + '" onclick="showEtfDetail(this)">';
+                var isWatched = isWatchEtf(code);
+                var starIcon = isWatched ? '\\u2605' : '\\u2606';
+                var starCls = isWatched ? 'etf-watch-star-on' : '';
+                content += '<div class="etf-card-header"><span class="etf-card-name" title="' + name + '">' + name + '</span><span class="etf-card-code">' + code + '</span><span class="etf-watch-star ' + starCls + '" onclick="event.stopPropagation();toggleWatchEtf(\\x27' + code + '\\x27)" title="\\u5173\\u6ce8">' + starIcon + '</span></div>';
+                content += '<div class="etf-card-price"><span class="etf-card-price-val">' + price + '</span><span class="etf-card-price-unit">' + (chg > 0 ? '\u25b2' : (chg < 0 ? '\u25bc' : '\u2014')) + '</span></div>';
+                content += '<div style="margin:2px 0 4px;"><span class="' + chgClass + '" style="font-size:0.9em;font-weight:bold;">' + chgStr + '</span></div>';
+                content += '<div class="etf-charts">';
+                content += '<div class="etf-chart-col"><div class="mini-label">\u65e5K</div><img src="' + klineSrc + '" loading="lazy" onerror="retryImg(this,2)" style="cursor:pointer;" onclick="reloadSinaImg(this)" data-orig-src="' + klineSrc + '"></div>';
+                content += '<div class="etf-chart-col"><div class="mini-label">\u5206\u65f6</div><img src="' + minSrc + '" loading="lazy" onerror="retryImg(this,2)" style="cursor:pointer;" onclick="reloadSinaImg(this)" data-orig-src="' + minSrc + '"></div>';
+                content += '</div>';
+                content += '</div>';
+            }
+            content += '</div></div>';
+        }
+        content += '</div></div>';
+    }
+    content += '</div>';
+
+    // ===== Section 2: 全部ETF分类 =====
+    h += '<div class="etf-section" id="etfSec2"><div class="etf-section-title"><span class="etf-section-num">2</span> \u5168\u90e8ETF\u5206\u7c7b</div>';
+    h += '<div class="etf-wrapper">' + sidebar + content + '</div></div>';
+
+    container.innerHTML = h;
+    // Render watchlist
+    renderWatchlist();
+    initEtfSidebar();
+}
+function scrollToEtfSection(sectionId) {
+    var el = document.getElementById(sectionId);
+    if (el) el.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+function initEtfSidebar() {
+    if (_etfObserver) _etfObserver.disconnect();
+    var sections = [];
+    document.querySelectorAll('[data-etf-section]').forEach(function(item) {
+        var id = item.getAttribute('data-etf-section');
+        var el = document.getElementById(id);
+        if (el) sections.push(el);
+    });
+    if (sections.length === 0) return;
+    _etfObserver = new IntersectionObserver(function(entries) {
+        var visibleItems = [];
+        entries.forEach(function(entry) {
+            if (entry.isIntersecting) {
+                visibleItems.push({el: entry.target, ratio: entry.intersectionRatio});
+            }
+        });
+        if (visibleItems.length === 0) return;
+        visibleItems.sort(function(a, b) { return b.ratio - a.ratio; });
+        var bestId = visibleItems[0].el.id;
+        document.querySelectorAll('.etf-sidebar-item').forEach(function(item) {
+            var target = item.getAttribute('data-etf-section');
+            item.classList.toggle('active', target === bestId);
+        });
+    }, {rootMargin: '-10px 0px -15% 0px', threshold: [0, 0.1]});
+    sections.forEach(function(el) { _etfObserver.observe(el); });
+}
+
+// ===== ETF auto refresh =====
+var _etfAutoRefreshTimer = null;
+var _etfAutoRefreshCountdown = null;
+var _etfAutoRefreshRemaining = 0;
+var _etfAutoRefreshActive = false;
+
+function manualRefreshEtf() {
+    var icon = document.querySelector('#tab-etf .rt-refresh-icon');
+    if (!icon) return;
+    icon.classList.add('spinning');
+    _etfLoaded = false;
+    fetch('/api/etf_spot?_t=' + Date.now())
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            _etfData = data;
+            _etfLoaded = true;
+            renderEtfTab(data);
+        })
+        .catch(function(e) {
+            console.error('ETF手动刷新失败:', e);
+            var container = document.getElementById('etfContainer');
+            if (container) container.innerHTML = '<div class="empty">刷新ETF数据失败: ' + e + '</div>';
+        })
+        .finally(function() {
+            icon.classList.remove('spinning');
+        });
+}
+
+function toggleEtfAutoRefresh() {
+    var btn = document.getElementById('etfAutoRefreshBtn');
+    if (!btn) return;
+
+    if (_etfAutoRefreshActive) {
+        // Stop
+        clearInterval(_etfAutoRefreshTimer);
+        clearInterval(_etfAutoRefreshCountdown);
+        _etfAutoRefreshActive = false;
+        _etfAutoRefreshTimer = null;
+        _etfAutoRefreshCountdown = null;
+        btn.innerHTML = '\u23f1 \u81ea\u52a8\u5237\u65b0 5\u5206\u949f';
+        btn.classList.remove('active');
+        showToast('ETF\u81ea\u52a8\u5237\u65b0\u5df2\u505c\u6b62', 'info');
+        return;
+    }
+
+    // Check A-stock trading hours (Beijing time 9:25 ~ 15:00)
+    var now = new Date();
+    var beijingHour = (now.getUTCHours() + 8) % 24;
+    var beijingMin = now.getUTCMinutes();
+    var totalMin = beijingHour * 60 + beijingMin;
+    if (totalMin < 565 || totalMin >= 900) {
+        showToast('\u23f0 \u975e\u4ea4\u6613\u65f6\u6bb5 (9:25~15:00)\uff0c\u81ea\u52a8\u5237\u65b0\u4e0d\u53ef\u7528', 'warning');
+        return;
+    }
+
+    // Start
+    _etfAutoRefreshActive = true;
+    _etfAutoRefreshRemaining = 300;
+    btn.classList.add('active');
+
+    function updateBtn() {
+        var m = Math.floor(_etfAutoRefreshRemaining / 60);
+        var s = _etfAutoRefreshRemaining % 60;
+        btn.innerHTML = '<span class="rt-pulse-dot"></span> \u81ea\u52a8\u5237\u65b0 (' + m + ':' + (s < 10 ? '0' : '') + s + ')';
+    }
+    updateBtn();
+
+    _etfAutoRefreshCountdown = setInterval(function() {
+        _etfAutoRefreshRemaining--;
+        if (_etfAutoRefreshRemaining <= 0) {
+            // Check trading hours before each refresh cycle
+            var now = new Date();
+            var h = (now.getUTCHours() + 8) % 24;
+            var m = now.getUTCMinutes();
+            var total = h * 60 + m;
+            if (total < 565 || total >= 900) {
+                clearInterval(_etfAutoRefreshTimer);
+                clearInterval(_etfAutoRefreshCountdown);
+                _etfAutoRefreshActive = false;
+                _etfAutoRefreshTimer = null;
+                _etfAutoRefreshCountdown = null;
+                btn.innerHTML = '\u23f1 \u81ea\u52a8\u5237\u65b0 5\u5206\u949f';
+                btn.classList.remove('active');
+                showToast('\u23f0 \u5df2\u8fc7\u4ea4\u6613\u65f6\u6bb5\uff0cETF\u81ea\u52a8\u5237\u65b0\u5df2\u505c\u6b62', 'info');
+                return;
+            }
+            _etfAutoRefreshRemaining = 300;
+            manualRefreshEtf();
+        }
+        updateBtn();
+    }, 1000);
+}
+
+// ETF卡片点击弹框（日K+分时纵向排列）
+function showEtfDetail(el) {
+    var code = el.getAttribute('data-code') || '';
+    var name = el.getAttribute('data-name') || '';
+    var cardPrice = el.querySelector('.etf-card-price-val');
+    var cardChg = el.querySelector('.etf-change-up, .etf-change-down, .etf-change-zero');
+    var price = cardPrice ? cardPrice.textContent : '--';
+    var chgText = cardChg ? cardChg.textContent : '';
+    var chgClass = '';
+    if (cardChg) {
+        if (cardChg.classList.contains('etf-change-up')) chgClass = 'etf-change-up';
+        else if (cardChg.classList.contains('etf-change-down')) chgClass = 'etf-change-down';
+        else chgClass = 'etf-change-zero';
+    }
+
+    var klineSrc = etfKlineImg(code);
+    var minSrc = etfMinImg(code);
+    var ts = Math.floor(Date.now() / 10000);
+
+    var html = '<div class="enlarged-card-content" style="padding:12px;">';
+    html += '<div class="sk-header"><span class="sk-name">' + name + '</span><span class="sk-code">' + code + '</span></div>';
+    html += '<div style="margin:8px 0 12px;font-size:1.1em;">\u4ef7\u683c: <strong>' + price + '</strong> | \u6da8\u8dcc\u5e45: <strong class="' + chgClass + '">' + chgText + '</strong></div>';
+    html += '<div class="concept-kline-grid">';
+    html += '<div class="ds-stock-kline-section"><div class="mini-label">\u65e5K\u7ebf</div>'
+         + '<img class="ds-stock-kline-img kline-img" src="' + klineSrc.split('?')[0] + '?' + ts + '" loading="lazy" onerror="retryImg(this,2)" style="cursor:pointer;" onclick="reloadSinaImg(this)" data-orig-src="' + klineSrc.split('?')[0] + '"></div>';
+    html += '<div class="ds-stock-kline-section"><div class="mini-label">\u5206\u65f6\u56fe</div>'
+         + '<img class="ds-stock-kline-img kline-img" src="' + minSrc.split('?')[0] + '?' + ts + '" loading="lazy" onerror="retryImg(this,2)" style="cursor:pointer;" onclick="reloadSinaImg(this)" data-orig-src="' + minSrc.split('?')[0] + '"></div>';
+    html += '</div></div>';
+
+    var modal = document.getElementById('enlargeCardModal');
+    var body = document.getElementById('enlargeCardModalBody');
+    body.innerHTML = html;
+    modal.classList.add('active');
+}
+
+function etfSearchFilter(val) {
+    var term = val.trim().toLowerCase();
+    var cards = document.querySelectorAll('#etfSec2 .etf-card');
+    cards.forEach(function(card) {
+        var name = (card.getAttribute('data-name') || card.querySelector('.etf-card-name')?.textContent || '').toLowerCase();
+        var code = (card.querySelector('.etf-card-code')?.textContent || '').toLowerCase();
+        if (!term) { card.style.display = ''; return; }
+        card.style.display = (name.indexOf(term) !== -1 || code.indexOf(term) !== -1) ? '' : 'none';
+    });
+    // Show/hide L2 sections and L1 categories
+    document.querySelectorAll('#etfSec2 .etf-subcat-grid').forEach(function(grid) {
+        var hiddenCards = grid.querySelectorAll('.etf-card[style*="display: none"]');
+        var totalCards = grid.querySelectorAll('.etf-card').length;
+        if (!term) { grid.closest('.etf-subcategory').style.display = ''; return; }
+        grid.closest('.etf-subcategory').style.display = (hiddenCards.length === totalCards) ? 'none' : '';
+        // Auto-expand grids with matches
+        if (hiddenCards.length < totalCards) grid.style.display = '';
+    });
+    document.querySelectorAll('#etfSec2 .etf-category').forEach(function(cat) {
+        var hiddenSubs = cat.querySelectorAll('.etf-subcategory[style*="display: none"]');
+        var totalSubs = cat.querySelectorAll('.etf-subcategory').length;
+        if (!term) { cat.style.display = ''; return; }
+        cat.style.display = (hiddenSubs.length === totalSubs) ? 'none' : '';
+    });
+}
 function renderStockQueryKplTree(stockName) {
     var tree = _kplTreeData;
     var nameCodeMap = _kplNameCodeMap || {};
@@ -8674,6 +9470,285 @@ def _clean_nan(obj):
     elif isinstance(obj, tuple):
         return tuple(_clean_nan(v) for v in obj)
     return obj
+
+
+# ===== ETF分类 =====
+_ETF_CATEGORIES = [
+    ('行业主题', ['芯片', '半导体', '集成电路', '人工', 'AI', '科技', '信息', '互联', '通信', '算力', '软件', '数字', '计算机', '大数据', '云计算', '数据', '信创',
+                  '5G', 'VR', '卫星', '物联网', '智能',
+                  '新能源', '光伏', '风电', '锂电', '电池', '能源', '煤炭', '电力', '石化', '石油', '天然气',
+                  '消费', '食品', '饮料', '白酒', '酒', '医药', '医疗', '生物', '创新药', '中药', '医',
+                  '金融', '银行', '证券', '保险', '地产', '基建', '建筑',
+                  '军工', '国防', '央企', '国企', '改革', '国改', '红利', '龙头',
+                  '汽车', '车', '智能驾驶', '自动驾驶', '机器人', '工业', '机床', '制造',
+                  '农业', '养殖', '畜牧', '化工', '钢铁', '材料',
+                  '游戏', '传媒', '影视', '旅游', '零售', '家电', '电子',
+                  '黄金', '稀土', '稀有', 'ESG', '环境', '环保', '水', '绿',
+                  '电信', '粮食', '工程机械', '航空', '新经济', '质量', '大湾区', '粤港澳', '成渝', '油气', '低碳', '碳中和', '养老', '物流', '农牧', '交通运输', '券商']),
+    ('商品', ['商品', '能源化工', '豆粕', '农产品', '生猪', '饲料', '黄金', '有色', '期货']),
+    ('债券', ['国债', '政金', '地方债', '可转债', '公司债', '债', '债券']),
+    ('货币', ['货币ETF', '货币']),
+    ('跨境', ['纳指', '标普', '恒生', '中概', '港股', 'H股', '海外', '德国', '法国', '日本', '亚太', '全球', '纳斯达克', '道琼斯', '日经', '沙特', '巴西', '亚洲', '美国50']),
+    ('宽基指数', ['上证', '沪深', '中证', '科创', '创业板', '深证', '中小板', '大盘', 'A50', 'AH股', '300', '500', '1000', '2000', '双创', '北证', '综指', '成指',
+                   'MSCI', '国际通', '800', '400', '创成长', '可持续发展', '核心']),
+]
+def _get_sina_prefix(code):
+    if code.startswith('6') or code.startswith('5'):
+        return 'sh'
+    return 'sz'
+
+def _check_yangbaoyin(spot_data):
+    """检测反转：昨天阴线下跌，今天阳线(现价>开盘价)
+    使用Sina实时行情，每日快照(data/etf_daily_open.json)保存今日开盘价，
+    次日加载昨日开盘价做精确阴线(close<open)检测。
+    首次运行（无快照）使用跳空低开回升的代理逻辑。"""
+    import requests as _req
+
+    _base_dir = os.path.dirname(os.path.abspath(__file__))
+    _snap_path = os.path.join(_base_dir, 'data', 'etf_daily_open.json')
+    _today_str = datetime.now().strftime('%Y%m%d')
+
+    # 1. 尝试加载昨日快照（精确阴线检测）
+    yesterday_opens = {}
+    snap_date = None
+    if os.path.exists(_snap_path):
+        try:
+            with open(_snap_path, 'r') as f:
+                snap = json.load(f)
+                snap_date = snap.get('date', '')
+                if snap_date:
+                    yesterday_opens = snap.get('opens', {})
+        except Exception:
+            pass
+
+    has_snapshot = bool(snap_date and snap_date != _today_str and yesterday_opens)
+
+    # 2. 候选：今日上涨的ETF
+    candidates = [item for item in spot_data if item.get('change_pct', 0) > 0]
+    candidates.sort(key=lambda x: -x['change_pct'])
+    top_candidates = candidates[:200]
+
+    # 3. 分批批量获取Sina实时行情
+    sina_map = {}
+    batch_size = 50
+    for batch_start in range(0, len(top_candidates), batch_size):
+        batch = top_candidates[batch_start:batch_start + batch_size]
+        symbols = ','.join([_get_sina_prefix(it['code']) + it['code'] for it in batch])
+        url = f'https://hq.sinajs.cn/list={symbols}'
+        try:
+            r = _req.get(url, timeout=15, headers={
+                'Referer': 'https://finance.sina.com.cn',
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
+            })
+            if r.status_code == 200:
+                for line in r.text.strip().split('\n'):
+                    line = line.strip()
+                    if not line or not line.startswith('var hq_str_'):
+                        continue
+                    # 格式: var hq_str_sh589720="name,open,prev_close,current,high,low,..."
+                    content = line[line.index('"')+1:line.rindex('"')]
+                    parts = content.split(',')
+                    if len(parts) >= 4:
+                        scode = line.split('_')[2].split('=')[0]
+                        raw_code = scode[2:] if len(scode) > 2 else scode
+                        try:
+                            today_open = float(parts[1]) if parts[1] else None
+                            prev_close = float(parts[2]) if parts[2] else None
+                            current = float(parts[3]) if parts[3] else None
+                            if today_open and prev_close and current:
+                                sina_map[raw_code] = {
+                                    'open': today_open,
+                                    'prev_close': prev_close,
+                                    'current': current,
+                                }
+                        except (ValueError, IndexError):
+                            pass
+        except Exception:
+            pass
+
+    # 4. 保存今日开盘价快照（供次日精确检测）
+    try:
+        today_opens = {}
+        for c, s in sina_map.items():
+            today_opens[c] = s['open']
+        with open(_snap_path, 'w') as f:
+            json.dump({'date': _today_str, 'opens': today_opens}, f)
+    except Exception:
+        pass
+
+    # 5. 检测每个候选
+    result = []
+    for item in top_candidates:
+        code = item['code']
+        sina = sina_map.get(code)
+        if not sina:
+            continue
+
+        today_open = sina['open']
+        prev_close = sina['prev_close']
+        current = sina['current']
+
+        if has_snapshot and code in yesterday_opens:
+            # === 精确检测：使用昨日快照 ===
+            yesterday_open = yesterday_opens[code]
+            yesterday_close = prev_close
+            # 昨天阴线: close < open
+            # 今天阳线: current > today_open
+            if yesterday_close < yesterday_open and current > today_open:
+                result.append({
+                    'code': code, 'name': item['name'],
+                    'price': item['price'], 'change_pct': item['change_pct'],
+                    'category': item['category'], 'subcategory': item['subcategory'],
+                    'yesterday_open': yesterday_open,
+                    'yesterday_close': yesterday_close,
+                    'proxy': False,
+                })
+        else:
+            # === 代理逻辑：跳空低开+回升（快照尚未就绪） ===
+            gap_down_pct = (prev_close - today_open) / prev_close * 100 if prev_close > 0 else 0
+            if gap_down_pct >= 0.15 and current > today_open and current > prev_close:
+                result.append({
+                    'code': code, 'name': item['name'],
+                    'price': item['price'], 'change_pct': item['change_pct'],
+                    'category': item['category'], 'subcategory': item['subcategory'],
+                    'yesterday_open': round(prev_close, 4),
+                    'yesterday_close': round(today_open, 4),
+                    'proxy': True,
+                })
+
+    result.sort(key=lambda x: -x['change_pct'])
+    return result
+
+def _classify_etf(name):
+    for cat, keywords in _ETF_CATEGORIES:
+        for kw in keywords:
+            if kw in name:
+                return cat
+    return '其他'
+def _cat_order(cat):
+    order = {'宽基指数': 0, '行业主题': 1, '商品': 2, '债券': 3, '货币': 4, '跨境': 5}
+    return order.get(cat, 6)
+
+_ETF_L2 = {
+    '宽基指数': [
+        ('科创板', ['科创', '双创', '创成长']),
+        ('创业板', ['创业板']),
+        ('沪深300', ['沪深300']),
+        ('中证500/1000', ['500', '1000', '2000']),
+        ('上证50/A50', ['上证50', 'A50']),
+        ('其他宽基', []),
+    ],
+    '行业主题': [
+        ('芯片', ['芯片']),
+        ('半导体', ['半导体']),
+        ('集成电路', ['集成电路']),
+        ('人工智能', ['人工', 'AI']),
+        ('科技', ['科技']),
+        ('互联', ['互联']),
+        ('通信', ['通信']),
+        ('算力', ['算力']),
+        ('软件', ['软件']),
+        ('计算机', ['计算机']),
+        ('大数据', ['大数据']),
+        ('云计算', ['云计算']),
+        ('数据', ['数据']),
+        ('信创', ['信创']),
+        ('数字', ['数字']),
+        ('信息', ['信息']),
+        ('5G', ['5G']),
+        ('VR', ['VR']),
+        ('卫星', ['卫星']),
+        ('物联网', ['物联网']),
+        ('新能源', ['新能源']),
+        ('光伏', ['光伏']),
+        ('风电', ['风电']),
+        ('锂电', ['锂电']),
+        ('电池', ['电池']),
+        ('能源', ['能源']),
+        ('煤炭', ['煤炭']),
+        ('电力', ['电力']),
+        ('石化', ['石化']),
+        ('石油', ['石油']),
+        ('天然气', ['天然气']),
+        ('食品', ['食品']),
+        ('饮料', ['饮料']),
+        ('白酒', ['白酒']),
+        ('酒', ['酒']),
+        ('医药', ['医药']),
+        ('医疗', ['医疗']),
+        ('生物', ['生物']),
+        ('创新药', ['创新药']),
+        ('中药', ['中药']),
+        ('医', ['医']),
+        ('金融', ['金融']),
+        ('银行', ['银行']),
+        ('证券', ['证券']),
+        ('保险', ['保险']),
+        ('地产', ['地产']),
+        ('基建', ['基建']),
+        ('建筑', ['建筑']),
+        ('军工', ['军工']),
+        ('国防', ['国防']),
+        ('央企', ['央企']),
+        ('国企', ['国企']),
+        ('改革', ['改革']),
+        ('国改', ['国改']),
+        ('红利', ['红利']),
+        ('龙头', ['龙头']),
+        ('汽车', ['汽车']),
+        ('车', ['车']),
+        ('智能驾驶', ['智能驾驶']),
+        ('自动驾驶', ['自动驾驶']),
+        ('智能', ['智能']),  # 智能驾驶等更精确匹配在前，智能靠后
+        ('机器人', ['机器人']),
+        ('工业', ['工业']),
+        ('机床', ['机床']),
+        ('制造', ['制造']),
+        ('农业', ['农业']),
+        ('养殖', ['养殖']),
+        ('畜牧', ['畜牧']),
+        ('化工', ['化工']),
+        ('钢铁', ['钢铁']),
+        ('材料', ['材料']),
+        ('稀土/稀有金属', ['稀土', '稀有金属']),
+        ('电子', ['电子']),
+        ('电信', ['电信']),
+        ('传媒/游戏', ['传媒', '游戏', '动漫', '文娱']),
+        ('影视', ['影视']),
+        ('通用航空', ['通用航空']),
+        ('航天航空', ['航天', '航空', '航空航天']),
+        ('黄金', ['黄金']),
+        ('工程机械', ['工程机械']),
+        ('碳中和/环保', ['碳中和', '低碳', '环保']),
+        ('粮食/农牧', ['粮食', '农牧']),
+        ('油气', ['油气']),
+        ('家电', ['家电']),
+        ('消费', ['消费']),  # 消费靠后，避免消费电子/消费科技被错分
+        ('物流', ['物流']),
+        ('旅游', ['旅游']),
+        ('ESG/质量', ['ESG', '质量ETF']),
+        ('其他行业', []),
+    ],
+    '跨境': [
+        ('美股', ['纳指', '标普', '纳斯达克', '道琼斯', '美国50']),
+        ('港股/中概', ['恒生', '中概', '港股', 'H股']),
+        ('其他跨境', []),
+    ],
+}
+def _classify_etf_sub(name, category):
+    """返回子分类名称"""
+    l2_list = _ETF_L2.get(category, [])
+    for l2_name, keywords in l2_list:
+        if not keywords:
+            continue
+        for kw in keywords:
+            if kw in name:
+                return l2_name
+    # catch-all
+    for l2_name, keywords in l2_list:
+        if not keywords:
+            return l2_name
+    return None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -9143,6 +10218,18 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback
                 self._respond_json({'error': str(e), 'traceback': traceback.format_exc()}, cors_headers)
 
+        elif path == '/api/lianban_screener':
+            try:
+                cache_key = 'lianban_screener'
+                result = _get_cached(cache_key)
+                if result is None:
+                    result = _screener_lianban_stocks()
+                    _set_cache(cache_key, result)
+                self._respond_json(result, cors_headers)
+            except Exception as e:
+                import traceback
+                self._respond_json({'error': str(e), 'traceback': traceback.format_exc()}, cors_headers)
+
         elif path == '/api/reason_search':
             q = query.get('q', [''])[0].strip()
             date_start = query.get('date_start', [None])[0]
@@ -9337,6 +10424,49 @@ class Handler(BaseHTTPRequestHandler):
                         name_to_code[raw_name] = code
                 result = name_to_code
                 _set_cache('kpl_name_code_map', result)
+            self._respond_json(result, cors_headers)
+
+        elif path == '/api/etf_spot':
+            result = _get_cached('etf_spot')
+            if result is None:
+                try:
+                    import akshare as ak
+                    import pandas as pd
+                    df = ak.fund_etf_spot_ths()
+                    result = []
+                    if df is not None and not df.empty:
+                        for _, row in df.iterrows():
+                            code = str(row.get('基金代码', '')).strip() if pd.notna(row.get('基金代码')) else ''
+                            name = str(row.get('基金名称', '')).strip() if pd.notna(row.get('基金名称')) else ''
+                            price = float(row['当前-单位净值']) if pd.notna(row.get('当前-单位净值')) else None
+                            change_pct = float(row['增长率']) if pd.notna(row.get('增长率')) else 0.0
+                            category = _classify_etf(name)
+                            subcategory = _classify_etf_sub(name, category)
+                            result.append({
+                                'code': code, 'name': name, 'price': price,
+                                'change_pct': change_pct, 'category': category,
+                                'subcategory': subcategory,
+                            })
+                        result.sort(key=lambda x: (_cat_order(x['category']), -x['change_pct']))
+                    _set_cache('etf_spot', result)
+                except Exception as e:
+                    self._respond_json({'error': str(e)}, cors_headers)
+                    return
+            self._respond_json(result, cors_headers)
+
+        elif path == '/api/etf_yangbaoyin':
+            result = _get_cached('etf_yangbaoyin')
+            if result is None:
+                try:
+                    spot_data = _get_cached('etf_spot')
+                    if spot_data is None:
+                        self._respond_json({'error': 'no_spot_data'}, cors_headers)
+                        return
+                    result = _check_yangbaoyin(spot_data)
+                    _set_cache('etf_yangbaoyin', result)
+                except Exception as e:
+                    self._respond_json({'error': str(e)}, cors_headers)
+                    return
             self._respond_json(result, cors_headers)
 
         else:
