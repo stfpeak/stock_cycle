@@ -2270,6 +2270,7 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 }
 .sq-stock-link:hover { background:#00d4ff; color:#0a1628; border-color:#00d4ff; }
 .sq-stock-link .sq-link-icon { font-size:0.65em; opacity:0.6; }
+.sq-stock-link.sq-stock-highlight { background:#ffc107; color:#1a1a2e; border-color:#ffc107; font-weight:bold; box-shadow:0 0 8px rgba(255,193,7,0.4); }
 </style>
 </head>
 <body>
@@ -9445,10 +9446,11 @@ function renderStockQueryKplTree(stockName) {
                         item.标的.forEach(function(sname) {
                             var scode = nameCodeMap[sname] || '';
                             var escName = (sname||'').replace(/'/g, '');
+                            var hlCls = (_kplHighlightStockName && sname === _kplHighlightStockName) ? ' sq-stock-highlight' : '';
                             if (scode) {
-                                html += '<span class="sq-stock-link" onclick="event.stopPropagation();stockQueryFetch(\\x27' + scode + '\\x27)"><span class="sq-link-icon">&#x279c;</span>' + sname + '</span>';
+                                html += '<span class="sq-stock-link' + hlCls + '" onclick="event.stopPropagation();stockQueryFetch(\\x27' + scode + '\\x27)"><span class="sq-link-icon">&#x279c;</span>' + sname + '</span>';
                             } else {
-                                html += '<span class="sq-stock-link" onclick="event.stopPropagation();stockQuerySearchName(\\x27' + escName + '\\x27)">' + sname + '</span>';
+                                html += '<span class="sq-stock-link' + hlCls + '" onclick="event.stopPropagation();stockQuerySearchName(\\x27' + escName + '\\x27)">' + sname + '</span>';
                             }
                         });
                     }
