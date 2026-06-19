@@ -110,6 +110,32 @@ def _search_limit_rows(q):
     return {'results': result, 'mode': 'single', 'query': q}
 
 
+def _analyze_limit_rows(q, date_start=None, date_end=None, no_st=None):
+    """分析涨停理由搜索，支持日期过滤和ST过滤。返回 results + total_hits + mode"""
+    result = _search_limit_rows(q)
+    results = result.get('results', [])
+    # 按日期过滤
+    if date_start:
+        ds = date_start.replace('-', '')
+        results = [r for r in results if (r.get('trade_date', '') or '') >= ds]
+    if date_end:
+        de = date_end.replace('-', '')
+        results = [r for r in results if (r.get('trade_date', '') or '') <= de]
+    # 过滤ST
+    if no_st == '1':
+        results = [r for r in results if not _is_st(r)]
+    results.sort(key=lambda x: x.get('trade_date', ''), reverse=True)
+    result['results'] = results
+    result['total_hits'] = len(results)
+    return result
+
+
+def _is_st(r):
+    """判断涨停理由记录是否为ST股票"""
+    name = (r.get('name', '') or '').strip()
+    return name.startswith('*ST') or name.startswith('ST') or name.startswith('S')
+
+
 def _parse_chain_count(tag):
     """解析tag字段中的连板数。如'3天3板'→3，'首板'→1，'2板'→2"""
     if not tag:
@@ -1364,6 +1390,7 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 .np-cat-header .cat-count { color: #888; font-size: 0.85em; }
 .np-cat-header .cat-arrow { margin-left: auto; color: #666; transition: transform 0.2s; }
 .np-cat-header.collapsed .cat-arrow { transform: rotate(-90deg); }
+.np-cat-body.collapsed { display: none; }
 
 /* Pullback progress bar */
 .np-pullback-bar {
@@ -2605,18 +2632,12 @@ function loadAlertMonitor() {
                     html += '<div class="np-card-header">';
                     html += '<div>';
                     html += '<span class="np-card-code" data-code="' + code + '" data-name="' + name + '">' + code + '</span>';
-                    html += '<span class="np-card-name">' + name + '</span>';
+                    html += '<span class="np-card-name">' + name + '</span>' + _watchStarHtml(code, name, _watchGetCategory(code));
                     html += '</div>';
                     html += '<div><span class="np-card-badge lianban">\u5f02\u52a8</span><button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + code + '\\x27)" title="放大卡片">⛶</button></div>';
                     html += '</div>';
-                    // Concepts badges
-                    html += '<div class="np-card-badges">';
-                    concepts.forEach(function(c) {
-                        html += '<span class="np-card-badge">' + (typeof c === 'object' ? c.name : c) + '</span>';
-                    });
-                    html += '</div>';
                     // Async detail loading (shared with N字战法 loadNpCardDetails)
-                    html += '<div class="am-detail-placeholder" data-am-code="' + code + '" data-alert-date="' + alertDate + '" data-alert-pct="' + alertPct + '"><div class="empty" style="padding:8px;">\u5c55\u5f00\u540e\u52a0\u8f7d\u8be6\u60c5</div></div>';
+                    html += '<div class="am-detail-placeholder" data-am-code="' + code + '" data-concepts=\\x27' + JSON.stringify(concepts) + '\\x27 data-alert-date="' + alertDate + '" data-alert-pct="' + alertPct + '"><div class="empty" style="padding:8px;">\u5c55\u5f00\u540e\u52a0\u8f7d\u8be6\u60c5</div></div>';
                     html += '</div>';
                 });
 
@@ -2815,23 +2836,8 @@ document.addEventListener('click', function(e) {
             var total = parseInt(btn.textContent.match(/\\d+/)) || 0;
             btn.textContent = isHidden ? '收起' : '显示全部 (' + total + '只)';
             if (isHidden) {
-                var extraCards = extraGrid.querySelectorAll('.np-card');
-                extraCards.forEach(function(card) {
-                    var canvas = card.querySelector('canvas');
-                    if (!canvas) return;
-                    var code = null;
-                    var codeEl = card.querySelector('.np-card-code');
-                    if (codeEl) code = codeEl.getAttribute('data-code');
-                    if (code && window._oscData) {
-                        var stocks = window._oscData.stocks || [];
-                        for (var si = 0; si < stocks.length; si++) {
-                            if (stocks[si].code === code && stocks[si].klines) {
-                                renderNpKline(canvas.id, stocks[si].klines);
-                                break;
-                            }
-                        }
-                    }
-                });
+                _npDetailLoading = false;
+                setTimeout(function() { loadNpCardDetails(); }, 100);
                 initNpSidebar();
             }
         }
@@ -4455,24 +4461,39 @@ if (linkageInput) {
 var _npData = null;
 var _npCatKeys = ['tld', '0-2', '2-5', '5-8', '8-10', '10+'];
 var _npCatLabels = {'tld': '屠龙刀战法', '0-2': '0~2%', '2-5': '2~5%', '5-8': '5~8%', '8-10': '8~10%', '10+': '10%+'};
-var _boardSubLabels = {main_board: '主板', gem_star: '创业板/科创板', other: '其他'};
-var _boardSubKeys = ['main_board', 'gem_star', 'other'];
+var _boardSubLabels = {main_board: '主板', gem_star: '创业板/科创板'};
+var _boardSubKeys = ['main_board', 'gem_star'];
 var _npGridCols = 4;
 var _npObserver = null;
 var _ztWindowData = null;  // cached zt_window data
 var _npDetailData = {};
 var _npDetailLoading = false;
 var _screenerData = null;
-function loadNpCardDetails() {
+var _npFilterKeyword = '';
+// 检查元素是否在可见（未折叠）分区内
+function _isNpInVisibleSection(el) {
+    var p = el.parentElement;
+    while (p) {
+        if (p.classList && (p.classList.contains('np-cat-body') || p.classList.contains('np-board-body'))) {
+            if (p.classList.contains('collapsed')) return false;
+        }
+        p = p.parentElement;
+    }
+    return true;
+}
+function loadNpCardDetails(forceAll) {
     if (_npDetailLoading) return;
+    // 当 forceAll 为 true 时，忽略折叠状态加载所有卡片（用于过滤时涨停理由匹配）
+    var visibleOnly = forceAll ? function() { return true; } : function(el) { return _isNpInVisibleSection(el); };
     // 先渲染已有缓存数据的卡片（无需API请求）
     document.querySelectorAll('[data-np-detail]').forEach(function(el) {
+        if (!visibleOnly(el)) return;
         var c = el.getAttribute('data-np-detail');
         if (c && _npDetailData[c]) {
             var alertDate = el.getAttribute('data-alert-date') || '';
             var alertPct = parseFloat(el.getAttribute('data-alert-pct')) || 0;
             var alertInfo = alertDate ? {date: alertDate, pct: alertPct} : null;
-            el.innerHTML = _renderCardDetailContent(c, _npDetailData[c], alertInfo);
+            el.innerHTML = _renderCardDetailContent(c, _npDetailData[c], alertInfo, '', el.getAttribute('data-concepts'));
             el.removeAttribute('data-np-detail');
             el.removeAttribute('data-alert-date');
             el.removeAttribute('data-alert-pct');
@@ -4480,6 +4501,7 @@ function loadNpCardDetails() {
     });
     var codes = [];
     document.querySelectorAll('[data-np-detail]').forEach(function(el) {
+        if (!visibleOnly(el)) return;
         var c = el.getAttribute('data-np-detail');
         if (c && !_npDetailData[c] && codes.indexOf(c) === -1) codes.push(c);
     });
@@ -4490,22 +4512,28 @@ function loadNpCardDetails() {
         .then(function(data) {
             for (var code in data) { _npDetailData[code] = data[code]; }
             document.querySelectorAll('[data-np-detail]').forEach(function(el) {
+                if (!visibleOnly(el)) return;
                 var c = el.getAttribute('data-np-detail');
                 if (_npDetailData[c]) {
                     var alertDate = el.getAttribute('data-alert-date') || '';
                     var alertPct = parseFloat(el.getAttribute('data-alert-pct')) || 0;
                     var alertInfo = alertDate ? {date: alertDate, pct: alertPct} : null;
-                    el.innerHTML = _renderCardDetailContent(c, _npDetailData[c], alertInfo);
+                    el.innerHTML = _renderCardDetailContent(c, _npDetailData[c], alertInfo, '', el.getAttribute('data-concepts'));
                     el.removeAttribute('data-np-detail');
                     el.removeAttribute('data-alert-date');
                     el.removeAttribute('data-alert-pct');
                 }
             });
             _npDetailLoading = false;
-            // 继续处理剩余未加载的卡片（异步添加的卡片可能被上一轮跳过）
-            setTimeout(function() { loadNpCardDetails(); }, 50);
+            // 当过滤激活时，数据加载后重新过滤
+            if (_npFilterKeyword) {
+                filterNPattern();
+            } else {
+                // 继续处理剩余未加载的卡片（异步添加的卡片可能被上一轮跳过）
+                setTimeout(function() { loadNpCardDetails(forceAll); }, 50);
+            }
         })
-        .catch(function() { _npDetailLoading = false; setTimeout(function() { loadNpCardDetails(); }, 50); });
+        .catch(function() { _npDetailLoading = false; if (!_npFilterKeyword) setTimeout(function() { loadNpCardDetails(forceAll); }, 50); });
 }
 
 // Sidebar nav items (excluding alert — added separately)
@@ -4529,11 +4557,8 @@ var _npSidebarItems = [
     {key: '5-8', label: '5~8%'},
     {key: '8-10', label: '8~10%'},
     {key: '10+', label: '10%+'},
-    {key: 'alert', label: '额外关注'},
     {key: 'yang', label: '阳线回调'},
-    {key: 'three_yin', label: '三连阴回调'},
-    {key: 'zt', label: '15日涨停'},
-    {key: 'osc', label: '震荡企稳'}
+    {key: 'three_yin', label: '三连阴回调'}
 ];
 
 function loadNPattern() {
@@ -4641,9 +4666,6 @@ function loadNPattern() {
             // Init sidebar IntersectionObserver
             initNpSidebar();
 
-            // 并行加载15日涨停板和震荡企稳数据（各自独立fetch，非阻塞）
-            loadNpZtWindow();
-            loadNpOscillation();
             setTimeout(function() { loadNpCardDetails(); }, 500);
         }, 150);
 
@@ -4655,7 +4677,7 @@ function loadNPattern() {
 // Render the filter bar (separate from results so filter doesn't clear itself)
 function renderNpFilterBar() {
     var html = '<div class="np-filter-bar">';
-    html += '<span class="fl">概念</span>';
+    html += '<span class="fl">概念或涨停理由</span>';
     html += '<input class="np-filter-input" id="npFilterConcept" placeholder="多概念用逗号分隔" oninput="filterNPattern()">';
     html += '<label class="np-filter-cb"><input type="checkbox" id="npFilterNW" onchange="filterNPattern()"> N+W</label>';
     html += '<label class="np-filter-cb"><input type="checkbox" id="npFilterTldSb" onchange="filterNPattern()"> 首板屠龙</label>';
@@ -4698,20 +4720,11 @@ function renderNpResults(data, screener) {
         html += renderNpCategory(data.categories[ck], ck);
     });
 
-    // Alerts section
-    html += renderNpAlertSection(data);
-
     // 阳线回调 section
     html += renderNpSimplePatternSection(data.yang_pattern, 'yang', '阳线回调', '📈', '涨停后阴线回调(至少1根) + 最后一根阳线企稳信号');
 
     // 三连阴回调 section
     html += renderNpSimplePatternSection(data.three_yin_pattern, 'three_yin', '三连阴回调', '📉', '近15日有涨停 + 连续3日收阴线(close < open)');
-
-    // 15日涨停板 section placeholder (content filled by loadNpZtWindow)
-    html += '<div id="np-ztwindow-section"></div>';
-
-    // 震荡企稳 section placeholder (content filled by loadNpOscillation)
-    html += '<div id="np-oscillation-section"></div>';
 
     return html;
 }
@@ -4740,14 +4753,12 @@ function renderScreenerCategory(stocks, key) {
         html += '<div class="np-card-header">';
         html += '<div>';
         html += '<span class="np-card-code" data-code="' + code + '" data-name="' + name + '">' + code + '</span>';
-        html += '<span class="np-card-name">' + name + '</span>';
+        html += '<span class="np-card-name">' + highlightText(name, _npFilterKeyword) + '</span>';
+        html += _watchStarHtml(code, name, _watchGetCategory(code));
         html += '</div>';
         html += '<div>' + (badgeLabel ? '<span class="np-card-badge lianban">' + badgeLabel + '</span>' : '') + '<button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + code + '\\x27)" title="\u653e\u5927\u5361\u7247">\u2b36</button></div>';
         html += '</div>';
-        html += '<div class="np-card-badges">';
-        (s.concepts || []).forEach(function(c) { html += '<span class="np-card-badge">' + c + '</span>'; });
-        html += '</div>';
-        html += '<div data-np-detail="' + code + '"><div class="empty" style="padding:8px;">\u52a0\u8f7d\u4e2d...</div></div>';
+        html += '<div data-np-detail="' + code + '" data-concepts=\\x27' + JSON.stringify(s.concepts || []) + '\\x27><div class="empty" style="padding:8px;">\u52a0\u8f7d\u4e2d...</div></div>';
         html += '</div>';
     });
     html += '</div></div></div>';
@@ -4848,22 +4859,10 @@ function toggleAlertBoard(typeKey) {
     var total = match ? parseInt(match[0]) : 0;
     btn.textContent = isHidden ? '收起' : '显示全部 (' + total + '只)';
 
-    // Render klines for newly visible cards
+    // Load card details for newly visible cards
     if (isHidden) {
-        extraGrid.querySelectorAll('canvas').forEach(function(canvas) {
-            var code = canvas.id.replace('npk_', '').replace('_alert', '');
-            var sec = document.getElementById(canvas.id.replace('npk_', '').replace('_alert', ''));
-            // Look up kline data - scan alerts for matching code
-            if (window._npData && window._npData.alerts) {
-                var allAlerts = (window._npData.alerts.zha_ban || []).concat(window._npData.alerts.gem_alert || []);
-                for (var si = 0; si < allAlerts.length; si++) {
-                    if (allAlerts[si].code === code && allAlerts[si].klines) {
-                        renderNpKline(canvas.id, allAlerts[si].klines);
-                        break;
-                    }
-                }
-            }
-        });
+        _npDetailLoading = false;
+        setTimeout(function() { loadNpCardDetails(); }, 100);
         initNpSidebar();
     }
 }
@@ -4875,7 +4874,7 @@ function renderAlertNpCard(s, type) {
     html += '<div class="np-card-header">';
     html += '<div>';
     html += '<span class="np-card-code" data-code="' + s.code + '" data-name="' + s.name + '">' + s.code + '</span>';
-    html += '<span class="np-card-name">' + s.name + '</span>';
+    html += '<span class="np-card-name">' + s.name + '</span>' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code));
     html += '</div>';
     if (type === 'zha_ban') {
         html += '<span class="np-card-badge alert">炸板' + s.zb_count + '次</span><button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + s.code + '\\x27)" title="放大卡片">⛶</button></div>';
@@ -4884,11 +4883,6 @@ function renderAlertNpCard(s, type) {
         var boardColor = s.board === 'gem' ? 'rgba(244,143,177,0.15);color:#f48fb1' : 'rgba(129,199,132,0.15);color:#81c784';
         html += '<span class="np-card-badge lianban" style="background:' + boardColor + '">' + boardLabel + '</span><button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + s.code + '\\x27)" title="放大卡片">⛶</button></div>';
     }
-
-    // Concepts
-    html += '<div class="np-card-badges">';
-    (s.concepts || []).forEach(function(c) { html += '<span class="np-card-badge">' + c + '</span>'; });
-    html += '</div>';
 
     // == OLD CONTENT (keep for reversion) ==
     // // Metrics
@@ -4924,7 +4918,7 @@ function renderAlertNpCard(s, type) {
     // if (latestDate) html += '<div class="np-kline-latest">最新: <span>' + latestDate + '</span></div>';
     // == END OLD CONTENT ==
 
-    html += '<div data-np-detail="' + s.code + '"><div class="empty" style="padding:8px;">加载中...</div></div>';
+    html += '<div data-np-detail="' + s.code + '" data-concepts=\\x27' + JSON.stringify(s.concepts || []) + '\\x27><div class="empty" style="padding:8px;">加载中...</div></div>';
 
     html += '</div>';
     return html;
@@ -5001,8 +4995,7 @@ function renderNpCategory(cat, catKey) {
     var boards = _npSplitByBoard(allStocks);
     var boardDefs = [
         {key: 'main_board', label: '主板', cls: 'main'},
-        {key: 'gem_star', label: '创业板/科创板', cls: 'gem_star'},
-        {key: 'other', label: '其他', cls: 'other'}
+        {key: 'gem_star', label: '创业板/科创板', cls: 'gem_star'}
     ];
     boardDefs.forEach(function(board) {
         var bStocks = boards[board.key] || [];
@@ -5027,7 +5020,7 @@ function renderNpCategory(cat, catKey) {
             html += '<div class="np-card-header">';
             html += '<div>';
             html += '<span class="np-card-code" data-code="' + s.code + '" data-name="' + s.name + '">' + s.code + '</span>';
-            html += '<span class="np-card-name">' + s.name + '</span>';
+            html += '<span class="np-card-name">' + highlightText(s.name, _npFilterKeyword) + '</span>' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code));
             if (s.is_lianban2plus) html += '<span style="margin-left:4px;color:#ffc107;">\u2b50</span>';
             if (s.is_oscillation) html += '<span style="margin-left:4px;color:#00d4ff;font-size:0.85em;">\u27f3</span>';
             if (s.has_zha_ban) html += '<span style="margin-left:4px;color:#ff9800;font-size:0.85em;">\u26a0</span>';
@@ -5038,15 +5031,7 @@ function renderNpCategory(cat, catKey) {
             html += '<div><span class="np-card-badge lianban">' + s.lianban_count + '\u8fde\u677f</span><button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + s.code + '\\x27)" title="\u653e\u5927\u5361\u7247">\u2b36</button></div>';
             html += '</div>';
 
-            // Concepts badges
-            html += '<div class="np-card-badges">';
-            var concepts = s.concepts || [];
-            concepts.forEach(function(c) {
-                html += '<span class="np-card-badge">' + c + '</span>';
-            });
-            html += '</div>';
-
-            html += '<div class="np-detail-placeholder" data-np-code="' + s.code + '"><div class="empty" style="padding:8px;">\u52a0\u8f7d\u8be6\u60c5...</div></div>';
+            html += '<div class="np-detail-placeholder" data-np-code="' + s.code + '" data-concepts=\\x27' + JSON.stringify(s.concepts || []) + '\\x27><div class="empty" style="padding:8px;">\u52a0\u8f7d\u8be6\u60c5...</div></div>';
 
             html += '</div>'; // .np-card
         });
@@ -5096,7 +5081,11 @@ function toggleNpCategory(el) {
             body.style.display = 'none';
         }
     }
-    // 展开一级目录只显示二级目录（board headers），卡片详情由toggleNpBoard加载
+    // 展开时加载本区卡片详情（选股器/阳线回调/三连阴等无二级board的section）
+    // 有二级board的section（N字战法主分类），卡片详情在toggleNpBoard中加载
+    if (wasCollapsed) {
+        setTimeout(function() { loadNpCardDetails(); }, 150);
+    }
 }
 
 function toggleNpKline(canvasId) {
@@ -5122,11 +5111,32 @@ function scrollToNpSection(sectionId) {
 // Filter N-pattern stocks
 function filterNPattern() {
     var conceptVal = (document.getElementById('npFilterConcept').value || '').trim();
+    var kw = conceptVal.replace(/,/g, '|');
+    _npFilterKeyword = kw;
     var filterNW = document.getElementById('npFilterNW').checked;
     var filterTldSb = document.getElementById('npFilterTldSb').checked;
     var filterTld = document.getElementById('npFilterTld').checked;
 
     var selectedConcepts = conceptVal ? conceptVal.split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s; }) : [];
+
+    // 当有概念/理由过滤时，确保所有详情数据已加载（用于涨停理由匹配）
+    if (selectedConcepts.length > 0 && !_npDetailLoading) {
+        var someMissing = false;
+        if (_npData) {
+            for (var _ck in _npData.categories) {
+                var _cat = _npData.categories[_ck];
+                if (!_cat) continue;
+                var _boards = (_cat.main_board || []).concat(_cat.gem || []).concat(_cat.star || []).concat(_cat.bj || []);
+                for (var _bi = 0; _bi < _boards.length; _bi++) {
+                    if (!_npDetailData[_boards[_bi].code]) { someMissing = true; break; }
+                }
+                if (someMissing) break;
+            }
+        }
+        if (someMissing) {
+            loadNpCardDetails(true);
+        }
+    }
 
     // Check if any filter is active
     var hasFilter = selectedConcepts.length > 0 || filterNW || filterTldSb || filterTld;
@@ -5158,7 +5168,22 @@ function filterNPattern() {
                                 if (c.indexOf(sc) !== -1) matchesConcept = true;
                             });
                         });
-                        if (!matchesConcept) return false;
+                        if (!matchesConcept) {
+                            // 检查涨停理由（仅当有缓存时）
+                            var matchesReason = false;
+                            var detail = _npDetailData[s.code];
+                            if (detail && detail.limit_rows) {
+                                detail.limit_rows.forEach(function(r) {
+                                    selectedConcepts.forEach(function(sc) {
+                                        if ((r.lu_desc && r.lu_desc.indexOf(sc) !== -1) ||
+                                            (r.name && r.name.indexOf(sc) !== -1)) {
+                                            matchesReason = true;
+                                        }
+                                    });
+                                });
+                            }
+                            if (!matchesReason) return false;
+                        }
                     }
                     // NW filter
                     if (filterNW && !s.is_nw_pattern) return false;
@@ -5179,10 +5204,47 @@ function filterNPattern() {
     var countEl = document.getElementById('npFilterCount');
     if (countEl) countEl.textContent = (hasFilter ? '过滤后 ' : '共 ') + filteredTotal + ' 只';
 
+    // Filter screener data
+    var filteredScreener = {};
+    if (selectedConcepts.length > 0 && _screenerData) {
+        _screenerSidebarKeys.forEach(function(sk) {
+            var orig = _screenerData[sk];
+            if (!orig) { filteredScreener[sk] = orig; return; }
+            filteredScreener[sk] = orig.filter(function(s) {
+                // Concept filter
+                var matchesConcept = false;
+                (s.concepts || []).forEach(function(c) {
+                    selectedConcepts.forEach(function(sc) {
+                        if (c.indexOf(sc) !== -1) matchesConcept = true;
+                    });
+                });
+                if (matchesConcept) return true;
+                // Reason filter
+                var matchesReason = false;
+                var detail = _npDetailData[s.code];
+                if (detail && detail.limit_rows) {
+                    detail.limit_rows.forEach(function(r) {
+                        selectedConcepts.forEach(function(sc) {
+                            if ((r.lu_desc && r.lu_desc.indexOf(sc) !== -1) ||
+                                (r.name && r.name.indexOf(sc) !== -1)) {
+                                matchesReason = true;
+                            }
+                        });
+                    });
+                }
+                return matchesReason;
+            });
+        });
+    } else {
+        _screenerSidebarKeys.forEach(function(sk) {
+            filteredScreener[sk] = _screenerData[sk];
+        });
+    }
+
     // Re-render results area (filter bar stays intact)
     var resultsEl = document.getElementById('np-cat-results');
     if (resultsEl) {
-        resultsEl.innerHTML = renderNpResults(filteredData, _screenerData);
+        resultsEl.innerHTML = renderNpResults(filteredData, filteredScreener);
         // Re-render K-lines
         setTimeout(function() {
             _npCatKeys.forEach(function(ck) {
@@ -5314,7 +5376,7 @@ function renderNpZtWindow(ztData) {
     });
     if (totalAll === 0) return '<div class="empty">暂无数据</div>';
 
-    var INIT_SHOW = 50;
+    var INIT_SHOW = 20;  // 手机适配：减少初始卡片数避免OOM
 
     var html = '<div class="np-section" id="np-section-zt">';
     html += '<div class="np-cat-header collapsed" onclick="toggleNpCategory(this)" data-np-cat="zt">';
@@ -5425,7 +5487,7 @@ function renderNpZtCard(s) {
     // if (latestDate) html += '<div class="np-kline-latest">最新: <span>' + latestDate + '</span></div>';
     // == END OLD CONTENT ==
 
-    html += '<div data-np-detail="' + s.code + '"><div class="empty" style="padding:8px;">加载中...</div></div>';
+    html += '<div data-np-detail="' + s.code + '" data-concepts=\\x27' + JSON.stringify(s.concepts || []) + '\\x27><div class="empty" style="padding:8px;">加载中...</div></div>';
 
     html += '</div>';
     return html;
@@ -5441,31 +5503,11 @@ function toggleZtBoard(prefix) {
     var total = parseInt(btn.textContent.match(/\\d+/)) || 0;
     btn.textContent = isHidden ? '收起' : '显示全部 (' + total + '只)';
 
-    // If expanding and klines not rendered yet, render them
+    // If expanding, load card details for newly visible cards
     if (isHidden) {
-        var extraCards = extraGrid.querySelectorAll('.np-card');
-        extraCards.forEach(function(card) {
-            var canvas = card.querySelector('canvas');
-            if (!canvas) return;
-            var code = null;
-            var codeEl = card.querySelector('.np-card-code');
-            if (codeEl) code = codeEl.getAttribute('data-code');
-            if (code && window._ztWindowData) {
-                // Find klines for this stock
-                var ztData = window._ztWindowData;
-                var secKeys = ['hot', 'warm', 'cool', 'cold'];
-                for (var si = 0; si < secKeys.length; si++) {
-                    var stocks = ztData[secKeys[si]] || [];
-                    for (var sj = 0; sj < stocks.length; sj++) {
-                        if (stocks[sj].code === code && stocks[sj].klines) {
-                            renderNpKline(canvas.id, stocks[sj].klines);
-                            si = secKeys.length;
-                            break;
-                        }
-                    }
-                }
-            }
-        });
+        // 重置加载锁让loadNpCardDetails可以处理新卡
+        _npDetailLoading = false;
+        setTimeout(function() { loadNpCardDetails(); }, 100);
         initNpSidebar();
     }
 }
@@ -5620,7 +5662,7 @@ function renderOscCard(s) {
     // if (latestDate) html += '<div class="np-kline-latest">最新: <span>' + latestDate + '</span></div>';
     // == END OLD CONTENT ==
 
-    html += '<div data-np-detail="' + s.code + '"><div class="empty" style="padding:8px;">加载中...</div></div>';
+    html += '<div data-np-detail="' + s.code + '" data-concepts=\\x27' + JSON.stringify(s.concepts || []) + '\\x27><div class="empty" style="padding:8px;">加载中...</div></div>';
 
     html += '</div>';
     return html;
@@ -5660,69 +5702,21 @@ function renderNpSimpleCard(s, prefix) {
     html += '<div class="np-card-header">';
     html += '<div>';
     html += '<span class="np-card-code" data-code="' + s.code + '" data-name="' + s.name + '">' + s.code + '</span>';
-    html += '<span class="np-card-name">' + s.name + '</span>';
+    html += '<span class="np-card-name">' + highlightText(s.name, _npFilterKeyword) + '</span>' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code));
     html += '</div>';
     html += '<span class="np-card-badge lianban">' + s.recent_zt_count + '次涨停</span>';
     html += '<button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + s.code + '\\x27)" title="放大卡片">⛶</button>';
     html += '</div>';
 
-    // Concepts
-    html += '<div class="np-card-badges">';
-    (s.concepts || []).forEach(function(c) { html += '<span class="np-card-badge">' + c + '</span>'; });
-    html += '</div>';
-
-    // == OLD CONTENT (keep for reversion) ==
-    // // Metrics
-    // html += '<div class="np-metrics">';
-    // html += '<div class="np-metric"><div class="label">涨幅</div><div class="value" style="color:' + pctColor + '">' + pctSign + s.change_pct.toFixed(2) + '%</div></div>';
-    // html += '<div class="np-metric"><div class="label">收盘</div><div class="value">' + s.close.toFixed(2) + '</div></div>';
-    // html += '<div class="np-metric"><div class="label">开盘</div><div class="value">' + s.open.toFixed(2) + '</div></div>';
-    // html += '<div class="np-metric"><div class="label">涨停日</div><div class="value">' + (s.last_zt_date || '-') + '</div></div>';
-    // html += '</div>';
-    // // K-line canvas
-    // var canvasId = prefix + '_' + s.code;
-    // html += '<div class="np-kline-container">';
-    // html += '<canvas id="' + canvasId + '" height="200"></canvas>';
-    // html += '</div>';
-    // html += '<button class="np-kline-toggle" data-kline-id="' + canvasId + '">收起K线</button>';
-    // var latestDate = getKlineLatestDate(s.klines);
-    // if (latestDate) html += '<div class="np-kline-latest">最新: <span>' + latestDate + '</span></div>';
-    // == END OLD CONTENT ==
-
-    html += '<div class="np-detail-placeholder" data-np-code="' + s.code + '"><div class="empty" style="padding:8px;">加载详情...</div></div>';
+    html += '<div data-np-detail="' + s.code + '" data-concepts=\\x27' + JSON.stringify(s.concepts || []) + '\\x27><div class="empty" style="padding:8px;">加载中...</div></div>';
 
     html += '</div>';
     return html;
 }
 
-function _renderCardDetailContent(code, detail, alertInfo, stockName) {
+function _renderCardDetailContent(code, detail, alertInfo, stockName, conceptsJson) {
     if (!detail || !detail.limit_rows) return '<div class="empty" style="padding:8px;">暂无数据</div>';
     var h = '<div class="ds-card-detail-wrap" style="position:relative;" data-code="' + code + '">';
-    // Stock watch star
-    if (!stockName) {
-        var cardEl = document.querySelector('[data-code="' + code + '"]');
-        if (cardEl) stockName = cardEl.getAttribute('data-name') || cardEl.getAttribute('data-stock-name') || '';
-    }
-    if (stockName) {
-        h += '<div style="text-align:right;margin-bottom:4px;">' + _watchStarHtml(code, stockName, _watchGetCategory(code)) + '</div>';
-    }
-    // 涨停理由表
-    h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">涨停理由（共' + detail.limit_rows.length + '条）</div>';
-    h += '<div style="max-height:210px;overflow-y:auto;">';
-    h += _renderSearchTable(detail.limit_rows, '');
-    h += '</div></div>';
-    // 近3个月涨停统计
-    var tm = detail.three_month || {count:0, dates:[]};
-    h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">近3个月涨停：共' + tm.count + '次</div><div>';
-    if (tm.dates && tm.dates.length > 0) {
-        tm.dates.forEach(function(d) {
-            var display = d.length === 8 ? d.slice(0,4) + '-' + d.slice(4,6) + '-' + d.slice(6,8) : d;
-            h += '<span class="stock-detail-date-chip">' + display + '</span> ';
-        });
-    } else {
-        h += '<span style="color:#666;font-size:0.85em;">近3个月无涨停</span>';
-    }
-    h += '</div></div>';
     // 异动信息（紧挨日K线图上方）
     if (alertInfo && alertInfo.date) {
         var pctColor = alertInfo.pct >= 10 ? '#ff6b6b' : '#ff9800';
@@ -5738,11 +5732,39 @@ function _renderCardDetailContent(code, detail, alertInfo, stockName) {
     // 分时图
     h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">分时图（新浪）<button class="img-refresh-btn" onclick="reloadSinaImg(this)" title="重新加载">⟳</button></div>';
     h += '<img data-orig-src="' + sinaMinImg(code) + '" src="' + sinaMinImg(code) + '" class="ds-stock-kline-img" loading="lazy" onerror="retryImg(this)"></div>';
-    // 概念查询 + 查询联动按钮（交换位置，点击关闭弹框）
+    // 查询概念 + 查询联动按钮
     h += '<div style="text-align:center;padding:8px 0;">';
-    h += '<button onclick="closeEnlargeCardModal();sqJumpToKpl(\\x27' + (stockName || code) + '\\x27)" style="background:#ff7043;color:#fff;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">概念查询</button>';
+    h += '<button onclick="closeEnlargeCardModal();sqJumpToKpl(\\x27' + (stockName || code) + '\\x27)" style="background:#ff7043;color:#fff;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">查询概念</button>';
     h += '<button onclick="closeEnlargeCardModal();modalQueryLinkage(\\x27' + code + '\\x27)" style="margin-left:8px;background:#00d4ff;color:#0a1628;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">查询联动</button>';
     h += '</div>';
+    // 近3个月涨停统计
+    var tm = detail.three_month || {count:0, dates:[]};
+    h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">近3个月涨停：共' + tm.count + '次</div><div>';
+    if (tm.dates && tm.dates.length > 0) {
+        tm.dates.forEach(function(d) {
+            var display = d.length === 8 ? d.slice(0,4) + '-' + d.slice(4,6) + '-' + d.slice(6,8) : d;
+            h += '<span class="stock-detail-date-chip">' + display + '</span> ';
+        });
+    } else {
+        h += '<span style="color:#666;font-size:0.85em;">近3个月无涨停</span>';
+    }
+    h += '</div></div>';
+    // 涨停理由表
+    h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">涨停理由（共' + detail.limit_rows.length + '条）</div>';
+    h += '<div style="max-height:210px;overflow-y:auto;">';
+    h += _renderSearchTable(detail.limit_rows, _npFilterKeyword);
+    h += '</div></div>';
+    // 同花顺概念（从卡片上的data-concepts读取）
+    if (conceptsJson) {
+        try {
+            var concepts = JSON.parse(conceptsJson);
+            if (concepts && concepts.length > 0) {
+                h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">同花顺概念</div><div class="np-card-badges" style="margin:0;">';
+                concepts.forEach(function(c) { h += '<span class="np-card-badge">' + highlightText(c, _npFilterKeyword) + '</span>'; });
+                h += '</div></div>';
+            }
+        } catch(e) {}
+    }
     h += '</div>'; // close ds-card-detail-wrap
     return h;
 }
@@ -5886,52 +5908,64 @@ function renderNpKline(canvasId, klines) {
 
 // ===== Hot Concept Quick-Select for N-pattern =====
 function renderNpHotConceptButtons() {
-    if (!_npData) return;
-    var conceptCount = {};
-    var catKeys = _npCatKeys;
-    catKeys.forEach(function(ck) {
-        var cat = _npData.categories[ck];
-        if (!cat) return;
-        ['main_board', 'gem', 'star', 'bj'].forEach(function(bk) {
-            (cat[bk] || []).forEach(function(s) {
-                (s.concepts || []).forEach(function(c) {
-                    conceptCount[c] = (conceptCount[c] || 0) + 1;
-                });
-            });
-        });
-    });
-    var sorted = Object.keys(conceptCount).sort(function(a, b) {
-        return conceptCount[b] - conceptCount[a];
-    }).slice(0, 30);
     var el = document.getElementById('npHotConceptBar');
     if (!el) return;
-    el.innerHTML = '<span style="color:#888;font-size:0.8em;margin-right:4px;line-height:28px;">热门:</span>';
-    var curVal = (document.getElementById('npFilterConcept').value || '').trim();
-    var selectedSet = {};
-    if (curVal) {
-        curVal.split(',').forEach(function(v) { selectedSet[v.trim()] = true; });
-    }
-    sorted.forEach(function(c) {
-        var isSelected = selectedSet[c] || false;
-        var btn = document.createElement('span');
-        btn.style.cssText = 'padding:3px 10px;border-radius:12px;font-size:0.78em;cursor:pointer;transition:all 0.2s;' +
-            (isSelected ? 'background:#00d4ff;color:#0a0a1a;' : 'background:#0f3460;color:#aaa;');
-        btn.textContent = c;
-        btn.onclick = function() {
-            var input = document.getElementById('npFilterConcept');
-            if (!input) return;
-            var val = (input.value || '').trim();
-            var parts = val ? val.split(',').map(function(v) { return v.trim(); }).filter(function(v) { return v; }) : [];
-            var idx = parts.indexOf(c);
-            if (idx >= 0) {
-                parts.splice(idx, 1);
-            } else {
-                parts.push(c);
+    // 先显示加载状态
+    el.innerHTML = '<span style="color:#888;font-size:0.8em;margin-right:4px;line-height:28px;">实时热门:</span><span style="color:#555;font-size:0.75em;">加载中...</span>';
+    _cachedFetch('/api/hot_concept_20').then(function(hotConcepts) {
+        if (!hotConcepts || hotConcepts.length === 0) {
+            el.innerHTML = '<span style="color:#888;font-size:0.8em;margin-right:4px;line-height:28px;">实时热门:</span><span style="color:#555;font-size:0.75em;">暂无数据</span>';
+            return;
+        }
+        el.innerHTML = '<span style="color:#888;font-size:0.8em;margin-right:4px;line-height:28px;">实时热门:</span>';
+        var curVal = (document.getElementById('npFilterConcept').value || '').trim();
+        var selectedSet = {};
+        if (curVal) {
+            curVal.split(',').forEach(function(v) { selectedSet[v.trim()] = true; });
+        }
+        // 按涨幅降序排列，取前20
+        var sorted = hotConcepts.slice().sort(function(a, b) {
+            return (b.change_pct || 0) - (a.change_pct || 0);
+        }).slice(0, 20);
+        // 生成2行，每行10个
+        for (var row = 0; row < 2; row++) {
+            var rowDiv = document.createElement('div');
+            rowDiv.style.cssText = 'display:flex;flex-wrap:nowrap;gap:5px;margin-bottom:4px;';
+            for (var col = 0; col < 10; col++) {
+                var idx = row * 10 + col;
+                if (idx >= sorted.length) break;
+                var item = sorted[idx];
+                var c = item.concept_name;
+                if (!c) continue;
+                var isSelected = selectedSet[c] || false;
+                var btn = document.createElement('span');
+                var pctColor = item.change_pct >= 0 ? '#ff6b6b' : '#4caf50';
+                btn.style.cssText = 'padding:3px 8px;border-radius:12px;font-size:0.76em;cursor:pointer;transition:all 0.2s;white-space:nowrap;' +
+                    (isSelected ? 'background:#00d4ff;color:#0a0a1a;' : 'background:#0f3460;color:#ccc;');
+                btn.innerHTML = c + ' <span style="color:' + pctColor + ';font-weight:bold;">' + (item.change_pct >= 0 ? '+' : '') + item.change_pct.toFixed(1) + '%</span>';
+                btn.title = '热度值: ' + (item.hot_value || 0) + (item.hot_tag ? ' | ' + item.hot_tag : '');
+                btn.onclick = (function(conceptName) {
+                    return function() {
+                        var input = document.getElementById('npFilterConcept');
+                        if (!input) return;
+                        var val = (input.value || '').trim();
+                        var parts = val ? val.split(',').map(function(v) { return v.trim(); }).filter(function(v) { return v; }) : [];
+                        var idx = parts.indexOf(conceptName);
+                        if (idx >= 0) {
+                            parts.splice(idx, 1);
+                        } else {
+                            parts.push(conceptName);
+                        }
+                        input.value = parts.join(',');
+                        filterNPattern();
+                    };
+                })(c);
+                rowDiv.appendChild(btn);
             }
-            input.value = parts.join(',');
-            filterNPattern();
-        };
-        el.appendChild(btn);
+            el.appendChild(rowDiv);
+        }
+    }).catch(function() {
+        el.innerHTML = '<span style="color:#888;font-size:0.8em;margin-right:4px;line-height:28px;">实时热门:</span><span style="color:#555;font-size:0.75em;">加载失败</span>';
     });
 }
 
@@ -7666,9 +7700,9 @@ function renderStockDetail(data, name, code) {
     // Row 6: 分时图
     html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">分时图（新浪）<button class="img-refresh-btn" onclick="reloadSinaImg(this)" title="重新加载">⟳</button></div>';
     html += '<img data-orig-src="' + sinaMinImg(code) + '" src="' + sinaMinImg(code) + '" class="ds-stock-kline-img" loading="lazy" onerror="retryImg(this)"></div>';
-    // Row 7: 概念查询 + 查询联动按钮（交换位置，点击关闭弹框）
+    // Row 7: 查询概念 + 查询联动按钮（交换位置，点击关闭弹框）
     html += '<div style="text-align:center;padding:8px 0;">';
-    html += '<button onclick="closeDsStockModal();sqJumpToKpl(\\x27' + (name || code) + '\\x27)" style="background:#ff7043;color:#fff;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">概念查询</button>';
+    html += '<button onclick="closeDsStockModal();sqJumpToKpl(\\x27' + (name || code) + '\\x27)" style="background:#ff7043;color:#fff;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">查询概念</button>';
     html += '<button onclick="modalQueryLinkage(\\x27' + code + '\\x27)" style="margin-left:8px;background:#00d4ff;color:#0a1628;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">查询联动</button>';
     html += '</div>';
     body.innerHTML = html;
@@ -8940,7 +8974,7 @@ function renderStockQueryPage(data, code, name) {
     h += '</div>';
     // Concept query + linkage buttons (swapped order)
     h += '<div style="text-align:center;padding:16px 0;">';
-    h += '<button onclick="sqJumpToKpl(\\x27' + (name || code) + '\\x27)" style="background:#ff7043;color:#fff;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">概念查询</button>';
+    h += '<button onclick="sqJumpToKpl(\\x27' + (name || code) + '\\x27)" style="background:#ff7043;color:#fff;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">查询概念</button>';
     h += '<button onclick="switchTab(\\x27linkage\\x27);setTimeout(function(){document.getElementById(\\x27linkageStockInput\\x27).value=\\x27' + code + '\\x27;doLinkageSearch();},100)" style="margin-left:8px;background:#00d4ff;color:#0a1628;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">查询联动</button>';
     h += '</div>';
     return h;
@@ -10231,12 +10265,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond_json({'error': str(e), 'traceback': traceback.format_exc()}, cors_headers)
 
         elif path == '/api/reason_search':
-            q = query.get('q', [''])[0].strip()
-            date_start = query.get('date_start', [None])[0]
-            date_end = query.get('date_end', [None])[0]
-            no_st = query.get('no_st', [None])[0]
-            result = _analyze_limit_rows(q, date_start, date_end, no_st)
-            self._respond_json(result, cors_headers)
+            try:
+                q = query.get('q', [''])[0].strip()
+                date_start = query.get('date_start', [None])[0]
+                date_end = query.get('date_end', [None])[0]
+                no_st = query.get('no_st', [None])[0]
+                result = _analyze_limit_rows(q, date_start, date_end, no_st)
+                self._respond_json(result, cors_headers)
+            except Exception as e:
+                import traceback
+                self._respond_json({'error': str(e), 'traceback': traceback.format_exc(), 'results': [], 'total_hits': 0}, cors_headers)
 
         elif path == '/api/reason_suggest':
             q = query.get('q', [''])[0].strip()
