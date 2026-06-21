@@ -1943,6 +1943,9 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 .wf-tag-low { background: rgba(0,212,255,0.1); color: #4fc3f7; border: 1px solid rgba(0,212,255,0.15); }
 .wf-tag .wf-count { font-size: 0.75em; opacity: 0.6; margin-left: 1px; }
 .wf-day-empty { color: #555; font-size: 0.75em; text-align: center; padding: 10px 0; }
+.wf-level { margin: 3px 0; padding: 2px 0; border-bottom: 1px solid rgba(15,52,96,0.3); }
+.wf-level:last-child { border-bottom: none; }
+.wf-level-label { display: inline-block; font-size: 0.65em; font-weight: bold; margin-right: 4px; vertical-align: top; line-height: 1.8; min-width: 18px; }
 
 /* Update status bar */
 #updateArea {
@@ -6300,7 +6303,7 @@ function loadRealtime() {
 
         // === 涨停理由词频时间线（资金流向分析） ===
         html += '<div class="rt-section">';
-        html += '<h3>🔍 涨停理由词频 · 资金流向 <span class="count-badge" id="wordFreqBadge">近15日</span></h3>';
+        html += '<h3>🔍 题材频度分析 · L1/L2/L3层级 <span class="count-badge" id="wordFreqBadge">近15日</span></h3>';
         html += '<div id="ztWordFreqTimeline"><div class="loading" style="padding:20px;">加载词频分析...</div></div>';
         html += '</div>';
 
@@ -6660,16 +6663,39 @@ function loadZtWordFreqTimeline() {
             }
             var html = '<div class="wf-timeline">';
             data.forEach(function(day) {
-                if (!day.tags || day.tags.length === 0) {
-                    html += '<div class="wf-day"><div class="wf-day-header">' + day.date.slice(0,4) + '-' + day.date.slice(4,6) + '-' + day.date.slice(6,8) + '</div><div class="wf-day-empty">暂无涨停</div></div>';
-                    return;
-                }
+                var hasL1 = day.l1 && day.l1.length > 0;
+                var hasL2 = day.l2 && day.l2.length > 0;
+                var hasL3 = day.l3 && day.l3.length > 0;
                 var dateLabel = day.date.slice(0,4) + '-' + day.date.slice(4,6) + '-' + day.date.slice(6,8);
                 html += '<div class="wf-day"><div class="wf-day-header">' + dateLabel + '</div>';
-                day.tags.forEach(function(t, idx) {
-                    var level = idx < 3 ? 'high' : (idx < 6 ? 'mid' : 'low');
-                    html += '<span class="wf-tag wf-tag-' + level + '" onclick="searchLuTagFromWf(\\x27' + t.tag.replace(/'/g, '') + '\\x27)" title="搜索: ' + t.tag + '">' + t.tag + ' <span class="wf-count">' + t.count + '</span></span>';
-                });
+                if (!hasL1 && !hasL2 && !hasL3) {
+                    html += '<div class="wf-day-empty">暂无涨停</div>';
+                } else {
+                    // L1 section
+                    if (hasL1) {
+                        html += '<div class="wf-level"><span class="wf-level-label" style="color:#00d4ff;">L1</span>';
+                        day.l1.forEach(function(t) {
+                            html += '<span class="wf-tag wf-tag-high" onclick="sqJumpToKpl(\\x27' + t.tag.replace(/'/g, '') + '\\x27)" title="' + t.tag + '">' + t.tag + ' <span class="wf-count">' + t.count + '</span></span>';
+                        });
+                        html += '</div>';
+                    }
+                    // L2 section
+                    if (hasL2) {
+                        html += '<div class="wf-level"><span class="wf-level-label" style="color:#4fc3f7;">L2</span>';
+                        day.l2.forEach(function(t) {
+                            html += '<span class="wf-tag wf-tag-mid" onclick="sqJumpToKpl(\\x27' + t.tag.replace(/'/g, '') + '\\x27)" title="' + t.tag + '">' + t.tag + ' <span class="wf-count">' + t.count + '</span></span>';
+                        });
+                        html += '</div>';
+                    }
+                    // L3 section
+                    if (hasL3) {
+                        html += '<div class="wf-level"><span class="wf-level-label" style="color:#ffb74d;">L3</span>';
+                        day.l3.forEach(function(t) {
+                            html += '<span class="wf-tag wf-tag-low" onclick="sqJumpToKpl(\\x27' + t.tag.replace(/'/g, '') + '\\x27)" title="' + t.tag + '">' + t.tag + ' <span class="wf-count">' + t.count + '</span></span>';
+                        });
+                        html += '</div>';
+                    }
+                }
                 html += '</div>';
             });
             html += '</div>';
@@ -6677,7 +6703,7 @@ function loadZtWordFreqTimeline() {
         })
         .catch(function(e) {
             var container = document.getElementById('ztWordFreqTimeline');
-            if (container) container.innerHTML = '<div class="error" style="padding:15px;">词频分析加载失败</div>';
+            if (container) container.innerHTML = '<div class="error" style="padding:15px;">题材频度分析加载失败</div>';
         });
 }
 
@@ -6783,7 +6809,7 @@ function renderHotStocksTable(stocks) {
 // 同花顺热股Top100表格
 function renderHotRank100Table(stocks) {
     if (!stocks || stocks.length === 0) return '<div class="empty" style="padding:15px;">暂无数据</div>';
-    var html = '<table class="rt-zt-table"><tr><th>排名</th><th>代码</th><th>名称</th><th>涨幅</th><th>热度值</th><th>标签</th><th>概念</th></tr>';
+    var html = '<table class="rt-zt-table"><tr><th style="width:36px;white-space:nowrap;">排名</th><th style="width:64px;white-space:nowrap;">代码</th><th style="width:72px;white-space:nowrap;">名称</th><th style="width:58px;white-space:nowrap;">涨幅</th><th style="width:56px;white-space:nowrap;">热度值</th><th style="width:48px;white-space:nowrap;">标签</th><th style="white-space:nowrap;">概念</th></tr>';
     stocks.forEach(function(s) {
         var cp = s.change_pct;
         if (cp === null || cp === undefined) cp = 0;
@@ -6791,12 +6817,12 @@ function renderHotRank100Table(stocks) {
         var pctStr = (cp > 0 ? '+' : '') + cp.toFixed(2) + '%';
         var popLabel = s.pop_tag ? '<span class="badge badge-pool" style="font-size:0.75em;">' + s.pop_tag + '</span>' : '';
         html += '<tr class="clickable" data-code="' + s.code + '" data-name="' + s.name + '">';
-        html += '<td style="color:#888;">' + s.rank + '</td>';
-        html += '<td><strong>' + s.code + '</strong></td>';
-        html += '<td>' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code)) + '<span class="link-stock-name" onclick="event.stopPropagation();stockQueryGoTo(\\x27' + (s.name||'').replace(/'/g,'') + '\\x27)">' + (s.name || '') + '</span></td>';
-        html += '<td style="color:' + pctColor + ';font-weight:bold;">' + pctStr + '</td>';
-        html += '<td style="color:#ffc107;">' + (s.hot_value || 0) + '</td>';
-        html += '<td>' + popLabel + '</td>';
+        html += '<td style="color:#888;white-space:nowrap;">' + s.rank + '</td>';
+        html += '<td style="white-space:nowrap;"><strong>' + s.code + '</strong></td>';
+        html += '<td style="white-space:nowrap;">' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code)) + '<span class="link-stock-name" onclick="event.stopPropagation();stockQueryGoTo(\\x27' + (s.name||'').replace(/'/g,'') + '\\x27)">' + (s.name || '') + '</span></td>';
+        html += '<td style="color:' + pctColor + ';font-weight:bold;white-space:nowrap;">' + pctStr + '</td>';
+        html += '<td style="color:#ffc107;white-space:nowrap;">' + (s.hot_value || 0) + '</td>';
+        html += '<td style="white-space:nowrap;">' + popLabel + '</td>';
         html += '<td>' + renderConceptChips(s.concepts, s.code, s.name) + '</td></tr>';
     });
     html += '</table>';
@@ -9589,6 +9615,35 @@ def _load_astock_name_map():
     return name_map
 
 
+# Cache for Python-side KPL stock paths (stock_name → [{l1, l2, l3}])
+_kpl_stock_paths_py = None
+
+def _build_kpl_stock_paths_py():
+    """Build stock_name → [{l1, l2, l3}] mapping on Python side"""
+    global _kpl_stock_paths_py
+    if _kpl_stock_paths_py is not None:
+        return _kpl_stock_paths_py
+    kpl_path = os.path.join(os.path.dirname(__file__), 'invest_logic', 'concept', 'kpl_concept_stock.json')
+    try:
+        with open(kpl_path, 'r', encoding='utf-8') as f:
+            kpl_data = json.load(f)
+    except Exception:
+        _kpl_stock_paths_py = {}
+        return _kpl_stock_paths_py
+    result = {}
+    for l1_key, l2_dict in kpl_data.items():
+        for l2_key, items in l2_dict.items():
+            for item in items:
+                concept_name = item.get('概念', '') or ''
+                stocks = item.get('标的', []) or []
+                for stock_name in stocks:
+                    if stock_name not in result:
+                        result[stock_name] = []
+                    result[stock_name].append({'l1': l1_key, 'l2': l2_key, 'l3': concept_name})
+    _kpl_stock_paths_py = result
+    return result
+
+
 def _clean_nan(obj):
     """递归将 NaN 替换为 None（null），确保 JSON 序列化不出 NaN 非法值"""
     if isinstance(obj, float):
@@ -9985,32 +10040,25 @@ class Handler(BaseHTTPRequestHandler):
             # 获取交易日列表（从finder获取，已含2026年所有交易日）
             trade_dates = getattr(finder, 'all_trade_dates', [])
             if not trade_dates:
-                # 回退到CSV的日期
                 trade_dates = sorted(_limit_rows_by_date.keys())
             today_ymd = datetime.now().strftime('%Y%m%d')
-            # 取最近N个交易日（不超过today）
             valid_dates = [d for d in trade_dates if d <= today_ymd]
             recent_dates = valid_dates[-n:] if len(valid_dates) >= n else valid_dates
-            # 对每个日期，用akshare获取该日涨停股，再从CSV查该日涨停理由
-            _generic_tags = {
-                'ST板块', '央企', '国企改革', '国企', '外销',
-                '一季报增长', '半年报增长', '三季报增长', '年报预增',
-                '业绩增长', '业绩预增', '中报预增', '年报增长',
-                '低价股', '小盘股', '重整', '回购',
-                '控制权变更', '股权转让', '扭亏为盈', '控制权拟变更',
-                '摘帽', '次新股', '成交量创历史新高', '超500只个股涨停',
-                '重大资产重组', '并购重组', '机器人概念',
-            }
+            # 预加载KPL题材路径映射 (stock_name → [{l1, l2, l3}])
+            kpl_paths_map = _build_kpl_stock_paths_py()
+            # 构建 code→name 映射
+            code_to_name = {}
+            for code, name in getattr(finder, 'stock_name_map', {}).items():
+                code_to_name[code] = name
             result = []
             for date_str in reversed(recent_dates):
-                # 先查缓存：历史日期用长TTL(4h)，今天用默认(1h)
                 cache_key = 'wf_date_' + date_str
                 is_today = (date_str == today_ymd)
                 cached = _get_cached(cache_key, ttl=3600 if is_today else 14400)
                 if cached is not None:
                     result.append(cached)
                     continue
-                # 用akshare获取该日涨停股票code
+                # 获取该日涨停股票code
                 import akshare as ak
                 import pandas as pd
                 day_codes = set()
@@ -10026,30 +10074,30 @@ class Handler(BaseHTTPRequestHandler):
                     for r in _limit_rows_by_date.get(date_str, []):
                         code = r.get('ts_code', '').replace('.SH','').replace('.SZ','').replace('.BJ','')
                         day_codes.add(code)
-                # 统计该日这些涨停股所有历史涨停理由 + 概念标签（盘中补充）
-                freq = {}
+                # 统计该日涨停股的KPL题材频度（L1/L2/L3分层）
+                l1_freq = {}
+                l2_freq = {}
+                l3_freq = {}
                 for code in day_codes:
-                    # 1) CSV涨停理由（原有逻辑）
-                    for r in _limit_rows_by_code.get(code, []):
-                        desc = r.get('lu_desc', '') or ''
-                        for tag in desc.split('+'):
-                            tag = tag.strip()
-                            if tag:
-                                freq[tag] = freq.get(tag, 0) + 1
-                    # 2) 概念标签（盘中补充，权重0.5避免稀释lu_desc）
-                    concepts = finder.get_stock_concepts(code)
-                    for c in concepts:
-                        freq[c] = freq.get(c, 0) + 0.5
-                for g in _generic_tags:
-                    freq.pop(g, None)
-                sorted_tags = sorted(freq.items(), key=lambda x: -x[1])
+                    name = code_to_name.get(code, '')
+                    if not name:
+                        continue
+                    paths = kpl_paths_map.get(name, [])
+                    for p in paths:
+                        l1 = p['l1']
+                        l2 = p['l2']
+                        l3 = p['l3']
+                        l1_freq[l1] = l1_freq.get(l1, 0) + 1
+                        l2_freq[l2] = l2_freq.get(l2, 0) + 1
+                        l3_freq[l3] = l3_freq.get(l3, 0) + 1
                 day_data = {
                     'date': date_str,
-                    'tags': [{'tag': t, 'count': c} for t, c in sorted_tags]
+                    'l1': [{'tag': t, 'count': c} for t, c in sorted(l1_freq.items(), key=lambda x: -x[1])],
+                    'l2': [{'tag': t, 'count': c} for t, c in sorted(l2_freq.items(), key=lambda x: -x[1])],
+                    'l3': [{'tag': t, 'count': c} for t, c in sorted(l3_freq.items(), key=lambda x: -x[1])],
                 }
                 _set_cache(cache_key, day_data)
                 result.append(day_data)
-            # Most recent first (leftmost) — loop above builds newest-first already
             self._respond_json(result, cors_headers)
 
         elif path == '/api/lianban_ladder':
