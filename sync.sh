@@ -77,9 +77,10 @@ do_restart() {
             kill \$PID 2>/dev/null
             sleep 1
         fi
-        # 确保 akshare 和 tushare 可用（防止 SSH 环境解析到无系统包的 .venv python）
+        # 确保依赖可用（防止 SSH 环境解析到无系统包的 .venv python）
         python3 -c 'import akshare' 2>/dev/null || python3 -m pip install akshare -q
         python3 -c 'import tushare' 2>/dev/null || python3 -m pip install tushare -q
+        python3 -c 'import levistock' 2>/dev/null || python3 -m pip install levistock -q
         nohup python3 -u stock_linkage_simple.py > /tmp/stock_service.log 2>&1 &
         sleep 3
         NEWPID=\$(ps aux | grep 'stock_linkage_simple' | grep -v grep | awk '{print \$2}')
