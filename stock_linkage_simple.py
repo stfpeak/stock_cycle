@@ -354,11 +354,21 @@ def _get_sniper_data(lookback=20):
             # 移除旧的KPL条目（避免重复），再插入今日涨停
             item['stocks'] = [s for s in item['stocks'] if s['code'] != zt['code']]
             rb = code_brief_map.get(zt['code'], '')
+            # 今日涨停股票的题材从KPL历史数据中获取
+            zt_concepts = ''
+            if zt['code'] in code_tag_map:
+                for d in valid_dates:
+                    for r in _kpl_rows_by_date.get(d, []):
+                        if r.get('stock_code', '') == zt['code'] and r.get('concepts', ''):
+                            zt_concepts = r.get('concepts', '')
+                            break
+                    if zt_concepts:
+                        break
             insert_entry = {
                 'code': zt['code'], 'name': zt['name'],
                 'max_lianban': zt['lianban'], 'zt_count': 0,
                 'latest_date': today_str[:4]+'-'+today_str[4:6]+'-'+today_str[6:8],
-                'concepts': '',
+                'concepts': zt_concepts,
                 'reason_brief': rb,
                 'reason_tag': tag,
                 'is_today_zt': True, 'first_time': zt['first_time']
@@ -1945,8 +1955,6 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 .wv-table .num-green { color: #4caf50; }
 .wv-table .num-red { color: #ef5350; }
 .wv-table .num-gray { color: #888; }
-.wv-scroll-hint { text-align: center; font-size: 11px; color: #555; padding: 4px 0; }
-
 /* 盘面梳理 Timeline */
 .pmsl-timeline { column-count: 1; }
 .pmsl-type-group { margin-bottom: 10px; break-inside: avoid; }
@@ -2865,6 +2873,7 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 }
 .concept-kline-cell .sk-name { font-size: 13px; font-weight: 700; }
 .concept-kline-cell .sk-code { font-size: 10px; opacity: 0.8; padding: 1px 6px; border-radius: 8px; background: rgba(255,255,255,0.15); }
+.concept-kline-cell .sk-concepts { margin-left: auto; font-size: 9px; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; text-align: right; flex-shrink: 1; }
 .concept-kline-cell .kline-img { width: 100%; height: auto; border-radius: 4px; background: #fff; margin-bottom: 3px; display: block; border: 1px solid #0f3460; }
 .concept-kline-cell .kline-img.min { margin-bottom: 0; }
 .concept-kline-cell .min-fallback { display: flex; align-items: center; justify-content: center; height: 48px; background: rgba(255,255,255,0.05); border-radius: 4px; color: #888; font-size: 12px; border: 1px dashed #333; margin-bottom: 3px; }
@@ -5195,6 +5204,7 @@ function loadSniper() {
                 html += '<span class="np-card-code ' + boardCls + '">' + s.code + '</span>';
                 // 名称+附加信息行内
                 var infoParts = [];
+                if (s.concepts) infoParts.push(_kplEsc(s.concepts));
                 if (s.reason_tag) infoParts.push(_kplEsc(s.reason_tag));
                 if (s.is_today_zt) {
                     if (s.reason_brief) infoParts.push(_kplEsc(s.reason_brief));
@@ -5345,7 +5355,7 @@ function loadSniper() {
                 if (count === 0) return;
                 hasTags = true;
                 var cls = count >= 5 ? 'wf-tag-high' : (count >= 3 ? 'wf-tag-mid' : 'wf-tag-low');
-                html += '<span class="wf-tag ' + cls + '">' + _kplEsc(tag) + ' <span class="wf-count">' + count + '</span></span>';
+                html += '<span class="wf-tag ' + cls + '" data-tag="' + _kplEsc(tag) + '">' + _kplEsc(tag) + ' <span class="wf-count">' + count + '</span></span>';
             });
 
             if (!hasTags) {
@@ -5417,7 +5427,7 @@ function loadSniper() {
             }
 
             html += '<div class="wv-table-wrapper">' + renderWvTable(wvSorted) + '</div>';
-            html += '<div class="wv-scroll-hint">\u2b06 ' + wvSorted.length + '\u7ec4' + data.wind_vane.length + '\u53ea \u00b7 \u6309\u9898\u6750\u5206\u7ec4 - \u70b9\u51fb\u884c\u67e5\u770b\u8be6\u60c5</div>';
+
 
             // \u5b58\u50a8\u98ce\u5411\u6807\u80a1\u7968\u6570\u636e\uff08\u5e26\u9898\u6750\uff09
             var wvKlineHits = data.wind_vane.map(function(s) {
@@ -5591,6 +5601,13 @@ function loadSniper() {
         document.querySelectorAll('.sniper-strong-grid').forEach(function(g) {
             g.style.setProperty('--sn-cols', _sniperGridCols);
         });
+
+        // 频度分析标签点击 → KPL搜索（委托事件）
+        container.querySelectorAll('.wf-tag[data-tag]').forEach(function(el) {
+            el.onclick = function() {
+                searchTagInKpl(this.getAttribute('data-tag'));
+            };
+        });
     }).catch(function(e) {
         container.innerHTML = '<div class="result"><div class="error">精准狙击数据加载失败: ' + e.message + '</div></div>';
     });
@@ -5703,22 +5720,25 @@ function toggleTagTrend(tag) {
     label.textContent = '\u25b3 ' + tag + ' \u2014 ' + stocks.length + '\u53ea\u80a1\u7968';
     section.setAttribute('data-active-tag', tag);
 
-    var html = '<div class="np-card-grid" style="--np-cols:4;">';
+    var html = '';
+    var cells = [];
     stocks.forEach(function(s) {
         if (!s.code) return;
-        var boardCls = _kplGetBoardClass(s.code);
-        html += '<div class="np-card ' + boardCls + '" data-code="' + s.code + '" data-name="' + _kplEsc(s.name) + '">';
-        html += '<div class="np-card-header"><div>';
-        html += '<span class="np-card-code" data-code="' + s.code + '" data-name="' + _kplEsc(s.name) + '">' + (s.code || '') + '</span>';
-        html += _watchStarHtml(s.code, s.name, _watchGetCategory(s.code));
-        html += '<span class="np-card-name">' + _kplEsc(s.name) + '</span>';
-        html += '</div>';
-        html += '<div>' + '<button class="np-enlarge-btn" onclick="event.stopPropagation();showEnlargedCardDetail(\\x27' + s.code + '\\x27)" title="\u653e\u5927\u5361\u7247">\u2b36</button>' + '</div>';
-        html += '</div>';
-        html += '<div class="np-detail-placeholder" data-np-code="' + s.code + '"><div class="empty" style="padding:8px;">\u5c55\u5f00\u540e\u52a0\u8f7d\u8be6\u60c5</div></div>';
-        html += '</div>';
+        var kurl = sinaKlineImg(s.code);
+        var murl = sinaMinImg(s.code);
+        var concepts = s.concepts || '';
+        cells.push('<div class="concept-kline-cell" onclick="showEnlargedCardDetail(\\x27' + s.code + '\\x27)" style="cursor:pointer;">' +
+            '<div class="sk-header"><span class="sk-name">' + _kplEsc(s.name) + '</span><span class="sk-code">' + s.code + '</span>' +
+            (concepts ? '<span class="sk-concepts">' + _kplEsc(concepts) + '</span>' : '') +
+            '</div>' +
+            '<img class="kline-img" src="' + kurl + '" onerror="retryImg(this)">' +
+            '<img class="kline-img min" src="' + murl + '" onerror="retryImg(this)">' +
+            '</div>');
     });
-    html += '</div>';
+    // 4列网格
+    for (var i = 0; i < cells.length; i += 4) {
+        html += '<div class="concept-kline-grid">' + cells.slice(i, i + 4).join('') + '</div>';
+    }
 
     cardsContainer.innerHTML = html;
     body.style.display = '';
@@ -5727,7 +5747,6 @@ function toggleTagTrend(tag) {
     // 滚动到走势区域
     setTimeout(function() {
         section.scrollIntoView({behavior: 'smooth', block: 'start'});
-        loadSniperCardDetails();
     }, 150);
 }
 
@@ -6803,6 +6822,13 @@ function toggleSniperSidebar() {
     if (showBtn) {
         showBtn.style.display = isHidden ? 'flex' : 'none';
     }
+}
+
+// 频度分析标签点击 → KPL搜素
+function searchTagInKpl(tag) {
+    switchTab('kplsearch');
+    document.getElementById('kplSearchInput2').value = tag;
+    doKplSearch();
 }
 
 // Helper to find kline data for a canvas ID
