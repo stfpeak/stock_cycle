@@ -134,6 +134,14 @@ def _kpl_ensure_loaded(date_start=None, date_end=None):
         except Exception:
             pass
 
+# Apply levistock timeout patch globally for sector_ranking_kph and get_pmsl
+import levistock.stock.stock_fupanla_kph as _kph_mod
+def _kpl_patched_post(host, params):
+    import requests
+    r = requests.post(host, data=params, headers=_kph_mod._HEADERS, timeout=30)
+    return r.json()
+_kph_mod._post = _kpl_patched_post
+
 
 def _get_sniper_data(lookback=20):
     """
@@ -417,6 +425,40 @@ def _get_sniper_data(lookback=20):
             for d in rank_dates:
                 tag_rank_daily[tag][d] = freq_by_tag.get(tag, {}).get(d, 0)
 
+    # ===== 风向标 (wind_vane_his_kph) =====
+    wind_vane_data = []
+    wind_vane_date = ''
+    try:
+        import levistock as lk
+        now_dt = datetime.now()
+        today_ymd = now_dt.strftime('%Y-%m-%d')
+        wv_finder = StockLinkageFinder()
+        # 取上一个交易日
+        prev_trade_dates = [d for d in getattr(wv_finder, 'all_trade_dates', []) if d < today_ymd.replace('-','')]
+        wv_date_ymd = ''
+        if prev_trade_dates:
+            wv_date_ymd = prev_trade_dates[-1]
+            wv_date_fmt = wv_date_ymd[:4] + '-' + wv_date_ymd[4:6] + '-' + wv_date_ymd[6:]
+            wv_raw = lk.wind_vane_his_kph(wv_date_fmt)
+            wind_vane_data = wv_raw
+            wind_vane_date = wv_date_fmt
+    except Exception:
+        wind_vane_data = []
+
+    # ===== 盘面梳理 (get_pmsl) =====
+    pmsl_data = []
+    pmsl_date = ''
+    try:
+        import levistock as lk
+        now_dt = datetime.now()
+        today_fmt = now_dt.strftime('%Y-%m-%d')
+        pmsl_raw = lk.get_pmsl(today_fmt, st=500)
+        if isinstance(pmsl_raw, dict) and 'List' in pmsl_raw:
+            pmsl_data = pmsl_raw['List']
+            pmsl_date = today_fmt
+    except Exception:
+        pmsl_data = []
+
     return {
         'dates': valid_dates,  # 最新在前
         'rank_dates': rank_dates,  # 近10个交易日
@@ -429,7 +471,11 @@ def _get_sniper_data(lookback=20):
         'top_20_strong': top_20_strong,
         'today_zt_count': len(today_zt_with_tag) + len(untagged_today_zt),
         'other_today_zt': other_today_zt,
-        'untagged_today_zt': untagged_today_zt
+        'untagged_today_zt': untagged_today_zt,
+        'wind_vane': wind_vane_data,
+        'wind_vane_date': wind_vane_date,
+        'pmsl': pmsl_data,
+        'pmsl_date': pmsl_date
     }
 
 
@@ -1406,6 +1452,14 @@ button:disabled { background: #555; cursor: not-allowed; }
     .btn-group button { flex: 1; }
 }
 
+/* 实时强榜移动端折叠 */
+@media (max-width: 900px) {
+    .sniper-strong-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 600px) {
+    .sniper-strong-grid { grid-template-columns: repeat(1, 1fr); }
+}
+
 /* Result */
 .result {
     background: #16213e;
@@ -1865,6 +1919,75 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 .today-zt-time {
     color: #ffd700; font-size: 0.75em; font-weight: bold; white-space: nowrap;
 }
+
+/* 风向标 Table */
+.wv-table-wrapper { overflow-x: auto; margin-bottom: 4px; }
+.wv-table {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+}
+.wv-table thead th {
+  position: sticky; top: 0; z-index: 1;
+  background: #0d1f3c;
+}
+.wv-table th {
+  text-align: left; padding: 6px 8px; font-weight: 500; color: #888;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-size: 11px; white-space: nowrap; letter-spacing: 0.5px;
+}
+.wv-table td {
+  padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,0.03);
+  transition: background 0.12s; white-space: nowrap;
+}
+.wv-table tr:hover td { background: rgba(15,52,96,0.25); }
+.wv-table tr { cursor: pointer; }
+.wv-table tr.group-header { cursor: default; }
+.wv-table tr.group-header:hover td { background: transparent; }
+.wv-table .code-tag {
+  display: inline-block; padding: 1px 5px; border-radius: 3px;
+  font-size: 11px; font-family: 'SF Mono', monospace;
+}
+.wv-table .code-tag.main { color: #42a5f5; background: rgba(66,165,245,0.12); }
+.wv-table .code-tag.gem { color: #ff7043; background: rgba(255,112,67,0.12); }
+.wv-table .code-tag.tech { color: #ab47bc; background: rgba(171,71,188,0.12); }
+.wv-table .themes-text { color: #ccc; font-size: 12px; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; }
+.wv-table .num-green { color: #4caf50; }
+.wv-table .num-red { color: #ef5350; }
+.wv-table .num-gray { color: #888; }
+.wv-scroll-hint { text-align: center; font-size: 11px; color: #555; padding: 4px 0; }
+
+/* 盘面梳理 Timeline */
+.pmsl-timeline { column-count: 2; column-gap: 16px; }
+.pmsl-type-group { margin-bottom: 10px; break-inside: avoid; }
+.pmsl-type-title {
+  font-size: 12px; font-weight: 500; margin-bottom: 6px; padding: 3px 8px;
+  border-radius: 4px; display: inline-block;
+}
+.pmsl-type-title.pos { color: #ff6b6b; background: rgba(255,107,107,0.08); }
+.pmsl-type-title.neg { color: #888; background: rgba(255,255,255,0.03); }
+.pmsl-type-title.neu { color: #4fc3f7; background: rgba(79,195,247,0.08); }
+.pmsl-event {
+  display: flex; gap: 10px; padding: 6px 10px; margin-bottom: 4px;
+  border-radius: 6px; border-left: 3px solid transparent;
+  break-inside: avoid;
+  background: rgba(15,52,96,0.06);
+}
+.pmsl-event.pos { border-left-color: #ff6b6b; }
+.pmsl-event.neg { border-left-color: #666; }
+.pmsl-event.neu { border-left-color: #4fc3f7; }
+.pmsl-left { width: 50px; flex-shrink: 0; padding-top: 1px; }
+.pmsl-time { color: #888; font-size: 11px; font-family: 'SF Mono', monospace; }
+.pmsl-right { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.pmsl-sector { color: #42a5f5; font-size: 11px; font-weight: 500; flex-shrink: 0; }
+.pmsl-detail { color: #aaa; font-size: 12px; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pmsl-stocks { display: inline-flex; gap: 4px; flex-shrink: 0; }
+.pmsl-stock-tag {
+  display: inline-block; padding: 1px 6px; border-radius: 3px;
+  font-size: 11px; cursor: pointer; transition: all 0.12s;
+}
+.pmsl-stock-tag:hover { filter: brightness(1.3); }
+.pmsl-stock-tag.main { color: #42a5f5; background: rgba(66,165,245,0.12); }
+.pmsl-stock-tag.gem { color: #ff7043; background: rgba(255,112,67,0.12); }
+.pmsl-stock-tag.tech { color: #ab47bc; background: rgba(171,71,188,0.12); }
 
 /* N字战法 页面样式 */
 .np-section { margin-bottom: 25px; }
@@ -4917,6 +5040,8 @@ function loadSniper() {
         html += '<a class="np-sidebar-item" onclick="scrollToNpSection(\\x27sn-section-realtime\\x27)">实时行情</a>';
         html += '<a class="np-sidebar-item" onclick="scrollToNpSection(\\x27sn-section-placeholder\\x27)">\u26a1 \u5b9e\u65f6\u5f3a\u699c</a>';
         html += '<a class="np-sidebar-item" onclick="scrollToNpSection(\\x27sn-section-freq\\x27)">\U0001F4CA 频度分析</a>';
+        html += '<a class="np-sidebar-item" onclick="scrollToNpSection(\\x27sn-section-wind-vane\\x27)">\u26a1 风向标</a>';
+        html += '<a class="np-sidebar-item" onclick="scrollToNpSection(\\x27sn-section-pmsl\\x27)">\U0001F4CB 盘面梳理</a>';
         html += '<div style="border-top:1px solid rgba(255,255,255,0.06);margin:6px 0;"></div>';
         data.dates.forEach(function(date) {
             html += '<a class="np-sidebar-item" onclick="scrollToNpSection(\\x27sn-section-date-' + date + '\\x27)">' + date + '</a>';
@@ -5206,6 +5331,189 @@ function loadSniper() {
         });
 
         html += '</div></div>';
+
+        // ===== Section: 风向标 =====
+        html += '<div class="sniper-section" id="sn-section-wind-vane">';
+        html += '<h3>\u26a1 \u98ce\u5411\u6807<span class="date-tag" style="margin-left:8px;">' + (data.wind_vane_date || '') + '</span><span style="font-size:11px;color:#888;font-weight:400;margin-left:4px;">\u00b7 \u5171' + (data.wind_vane ? data.wind_vane.length : 0) + '\u53ea</span></h3>';
+
+        if (data.wind_vane && data.wind_vane.length > 0) {
+            // 按题材分组
+            var wvGroups = [
+                {name:'\u5149\u901a\u4fe1/\u7535\u5b50', color:'#1a6b3c', keywords:['\u901a\u4fe1','\u5149\u6a21\u5757','\u5149\u82af\u7247','\u5149\u7ea4','\u7535\u5b50\u5e03','\u8986\u94dc\u677f','\u7535\u5b50\u6811\u8102','PCB','\u5370\u5236\u7535\u8def\u677f','\u590d\u5408\u96c6\u6d41\u4f53']},
+                {name:'\u534a\u5bfc\u4f53/\u5b58\u50a8', color:'#7b1fa2', keywords:['\u5b58\u50a8','MCU','HBM','\u5148\u8fdb\u5c01\u88c5','\u82af\u7247','\u6c2e\u5316\u94dd']},
+                {name:'\u7b97\u529b/AI', color:'#e65100', keywords:['\u7b97\u529b','\u82f1\u4f1f\u8fbe','\u7269\u7406AI','\u6db2\u51b7','\u8bad\u63a8\u4e00\u4f53\u673a','\u7aef\u4fa7AI']},
+                {name:'\u6709\u8272/\u5c0f\u91d1\u5c5e', color:'#bf360c', keywords:['\u6709\u8272\u91d1\u5c5e','\u91d1\u5c5e\u94a8','\u91d1\u5c5e\u94bc','\u91d1\u5c5e\u94dc','\u91d1\u5c5e\u9530','\u7a00\u571f','\u9547','\u6c27\u5316\u9547']},
+                {name:'\u7535\u5b50\u6750\u6599', color:'#1565c0', keywords:['\u7535\u963b\u7535\u5bb9','\u7535\u5b50\u6c14\u4f53','\u9776\u6750','\u78f7\u5316\u9521','\u65b0\u6750\u6599','\u73bb\u7483\u57fa\u677f','\u975e\u91d1\u5c5e\u6750\u6599']},
+            ];
+            var wvOther = {name:'\u5176\u4ed6', color:'#888', stocks:[]};
+            var wvSorted = wvGroups.map(function(g) { return {name:g.name, color:g.color, keywords:g.keywords, stocks:[]}; });
+            data.wind_vane.forEach(function(s) {
+                var themes = s.themes || '';
+                var placed = false;
+                for (var gi = 0; gi < wvSorted.length; gi++) {
+                    for (var ki = 0; ki < wvSorted[gi].keywords.length; ki++) {
+                        if (themes.indexOf(wvSorted[gi].keywords[ki]) !== -1) {
+                            wvSorted[gi].stocks.push(s);
+                            placed = true; break;
+                        }
+                    }
+                    if (placed) break;
+                }
+                if (!placed) wvOther.stocks.push(s);
+            });
+            wvSorted.forEach(function(g) { g.stocks.sort(function(a,b) { return (b.turnover_rate||0) - (a.turnover_rate||0); }); });
+            wvOther.stocks.sort(function(a,b) { return (b.turnover_rate||0) - (a.turnover_rate||0); });
+            if (wvOther.stocks.length > 0) wvSorted.push(wvOther);
+
+            // 分组两列并排，每只股票独立一行
+            // 按股票数量均衡分配分组到两列，避免一列多一列少
+            var wvCol1 = [], wvCol2 = [];
+            var cnt1 = 0, cnt2 = 0;
+            wvSorted.forEach(function(g) {
+                if (cnt1 <= cnt2) {
+                    wvCol1.push(g);
+                    cnt1 += g.stocks.length;
+                } else {
+                    wvCol2.push(g);
+                    cnt2 += g.stocks.length;
+                }
+            });
+
+            function renderWvTable2(groups) {
+                var t = '<table class="wv-table"><thead><tr>';
+                t += '<th style="width:28px;">#</th><th style="width:72px;">\u4ee3\u7801</th><th>\u540d\u79f0</th><th>\u9898\u6750</th><th style="width:62px;">\u6362\u624b\u7387</th><th style="width:80px;">\u51c0\u6d41\u5165</th>';
+                t += '</tr></thead><tbody>';
+                var idx2 = 0;
+                groups.forEach(function(g) {
+                    if (g.stocks.length === 0) return;
+                    t += '<tr class="group-header" style="background:' + g.color + '22;"><td colspan="6" style="padding:3px 8px;font-size:11px;color:' + g.color + ';font-weight:500;border-bottom:none;">\u25b8 ' + g.name + ' <span style="color:#888;font-weight:400;">(' + g.stocks.length + '\u53ea)</span></td></tr>';
+                    g.stocks.forEach(function(s) {
+                        idx2++;
+                        var code = s.code || '';
+                        var name = s.name || '';
+                        var themes = s.themes || '';
+                        var tr = s.turnover_rate || 0;
+                        var ni = s.net_inflow || 0;
+                        var niFmt = (ni >= 0 ? '+' : '') + (ni / 1e8).toFixed(2) + '\u4ebf';
+                        var niCls = ni >= 0 ? 'num-red' : 'num-green';
+                        var boardCls = code.startsWith('30') ? 'gem' : (code.startsWith('688') || code.startsWith('689') ? 'tech' : 'main');
+                        t += '<tr onclick="showEnlargedCardDetail(\\x27' + code + '\\x27)">';
+                        t += '<td style="color:#555;">' + idx2 + '</td><td><span class="code-tag ' + boardCls + '">' + code + '</span></td><td style="color:#e8eaed;">' + _kplEsc(name) + '</td><td><span class="themes-text">' + _kplEsc(themes) + '</span></td><td><span class="num-gray">' + tr + '%</span></td><td><span class="' + niCls + '">' + niFmt + '</span></td>';
+                        t += '</tr>';
+                    });
+                });
+                t += '</tbody></table>';
+                return t;
+            }
+
+            html += '<div class="wv-table-wrapper" style="display:flex;gap:12px;">';
+            html += '<div style="flex:1;min-width:0;">' + renderWvTable2(wvCol1) + '</div>';
+            html += '<div style="flex:1;min-width:0;">' + renderWvTable2(wvCol2) + '</div>';
+            html += '</div>';
+            html += '<div class="wv-scroll-hint">\u2b06 ' + wvSorted.length + '\u7ec4' + data.wind_vane.length + '\u53ea \u00b7 \u6309\u9898\u6750\u5206\u7ec4 - \u70b9\u51fb\u884c\u67e5\u770b\u8be6\u60c5</div>';
+
+            // \u5b58\u50a8\u98ce\u5411\u6807\u80a1\u7968\u6570\u636e\uff08\u5e26\u9898\u6750\uff09
+            var wvKlineHits = data.wind_vane.map(function(s) {
+                var themes = s.themes || '';
+                var suffix = themes ? ' (' + themes + ')' : '';
+                return {stock_name: (s.name || '') + suffix, stock_code: s.code || ''};
+            });
+            window._wvKlineHits = wvKlineHits;
+            // K\u7ebf\u8d70\u52bf\u6309\u94ae
+            html += '<div style="text-align:center;padding:6px 0;display:flex;justify-content:center;gap:8px;">';
+            html += '<button class="concept-btn" onclick="toggleWvKlines()">\U0001F4C8 K\u7EBF\u8D70\u52BF</button>';
+            html += '<button class="concept-btn" onclick="refreshWvKlines()">\U0001F503 \u5237\u65B0</button>';
+            html += '</div>';
+            html += '<div id="wv-kline-wrap" data-open="0" style="max-height:0;overflow:hidden;transition:max-height 0.3s ease;"></div>';
+        } else {
+            html += '<div class="wf-day-empty" style="text-align:center;padding:20px;color:#555;">\u6682\u65e0\u98ce\u5411\u6807\u6570\u636e</div>';
+        }
+        html += '</div>';
+
+        // ===== Section: 盘面梳理 =====
+        html += '<div class="sniper-section" id="sn-section-pmsl">';
+        html += '<h3>\U0001F4CB \u76d8\u9762\u68b3\u7406<span class="date-tag" style="margin-left:8px;">' + (data.pmsl_date || '') + '</span><span style="font-size:11px;color:#888;font-weight:400;margin-left:4px;">\u00b7 \u5171' + (data.pmsl ? data.pmsl.length : 0) + '\u6761</span></h3>';
+
+        if (data.pmsl && data.pmsl.length > 0) {
+            var pmslTypeOrder = ['\u5927\u5355\u4e00\u5b57','\u76f4\u7ebf\u62c9\u5347','\u6743\u91cd\u62c9\u5347','\u8d8b\u52bf\u65b0\u9ad8','\u7ade\u4ef7\u52a0\u5355','\u5f31\u8f6c\u5f3a','\u5927\u957f\u817f','T\u5b57\u677f','\u9886\u5148\u8eab\u4f4d','\u4eba\u6c14\u80a1\u53cd\u62bd','\u5c3e\u76d8\u70b8\u677f\u56de\u5c01','\u4eba\u6c14\u80a1\u6740\u8dcc','\u6743\u91cd\u6740\u8dcc','\u5317\u4ea4\u6240'];
+            var pmslGroups = {};
+            data.pmsl.forEach(function(ev) {
+                var tn = ev.TagName || '\u672a\u77e5';
+                if (!pmslGroups[tn]) pmslGroups[tn] = [];
+                pmslGroups[tn].push(ev);
+            });
+            Object.keys(pmslGroups).forEach(function(tn) {
+                pmslGroups[tn].sort(function(a,b) { return (a.TimeMin||0) - (b.TimeMin||0); });
+            });
+
+            html += '<div class="pmsl-timeline">';
+            pmslTypeOrder.forEach(function(tn) {
+                var evts = pmslGroups[tn] || [];
+                if (evts.length === 0) return;
+                var firstShuXing = evts[0].TagShuXing;
+                var cls = firstShuXing === 2 ? 'pos' : (firstShuXing === 0 ? 'neg' : 'neu');
+                html += '<div class="pmsl-type-group">';
+                html += '<span class="pmsl-type-title ' + cls + '">' + _kplEsc(tn) + ' ' + evts.length + '</span>';
+                evts.forEach(function(ev) {
+                    var ts = ev.TimeMin || 0;
+                    var d = new Date((ts + 8 * 3600) * 1000);
+                    var hh = String(d.getUTCHours()).padStart(2,'0');
+                    var mm = String(d.getUTCMinutes()).padStart(2,'0');
+                    var timeStr = hh + ':' + mm;
+                    var zsName = ev.ZSName || '';
+                    var detail = ev.Detail || '';
+                    var stockList = ev.StockList || [];
+                    var evCls = ev.TagShuXing === 2 ? 'pos' : (ev.TagShuXing === 0 ? 'neg' : 'neu');
+                    html += '<div class="pmsl-event ' + evCls + '">';
+                    html += '<div class="pmsl-left"><div class="pmsl-time">' + timeStr + '</div></div>';
+                    html += '<div class="pmsl-right">';
+                    if (zsName) html += '<div class="pmsl-sector">' + _kplEsc(zsName) + '</div>';
+                    if (detail) html += '<div class="pmsl-detail">' + _kplEsc(detail) + '</div>';
+                    if (stockList.length > 0) {
+                        html += '<div class="pmsl-stocks">';
+                        stockList.forEach(function(stk) {
+                            var stkCode = stk[0] || '';
+                            var stkName = stk[1] || '';
+                            var stkBoard = stkCode.startsWith('30') ? 'gem' : (stkCode.startsWith('688') || stkCode.startsWith('689') ? 'tech' : 'main');
+                            html += '<span class="pmsl-stock-tag ' + stkBoard + '" onclick="showEnlargedCardDetail(\\x27' + stkCode + '\\x27)">' + _kplEsc(stkName) + '</span>';
+                        });
+                        html += '</div>';
+                    }
+                    html += '</div></div>';
+                });
+                html += '</div>';
+            });
+            html += '</div>';
+
+            // 存储盘面梳理股票数据（带板块名作题材）
+            var pmslStockMap = {};
+            data.pmsl.forEach(function(ev) {
+                var zs = ev.ZSName || '';
+                (ev.StockList || []).forEach(function(stk) {
+                    var code = stk[0] || '';
+                    var name = stk[1] || '';
+                    if (code && !pmslStockMap[code]) {
+                        pmslStockMap[code] = {name: name, code: code, sector: zs};
+                    }
+                });
+            });
+            var pmslKlineHits = [];
+            for (var code in pmslStockMap) {
+                var s = pmslStockMap[code];
+                var suffix = s.sector ? ' (' + s.sector + ')' : '';
+                pmslKlineHits.push({stock_name: s.name + suffix, stock_code: s.code});
+            }
+            window._pmslKlineHits = pmslKlineHits;
+            // K线走势按钮
+            html += '<div style="text-align:center;padding:6px 0;display:flex;justify-content:center;gap:8px;">';
+            html += '<button class="concept-btn" onclick="togglePmslKlines()">\U0001F4C8 K\u7EBF\u8D70\u52BF</button>';
+            html += '<button class="concept-btn" onclick="refreshPmslKlines()">\U0001F503 \u5237\u65B0</button>';
+            html += '</div>';
+            html += '<div id="pmsl-kline-wrap" data-open="0" style="max-height:0;overflow:hidden;transition:max-height 0.3s ease;"></div>';
+        } else {
+            html += '<div class="wf-day-empty" style="text-align:center;padding:20px;color:#555;">\u6682\u65e0\u76d8\u9762\u68b3\u7406\u6570\u636e</div>';
+        }
+        html += '</div>';
 
         // Section 2: 按日期渲染
         data.dates.forEach(function(date) {
@@ -9070,6 +9378,58 @@ function refreshKplKlines(secId) {
     var wrap = document.getElementById('kpl-kline-wrap-all');
     if (!wrap || !_kplSearchHits.length) return;
     wrap.innerHTML = renderKplKlineGrid(_kplSearchHits, ts);
+    if (wrap.getAttribute('data-open') === '1') wrap.style.maxHeight = '10000px';
+}
+
+// 风向标K线走势切换
+function toggleWvKlines() {
+    var wrap = document.getElementById('wv-kline-wrap');
+    if (!wrap) return;
+    var isOpen = wrap.getAttribute('data-open') === '1';
+    if (isOpen) {
+        wrap.style.maxHeight = '0';
+        wrap.setAttribute('data-open', '0');
+    } else {
+        if (!wrap.innerHTML.trim() && window._wvKlineHits) {
+            wrap.innerHTML = renderKplKlineGrid(window._wvKlineHits);
+        }
+        wrap.style.maxHeight = '10000px';
+        wrap.setAttribute('data-open', '1');
+    }
+}
+
+// 盘面梳理K线走势切换
+function togglePmslKlines() {
+    var wrap = document.getElementById('pmsl-kline-wrap');
+    if (!wrap) return;
+    var isOpen = wrap.getAttribute('data-open') === '1';
+    if (isOpen) {
+        wrap.style.maxHeight = '0';
+        wrap.setAttribute('data-open', '0');
+    } else {
+        if (!wrap.innerHTML.trim() && window._pmslKlineHits) {
+            wrap.innerHTML = renderKplKlineGrid(window._pmslKlineHits);
+        }
+        wrap.style.maxHeight = '10000px';
+        wrap.setAttribute('data-open', '1');
+    }
+}
+
+// 风向标K线刷新
+function refreshWvKlines() {
+    var wrap = document.getElementById('wv-kline-wrap');
+    if (!wrap || !window._wvKlineHits) return;
+    var ts = String(Date.now());
+    wrap.innerHTML = renderKplKlineGrid(window._wvKlineHits, ts);
+    if (wrap.getAttribute('data-open') === '1') wrap.style.maxHeight = '10000px';
+}
+
+// 盘面梳理K线刷新
+function refreshPmslKlines() {
+    var wrap = document.getElementById('pmsl-kline-wrap');
+    if (!wrap || !window._pmslKlineHits) return;
+    var ts = String(Date.now());
+    wrap.innerHTML = renderKplKlineGrid(window._pmslKlineHits, ts);
     if (wrap.getAttribute('data-open') === '1') wrap.style.maxHeight = '10000px';
 }
 
