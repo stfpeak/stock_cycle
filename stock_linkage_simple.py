@@ -9919,16 +9919,21 @@ function showRealtimeCardDetail(code, name) {
 // 卡片内容放大弹框
 function showEnlargedCardDetail(code) {
     var wrap = document.querySelector('.ds-card-detail-wrap[data-code="' + code + '"]');
-    if (!wrap) return;
+    if (wrap) {
+        _showEnlargedFromWrap(wrap);
+        return;
+    }
+    // 无已有占位 → 按需拉取
+    _fetchDetailAndShowModal(code);
+}
+
+function _showEnlargedFromWrap(wrap) {
     var modal = document.getElementById('enlargeCardModal');
     var body = document.getElementById('enlargeCardModalBody');
-    // 克隆卡片内容到弹框
     var clone = wrap.cloneNode(true);
-    // 移除克隆中的放大按钮（原按钮没必要出现在弹框里）
     var btn = clone.querySelector('.enlarge-card-btn');
     if (btn) btn.remove();
     clone.className = 'enlarged-card-content';
-    // 刷新图片时间戳确保最新
     var imgs = clone.querySelectorAll('img.ds-stock-kline-img');
     imgs.forEach(function(img) {
         var orig = img.getAttribute('data-orig-src');
@@ -9940,6 +9945,26 @@ function showEnlargedCardDetail(code) {
     body.innerHTML = '';
     body.appendChild(clone);
     modal.classList.add('active');
+}
+
+function _fetchDetailAndShowModal(code) {
+    var modal = document.getElementById('enlargeCardModal');
+    var body = document.getElementById('enlargeCardModalBody');
+    body.innerHTML = '<div class="loading" style="padding:20px;text-align:center;color:#888;">\u52a0\u8f7d\u4e2d...</div>';
+    modal.classList.add('active');
+    fetch('/api/stock_detail_batch?codes=' + code)
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var detail = data && data[code];
+            if (detail && detail.limit_rows) {
+                body.innerHTML = _renderCardDetailContent(code, detail, null, '', '');
+            } else {
+                body.innerHTML = '<div style="padding:20px;text-align:center;color:#888;">\u6682\u65e0\u8be5\u80a1\u7968\u8be6\u60c5\u6570\u636e</div>';
+            }
+        })
+        .catch(function(e) {
+            body.innerHTML = '<div style="padding:20px;text-align:center;color:#e94560;">\u52a0\u8f7d\u5931\u8d25: ' + e.message + '</div>';
+        });
 }
 function closeEnlargeCardModal() {
     document.getElementById('enlargeCardModal').classList.remove('active');
