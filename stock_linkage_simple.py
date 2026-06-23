@@ -2191,6 +2191,21 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
     text-decoration: none;
 }
 .np-sidebar-subitem:hover { color: #00d4ff; background: rgba(0,212,255,0.05); }
+.np-sidebar.hidden { display: none; }
+.np-sidebar-hide {
+    text-align: right; padding: 2px 8px 4px; cursor: pointer; color: #555;
+    font-size: 0.85em; transition: color 0.15s; user-select: none;
+}
+.np-sidebar-hide:hover { color: #ddd; }
+.np-sidebar-showbtn {
+    position: sticky; top: 20px; flex-shrink: 0;
+    width: 32px; height: 32px; padding: 0; margin: 0;
+    background: rgba(15,52,96,0.55); border: 1px solid rgba(0,212,255,0.12);
+    border-radius: 8px; color: #888; cursor: pointer; font-size: 1em;
+    display: flex; align-items: center; justify-content: center;
+    z-index: 10; transition: color 0.15s;
+}
+.np-sidebar-showbtn:hover { color: #ddd; }
 .np-main-content {
     flex: 1;
     min-width: 0;
@@ -5038,7 +5053,9 @@ function loadSniper() {
 
         // Sidebar
         html += '<div class="np-wrapper">';
+        html += '<button class="np-sidebar-showbtn" id="sniperSidebarShow" onclick="toggleSniperSidebar()" style="display:none;" title="\u663e\u793a\u5bfc\u822a">\u2630</button>';
         html += '<nav class="np-sidebar" id="sniperSidebar">';
+        html += '<div class="np-sidebar-hide" onclick="toggleSniperSidebar()" title="\u9690\u85cf\u5bfc\u822a">\u2715</div>';
         html += '<a class="np-sidebar-item" onclick="scrollToNpSection(\\x27sn-section-realtime\\x27)">实时行情</a>';
         html += '<a class="np-sidebar-item" onclick="scrollToNpSection(\\x27sn-section-placeholder\\x27)">\u26a1 \u5b9e\u65f6\u5f3a\u699c</a>';
         html += '<a class="np-sidebar-item" onclick="scrollToNpSection(\\x27sn-section-freq\\x27)">\U0001F4CA 频度分析</a>';
@@ -5116,9 +5133,9 @@ function loadSniper() {
             html += '<span class="cat-count" style="color:#ff6b6b;">\U0001F525\u4eca\u65e5' + data.today_zt_count + '\u53ea\u6da8\u505c</span>';
         }
         html += '<span class="sn-grid-tog">';
-        html += '<button' + (_sniperGridCols === 1 ? ' class="active"' : '') + ' onclick="setSniperGridCols(1)" data-cols="1">1\u5217</button>';
-        html += '<button' + (_sniperGridCols === 2 ? ' class="active"' : '') + ' onclick="setSniperGridCols(2)" data-cols="2">2\u5217</button>';
-        html += '<button' + (_sniperGridCols === 4 ? ' class="active"' : '') + ' onclick="setSniperGridCols(4)" data-cols="4">4\u5217</button>';
+        html += '<button' + (_sniperGridCols === 1 ? ' class="active"' : '') + ' onclick="event.stopPropagation();setSniperGridCols(1)" data-cols="1">1\u5217</button>';
+        html += '<button' + (_sniperGridCols === 2 ? ' class="active"' : '') + ' onclick="event.stopPropagation();setSniperGridCols(2)" data-cols="2">2\u5217</button>';
+        html += '<button' + (_sniperGridCols === 4 ? ' class="active"' : '') + ' onclick="event.stopPropagation();setSniperGridCols(4)" data-cols="4">4\u5217</button>';
         html += '</span>';
         html += '<span class="cat-arrow">\u25bc</span>';
         html += '</div>';
@@ -6775,6 +6792,17 @@ function setSniperGridCols(n) {
     document.querySelectorAll('.sniper-strong-grid').forEach(function(g) {
         g.style.setProperty('--sn-cols', n);
     });
+}
+
+// 精准狙击侧边栏隐藏/显示
+function toggleSniperSidebar() {
+    var sidebar = document.getElementById('sniperSidebar');
+    var showBtn = document.getElementById('sniperSidebarShow');
+    if (!sidebar) return;
+    var isHidden = sidebar.classList.toggle('hidden');
+    if (showBtn) {
+        showBtn.style.display = isHidden ? 'flex' : 'none';
+    }
 }
 
 // Helper to find kline data for a canvas ID
