@@ -1452,14 +1452,6 @@ button:disabled { background: #555; cursor: not-allowed; }
     .btn-group button { flex: 1; }
 }
 
-/* 实时强榜移动端折叠 */
-@media (max-width: 900px) {
-    .sniper-strong-grid { grid-template-columns: repeat(2, 1fr); }
-}
-@media (max-width: 600px) {
-    .sniper-strong-grid { grid-template-columns: repeat(1, 1fr); }
-}
-
 /* Result */
 .result {
     background: #16213e;
@@ -1847,7 +1839,7 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 
 /* 实时强榜卡片 */
 .sniper-strong-grid {
-    display: grid; grid-template-columns: repeat(4, 1fr);
+    display: grid; grid-template-columns: repeat(var(--sn-cols, 4), 1fr);
     gap: 10px;
 }
 .sniper-strong-card {
@@ -1956,7 +1948,7 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 .wv-scroll-hint { text-align: center; font-size: 11px; color: #555; padding: 4px 0; }
 
 /* 盘面梳理 Timeline */
-.pmsl-timeline { column-count: 2; column-gap: 16px; }
+.pmsl-timeline { column-count: 1; }
 .pmsl-type-group { margin-bottom: 10px; break-inside: avoid; }
 .pmsl-type-title {
   font-size: 12px; font-weight: 500; margin-bottom: 6px; padding: 3px 8px;
@@ -2252,9 +2244,19 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
     border-radius: 4px; cursor: pointer; font-size: 0.76em; transition: all 0.2s;
 }
 .np-grid-tog button:hover { color: #ddd; border-color: #00d4ff; }
-.np-grid-tog button.active {
+.np-grid-tog button.active, .sn-grid-tog button.active {
     color: #00d4ff; border-color: #00d4ff; background: rgba(0,212,255,0.1);
 }
+
+.sn-grid-tog {
+    display: flex; gap: 3px; align-items: center; margin-left: 6px;
+}
+.sn-grid-tog button {
+    background: #0f3460; color: #888;
+    border: 1px solid rgba(0,212,255,0.12); padding: 2px 7px;
+    border-radius: 4px; cursor: pointer; font-size: 0.7em; transition: all 0.2s;
+}
+.sn-grid-tog button:hover { color: #ddd; border-color: #00d4ff; }
 
 /* K-line modal overlay */
 .kline-modal-overlay {
@@ -5113,6 +5115,11 @@ function loadSniper() {
         if (data.today_zt_count) {
             html += '<span class="cat-count" style="color:#ff6b6b;">\U0001F525\u4eca\u65e5' + data.today_zt_count + '\u53ea\u6da8\u505c</span>';
         }
+        html += '<span class="sn-grid-tog">';
+        html += '<button' + (_sniperGridCols === 1 ? ' class="active"' : '') + ' onclick="setSniperGridCols(1)" data-cols="1">1\u5217</button>';
+        html += '<button' + (_sniperGridCols === 2 ? ' class="active"' : '') + ' onclick="setSniperGridCols(2)" data-cols="2">2\u5217</button>';
+        html += '<button' + (_sniperGridCols === 4 ? ' class="active"' : '') + ' onclick="setSniperGridCols(4)" data-cols="4">4\u5217</button>';
+        html += '</span>';
         html += '<span class="cat-arrow">\u25bc</span>';
         html += '</div>';
         html += '<div class="np-cat-body">';
@@ -5365,21 +5372,7 @@ function loadSniper() {
             wvOther.stocks.sort(function(a,b) { return (b.turnover_rate||0) - (a.turnover_rate||0); });
             if (wvOther.stocks.length > 0) wvSorted.push(wvOther);
 
-            // 分组两列并排，每只股票独立一行
-            // 按股票数量均衡分配分组到两列，避免一列多一列少
-            var wvCol1 = [], wvCol2 = [];
-            var cnt1 = 0, cnt2 = 0;
-            wvSorted.forEach(function(g) {
-                if (cnt1 <= cnt2) {
-                    wvCol1.push(g);
-                    cnt1 += g.stocks.length;
-                } else {
-                    wvCol2.push(g);
-                    cnt2 += g.stocks.length;
-                }
-            });
-
-            function renderWvTable2(groups) {
+            function renderWvTable(groups) {
                 var t = '<table class="wv-table"><thead><tr>';
                 t += '<th style="width:28px;">#</th><th style="width:72px;">\u4ee3\u7801</th><th>\u540d\u79f0</th><th>\u9898\u6750</th><th style="width:62px;">\u6362\u624b\u7387</th><th style="width:80px;">\u51c0\u6d41\u5165</th>';
                 t += '</tr></thead><tbody>';
@@ -5406,10 +5399,7 @@ function loadSniper() {
                 return t;
             }
 
-            html += '<div class="wv-table-wrapper" style="display:flex;gap:12px;">';
-            html += '<div style="flex:1;min-width:0;">' + renderWvTable2(wvCol1) + '</div>';
-            html += '<div style="flex:1;min-width:0;">' + renderWvTable2(wvCol2) + '</div>';
-            html += '</div>';
+            html += '<div class="wv-table-wrapper">' + renderWvTable(wvSorted) + '</div>';
             html += '<div class="wv-scroll-hint">\u2b06 ' + wvSorted.length + '\u7ec4' + data.wind_vane.length + '\u53ea \u00b7 \u6309\u9898\u6750\u5206\u7ec4 - \u70b9\u51fb\u884c\u67e5\u770b\u8be6\u60c5</div>';
 
             // \u5b58\u50a8\u98ce\u5411\u6807\u80a1\u7968\u6570\u636e\uff08\u5e26\u9898\u6750\uff09
@@ -5580,6 +5570,9 @@ function loadSniper() {
         // Apply grid columns
         document.querySelectorAll('.np-card-grid').forEach(function(g) {
             g.style.setProperty('--np-cols', _npGridCols);
+        });
+        document.querySelectorAll('.sniper-strong-grid').forEach(function(g) {
+            g.style.setProperty('--sn-cols', _sniperGridCols);
         });
     }).catch(function(e) {
         container.innerHTML = '<div class="result"><div class="error">精准狙击数据加载失败: ' + e.message + '</div></div>';
@@ -5948,6 +5941,7 @@ var _npCatLabels = {'tld': '屠龙刀战法', '0-2': '0~2%', '2-5': '2~5%', '5-8
 var _boardSubLabels = {main_board: '主板', gem_star: '创业板/科创板'};
 var _boardSubKeys = ['main_board', 'gem_star'];
 var _npGridCols = 4;
+var _sniperGridCols = 4;
 var _npObserver = null;
 var _ztWindowData = null;  // cached zt_window data
 var _npDetailData = {};
@@ -6769,6 +6763,17 @@ function setNpGridCols(n) {
     // Apply column count to all card grids via CSS variable
     document.querySelectorAll('.np-card-grid').forEach(function(g) {
         g.style.setProperty('--np-cols', n);
+    });
+}
+
+// Set sniper strong grid columns
+function setSniperGridCols(n) {
+    _sniperGridCols = n;
+    document.querySelectorAll('.sn-grid-tog button').forEach(function(b) {
+        b.classList.toggle('active', parseInt(b.getAttribute('data-cols')) === n);
+    });
+    document.querySelectorAll('.sniper-strong-grid').forEach(function(g) {
+        g.style.setProperty('--sn-cols', n);
     });
 }
 
