@@ -66,6 +66,7 @@ _kpl_day_cache = {}             # date_fmt → records（已加载的日JSON缓�
 _kpl_unique_plates = {}         # plate_name → count
 _kpl_unique_tags = {}           # reason_tag → count
 _kpl_unique_concepts = {}       # concept → count
+_kpl_stock_latest_tag = {}      # stock_code → {tag, date, reason_brief} (全量历史)
 _kpl_day_files = []             # 所有日JSON文件名（不含路径），排序后
 
 # 启动时加载索引文件
@@ -88,6 +89,12 @@ try:
                 c = c.strip()
                 if c:
                     _kpl_unique_concepts[c] = _kpl_unique_concepts.get(c, 0) + 1
+            # 构建股票→最新reason_tag映射（全量历史）
+            sc = e.get('stock_code', '')
+            d = e.get('date', '')
+            if sc and d:
+                if sc not in _kpl_stock_latest_tag or d > _kpl_stock_latest_tag[sc]['date']:
+                    _kpl_stock_latest_tag[sc] = {'tag': tag, 'date': d, 'reason_brief': e.get('reason_brief', '') or ''}
     # 扫描日JSON文件列表
     if os.path.isdir(_KPL_DATA_DIR):
         _kpl_day_files = sorted([f for f in os.listdir(_KPL_DATA_DIR) if f.endswith('.json') and f not in ('index.json', 'reason_index.json')])
@@ -277,6 +284,7 @@ def _get_sniper_data(lookback=20):
 
     # 获取今日涨停数据，匹配KPL reason_tag，合并到最强梯队中
     today_zt_with_tag = []
+    _all_today_stocks = []  # 保存所有akshare原始数据，用于找出未匹配标签的股票
     try:
         import akshare as ak
         import pandas as pd
@@ -288,6 +296,10 @@ def _get_sniper_data(lookback=20):
                 name = row.get('名称', '')
                 first_time = int(row['首次封板时间']) if pd.notna(row.get('首次封板时间')) else 999999
                 lianban = int(row['连板数']) if pd.notna(row.get('连板数')) else 0
+                _all_today_stocks.append({
+                    'code': code, 'name': name,
+                    'first_time': first_time, 'lianban': lianban
+                })
                 reason_tag = code_tag_map.get(code, '')
                 if reason_tag:
                     today_zt_with_tag.append({
@@ -312,6 +324,15 @@ def _get_sniper_data(lookback=20):
                                 break
                         if _found_tag:
                             break
+                    # 仍未能匹配 → 从全量历史数据(reason_index)中查找最近一次标签
+                    if not _found_tag and code in _kpl_stock_latest_tag:
+                        _found_tag = _kpl_stock_latest_tag[code]['tag']
+                        today_zt_with_tag.append({
+                            'code': code, 'name': name,
+                            'first_time': first_time, 'lianban': lianban,
+                            'reason_tag': _found_tag
+                        })
+                        code_brief_map[code] = _kpl_stock_latest_tag[code].get('reason_brief', '') or ''
     except Exception:
         pass
 
@@ -344,6 +365,58 @@ def _get_sniper_data(lookback=20):
                 'reason_tag': tag, 'reason_brief': rb
             })
 
+    # 收集完全未匹配标签的今日涨停股票
+    untagged_today_zt = []
+    matched_codes = set(zt['code'] for zt in today_zt_with_tag)
+    for s in _all_today_stocks:
+        if s['code'] not in matched_codes:
+            untagged_today_zt.append({
+                'code': s['code'], 'name': s['name'],
+                'first_time': s['first_time'], 'lianban': s['lianban'],
+                'reason_tag': '\u672a\u5339\u914d\u6807\u7b7e'
+            })
+
+    # 注入今日实时数据到频度分析结构（盘中实时刷新）
+    _today_fmt = today_str[:4] + '-' + today_str[4:6] + '-' + today_str[6:8]
+    if today_zt_with_tag and _today_fmt not in valid_dates:
+        valid_dates.insert(0, _today_fmt)
+        # 注入到 data
+        today_tag_groups = {}
+        for zt in today_zt_with_tag:
+            tag = zt['reason_tag']
+            today_tag_groups.setdefault(tag, []).append({
+                'stock_code': zt['code'], 'stock_name': zt['name'],
+                'reason_tag': tag, 'reason_brief': code_brief_map.get(zt['code'], ''),
+                'lianban_count': str(zt['lianban']), 'plate_name': '', 'concepts': ''
+            })
+        data[_today_fmt] = today_tag_groups
+        # 更新频度计数
+        for tag, rows_today in today_tag_groups.items():
+            freq.setdefault(tag, {})[_today_fmt] = len(rows_today)
+            freq_by_tag.setdefault(tag, {})[_today_fmt] = len(rows_today)
+            freq_by_date.setdefault(_today_fmt, {})[tag] = len(rows_today)
+            tag_totals[tag] = tag_totals.get(tag, 0) + len(rows_today)
+        # 补全今日其他标签的0值
+        for tag in freq_by_tag:
+            if _today_fmt not in freq_by_tag[tag]:
+                freq_by_tag[tag][_today_fmt] = 0
+                freq_by_date.setdefault(_today_fmt, {})[tag] = 0
+        # 重算 sorted_tags 和 top_tags
+        sorted_tags = sorted(tag_totals.keys(), key=lambda t: -tag_totals[t])
+        top_tags = sorted_tags[:40]
+        # 更新 rank_dates（10个交易日，含今日）
+        rank_dates = valid_dates[:10]
+        # 重算强榜频度
+        rank_tag_totals = {}
+        for tag in sorted_tags:
+            rank_tag_totals[tag] = sum(freq_by_tag.get(tag, {}).get(d, 0) for d in rank_dates)
+        rank_sorted_tags = sorted(rank_tag_totals.keys(), key=lambda t: -rank_tag_totals[t])
+        # 重算 tag_rank_daily
+        for tag in sorted_tags:
+            tag_rank_daily[tag] = {}
+            for d in rank_dates:
+                tag_rank_daily[tag][d] = freq_by_tag.get(tag, {}).get(d, 0)
+
     return {
         'dates': valid_dates,  # 最新在前
         'rank_dates': rank_dates,  # 近10个交易日
@@ -354,8 +427,9 @@ def _get_sniper_data(lookback=20):
         'tag_totals': tag_totals,
         'top_tags': top_tags,
         'top_20_strong': top_20_strong,
-        'today_zt_count': len(today_zt_with_tag),
-        'other_today_zt': other_today_zt
+        'today_zt_count': len(today_zt_with_tag) + len(untagged_today_zt),
+        'other_today_zt': other_today_zt,
+        'untagged_today_zt': untagged_today_zt
     }
 
 
@@ -1666,6 +1740,20 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 /* 精准狙击 Tab */
 .sniper-section { margin-bottom: 25px; }
 .sniper-section h3 { color: #00d4ff; margin-bottom: 12px; font-size: 1.1em; display: flex; align-items: center; gap: 10px; }
+
+/* 实时行情 · 板块强度排行 */
+.sr-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+.sr-table th { background: #1a3a6a; color: #aac; padding: 7px 10px;
+    text-align: left; font-size: 0.82em; font-weight: normal; position: sticky; top: 0; }
+.sr-table td { padding: 6px 10px; border-bottom: 1px solid #0f3460; }
+.sr-table tr:hover td { background: rgba(15,52,96,0.25); }
+.sr-table-wrapper { max-height: 400px; overflow-y: auto; border-radius: 8px;
+    border: 1px solid #0f3460; background: #1e2e4e; }
+.sr-change-up { color: #ff6b6b; }
+.sr-change-down { color: #4fc3f7; }
+.sr-inflow-pos { color: #ff6b6b; }
+.sr-inflow-neg { color: #4fc3f7; }
+
 .sniper-placeholder {
     background: rgba(15,52,96,0.35); border: 1px dashed rgba(0,212,255,0.2);
     border-radius: 10px; padding: 30px; text-align: center; color: #666; font-size: 0.9em;
@@ -4803,7 +4891,12 @@ function loadSniper() {
     var container = document.getElementById('sniperContainer');
     container.innerHTML = '<div class="loading">加载精准狙击数据中...</div>';
 
-    _cachedFetch('/api/sniper_data').then(function(data) {
+    Promise.all([
+        _cachedFetch('/api/sniper_data').catch(function() { return null; }),
+        _cachedFetch('/api/sector_ranking').catch(function() { return null; })
+    ]).then(function(results) {
+        var data = results[0];
+        var sectorData = results[1];
         if (!data || data.error || !data.dates || data.dates.length === 0) {
             container.innerHTML = '<div class="result"><div class="empty">暂无精准狙击数据</div></div>';
             return;
@@ -4821,6 +4914,7 @@ function loadSniper() {
         // Sidebar
         html += '<div class="np-wrapper">';
         html += '<nav class="np-sidebar" id="sniperSidebar">';
+        html += '<a class="np-sidebar-item" onclick="scrollToNpSection(\\x27sn-section-realtime\\x27)">实时行情</a>';
         html += '<a class="np-sidebar-item" onclick="scrollToNpSection(\\x27sn-section-placeholder\\x27)">\u26a1 \u5b9e\u65f6\u5f3a\u699c</a>';
         html += '<a class="np-sidebar-item" onclick="scrollToNpSection(\\x27sn-section-freq\\x27)">\U0001F4CA 频度分析</a>';
         html += '<div style="border-top:1px solid rgba(255,255,255,0.06);margin:6px 0;"></div>';
@@ -4838,6 +4932,49 @@ function loadSniper() {
         // Main content
         html += '<div class="np-main-content">';
         html += '<div id="sn-results">';
+
+        // Section 0: 实时行情 · 精选板块强度排行
+        html += '<div class="sniper-section" id="sn-section-realtime">';
+        html += '<h3>\U0001F4C8 \u5b9e\u65f6\u884c\u60c5 \u00b7 \u7cbe\u9009\u677f\u5757\u5f3a\u5ea6\u6392\u884c</h3>';
+        if (sectorData && !sectorData.error && Array.isArray(sectorData) && sectorData.length > 0) {
+            var sItems = sectorData.slice().sort(function(a,b){return (b.stock_count||0)-(a.stock_count||0);}).slice(0, 20);
+            html += '<div class="sr-table-wrapper"><table class="sr-table">';
+            html += '<thead><tr><th>#</th><th>\u677f\u5757\u540d\u79f0</th><th>\u5f3a\u5ea6</th><th>\u4e3b\u529b\u51c0\u989d</th><th>\u6da8\u8dcc\u5e45</th></tr></thead><tbody>';
+            sItems.forEach(function(si, siIdx) {
+                var plateName = si.plate_name || si.name || '--';
+                var changePct = si.change_pct;
+                var netInflow5d = si.net_inflow_5d;
+                var stockCount = si.stock_count !== undefined && si.stock_count !== null ? si.stock_count : '--';
+                // 涨跌幅格式化
+                var pctStr, pctCls;
+                if (changePct === undefined || changePct === null) {
+                    pctStr = '--'; pctCls = '';
+                } else {
+                    var arrow = changePct > 0 ? '\u2191' : (changePct < 0 ? '\u2193' : '');
+                    pctStr = (changePct > 0 ? '+' : '') + changePct.toFixed(2) + '%' + arrow;
+                    pctCls = changePct >= 0 ? 'sr-change-up' : 'sr-change-down';
+                }
+                // 净额格式化
+                function _srFmtInflow(v) {
+                    if (v === undefined || v === null) return '--';
+                    var a = v / 1e8;
+                    return (v >= 0 ? '+' : '') + a.toFixed(2) + '\u4ebf';
+                }
+                var inflow5dStr = _srFmtInflow(netInflow5d);
+                var inflow5dCls = (netInflow5d !== undefined && netInflow5d !== null) ? (netInflow5d >= 0 ? 'sr-inflow-pos' : 'sr-inflow-neg') : '';
+                html += '<tr>';
+                html += '<td style="color:#888;width:32px;">' + (siIdx + 1) + '</td>';
+                html += '<td><strong>' + _kplEsc(plateName) + '</strong></td>';
+                html += '<td style="color:#888;">' + stockCount + '</td>';
+                html += '<td class="' + inflow5dCls + '">' + inflow5dStr + '</td>';
+                html += '<td class="' + pctCls + '">' + pctStr + '</td>';
+                html += '</tr>';
+            });
+            html += '</tbody></table></div>';
+        } else {
+            html += '<div class="sniper-placeholder">\u6682\u65e0\u5b9e\u65f6\u677f\u5757\u6570\u636e\uff0c\u975e\u4ea4\u6613\u65f6\u6bb5\u6216\u6570\u636e\u52a0\u8f7d\u5931\u8d25</div>';
+        }
+        html += '</div>';
 
         // Section 1: 实时强榜 - 涨停原因标签最强梯队
         var strongList = data.top_20_strong || [];
@@ -4981,6 +5118,44 @@ function loadSniper() {
             html += '</div></div>';
         }
 
+        // 未匹配标签的今日涨停
+        var untaggedZt = data.untagged_today_zt || [];
+        if (untaggedZt.length > 0) {
+            html += '<div class="sniper-strong-card" style="border-color:rgba(158,158,158,0.2);">';
+            html += '<div class="sniper-strong-card-header" style="background:rgba(158,158,158,0.1);">';
+            html += '<span class="sniper-strong-rank" style="color:#9e9e9e;">\u2753</span>';
+            html += '<span class="sniper-strong-tag" style="color:#9e9e9e;">\u672a\u5339\u914d\u6807\u7b7e</span>';
+            html += '<span class="sniper-strong-total">' + untaggedZt.length + '\u53ea\u4eca\u65e5\u6da8\u505c</span>';
+            html += '</div>';
+            html += '<div class="sniper-strong-stocks">';
+            untaggedZt.forEach(function(s, si) {
+                var boardCls = _kplGetBoardClass(s.code);
+                var ft = s.first_time;
+                var timeStr = '';
+                if (ft && ft < 999999) {
+                    var ts = String(ft).padStart(6, '0');
+                    timeStr = ts.slice(0, 2) + ':' + ts.slice(2, 4);
+                }
+                html += '<div class="sniper-strong-stock sniper-strong-stock-today" onclick="showEnlargedCardDetail(\\x27' + s.code + '\\x27)">';
+                html += '<span class="sniper-strong-stock-rank">' + (si+1) + '</span>';
+                html += '<span class="today-zt-badge">\U0001F525\u4eca\u65e5\u6da8\u505c</span>';
+                if (timeStr) html += '<span class="today-zt-time">' + timeStr + '</span>';
+                html += '<span class="np-card-code ' + boardCls + '">' + s.code + '</span>';
+                html += '<div style="flex:1;min-width:0;display:flex;align-items:center;gap:3px;overflow:hidden;">';
+                html += '<span class="np-card-name">' + _kplEsc(s.name) + '</span>';
+                html += '<span class="sniper-stock-inline-info" style="color:#9e9e9e;">\u672a\u5339\u914d\u6807\u7b7e</span>';
+                html += '</div>';
+                if (s.lianban > 0) {
+                    html += '<span class="sniper-strong-lb">' + s.lianban + '\u8fde\u677f</span>';
+                }
+                html += '</div>';
+                if (s.code) {
+                    html += '<div class="np-detail-placeholder" data-np-code="' + s.code + '" style="display:none;"></div>';
+                }
+            });
+            html += '</div></div>';
+        }
+
         html += '</div>'; // close sniper-strong-grid
 
         // 题材走势区域（可折叠）
@@ -5107,9 +5282,14 @@ function loadSniper() {
 function manualRefreshSniper() {
     var icon = document.querySelector('#tab-sniper .rt-refresh-icon');
     if (icon) icon.classList.add('spinning');
+    // 清除板块排行客户端缓存并预热服务端缓存
+    delete _tabCache['/api/sector_ranking'];
+    fetch('/api/sector_ranking?refresh=1').catch(function(){});
     fetch('/api/sniper_data?refresh=1')
         .then(function(r) { return r.json(); })
         .then(function(data) {
+            // 清除客户端缓存，确保 loadSniper 不走 stale cache
+            delete _tabCache['/api/sniper_data'];
             loadSniper();
         })
         .catch(function(e) {
@@ -5123,7 +5303,6 @@ function manualRefreshSniper() {
 
 // 精准狙击 —— 自动刷新（3分钟）
 var _sniperAutoRefreshActive = false;
-var _sniperAutoRefreshTimer = null;
 var _sniperAutoRefreshCountdown = null;
 var _sniperAutoRefreshRemaining = 0;
 
@@ -5132,10 +5311,8 @@ function toggleSniperAutoRefresh() {
     if (!btn) return;
 
     if (_sniperAutoRefreshActive) {
-        clearInterval(_sniperAutoRefreshTimer);
         clearInterval(_sniperAutoRefreshCountdown);
         _sniperAutoRefreshActive = false;
-        _sniperAutoRefreshTimer = null;
         _sniperAutoRefreshCountdown = null;
         btn.innerHTML = '\u23f1 \u81ea\u52a8\u5237\u65b0 3\u5206\u949f';
         btn.classList.remove('active');
@@ -5172,10 +5349,8 @@ function toggleSniperAutoRefresh() {
             var m = now.getUTCMinutes();
             var total = h * 60 + m;
             if (total < 565 || total >= 900) {
-                clearInterval(_sniperAutoRefreshTimer);
                 clearInterval(_sniperAutoRefreshCountdown);
                 _sniperAutoRefreshActive = false;
-                _sniperAutoRefreshTimer = null;
                 _sniperAutoRefreshCountdown = null;
                 btn.innerHTML = '\u23f1 \u81ea\u52a8\u5237\u65b0 3\u5206\u949f';
                 btn.classList.remove('active');
@@ -11828,15 +12003,42 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 lookback = int(query.get('lookback', ['20'])[0])
                 refresh = query.get('refresh', [''])[0]
+                cache_key = f'sniper_{lookback}'
                 if refresh:
                     result = _get_sniper_data(lookback)
+                    _set_cache(cache_key, result)  # 刷新时也更新服务端缓存
                 else:
-                    cache_key = f'sniper_{lookback}'
                     result = _get_cached(cache_key, ttl=3600)
                     if result is None:
                         result = _get_sniper_data(lookback)
                         _set_cache(cache_key, result)
                 self._respond_json(result, cors_headers)
+            except Exception as e:
+                import traceback
+                self._respond_json({'error': str(e), 'traceback': traceback.format_exc()}, cors_headers)
+
+        elif path == '/api/sector_ranking':
+            try:
+                import levistock as lk
+                import levistock.stock.stock_fupanla_kph as kph_mod
+                # 超时补丁
+                def _patched_post(host, params):
+                    import requests
+                    r = requests.post(host, data=params, headers=kph_mod._HEADERS, timeout=30)
+                    return r.json()
+                kph_mod._post = _patched_post
+                today_str = datetime.now().strftime('%Y-%m-%d')
+                cache_key = 'sector_rank_' + today_str
+                refresh = query.get('refresh', [''])[0]
+                if refresh:
+                    result = lk.sector_ranking_kph(date=today_str, zs_type=lk.SECTOR_SELECTED)
+                    _set_cache(cache_key, result)
+                else:
+                    result = _get_cached(cache_key, ttl=300)
+                    if result is None:
+                        result = lk.sector_ranking_kph(date=today_str, zs_type=lk.SECTOR_SELECTED)
+                        _set_cache(cache_key, result)
+                self._respond_json(result or [], cors_headers)
             except Exception as e:
                 import traceback
                 self._respond_json({'error': str(e), 'traceback': traceback.format_exc()}, cors_headers)
