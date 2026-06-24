@@ -3352,6 +3352,11 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 .etf-sidebar-subitem:hover { color:#00d4ff; background:rgba(0,212,255,0.05); }
 .etf-main-content { flex:1; min-width:0; }
 @media(max-width:768px) { .etf-sidebar { display:none; } }
+@media(max-width:768px) {
+    .np-sidebar { display:none; }
+    .np-sidebar-showbtn { display:flex !important; }
+    .np-sidebar.mobile-visible { display:block; position:fixed; top:50px; left:8px; width:180px; max-height:80vh; z-index:1000; box-shadow:0 4px 20px rgba(0,0,0,0.5); }
+}
 
 /* ETF 三章节布局 */
 .etf-section { margin:20px 0; }
@@ -5517,6 +5522,7 @@ function loadSniper(mode) {
             });
             html1 += '</div>';
             html1 += '<div style="border-top:1px solid rgba(255,255,255,0.06);margin:6px 0;"></div>';
+            html1 += '<div class="np-sidebar-hide" onclick="toggleSniperSidebar()" title="隐藏导航">\u2716 \u9690\u85cf</div>';
             html1 += '</nav>';
 
             // Main content - 先放入主区域的框架
@@ -7846,9 +7852,12 @@ function toggleSniperSidebar() {
     var sidebar = document.getElementById('sniperSidebar');
     var showBtn = document.getElementById('sniperSidebarShow');
     if (!sidebar) return;
-    var isHidden = sidebar.classList.toggle('hidden');
-    if (showBtn) {
-        showBtn.style.display = isHidden ? 'flex' : 'none';
+    if (window.innerWidth <= 768) {
+        var isVis = sidebar.classList.toggle('mobile-visible');
+        if (showBtn) showBtn.style.display = isVis ? 'none' : 'flex';
+    } else {
+        var isHidden = sidebar.classList.toggle('hidden');
+        if (showBtn) showBtn.style.display = isHidden ? 'flex' : 'none';
     }
 }
 
