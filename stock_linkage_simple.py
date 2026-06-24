@@ -2916,6 +2916,11 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 
 .sq-section { margin:16px 0; }
 .sq-section-title { color:#4fc3f7; font-size:0.9em; font-weight:bold; margin-bottom:8px; padding-bottom:4px; border-bottom:1px solid #0f3460; }
+/* 个股查询KPL记录表格 */
+.sq-section table { width:100%; border-collapse:collapse; font-size:0.85em; }
+.sq-section table th { background:#0f3460; color:#90caf9; padding:6px 8px; text-align:left; white-space:nowrap; position:sticky; top:0; }
+.sq-section table td { padding:5px 8px; border-bottom:1px solid #0f3460; vertical-align:middle; }
+.sq-section table tbody tr:hover { background:rgba(0,212,255,0.06); }
 
 /* ETF 基金 tab */
 .etf-summary { display:flex; gap:16px; padding:12px 16px; background:linear-gradient(135deg,#1a2a4e,#0f3460); border-radius:10px; margin:12px 0; flex-wrap:wrap; align-items:center; }
@@ -5728,7 +5733,9 @@ function toggleTagTrend(tag) {
         var murl = sinaMinImg(s.code);
         var concepts = s.concepts || '';
         cells.push('<div class="concept-kline-cell" onclick="showEnlargedCardDetail(\\x27' + s.code + '\\x27)" style="cursor:pointer;">' +
-            '<div class="sk-header"><span class="sk-name">' + _kplEsc(s.name) + '</span><span class="sk-code">' + s.code + '</span>' +
+            '<div class="sk-header"><span class="sk-name">' + _kplEsc(s.name) + '</span>' +
+            _watchStarHtml(s.code, s.name, _watchGetCategory(s.code)) +
+            '<span class="sk-code">' + s.code + '</span>' +
             (concepts ? '<span class="sk-concepts">' + _kplEsc(concepts) + '</span>' : '') +
             '</div>' +
             '<img class="kline-img" src="' + kurl + '" onerror="retryImg(this)">' +
@@ -6683,10 +6690,19 @@ function filterNPattern() {
                             });
                         });
                         if (!matchesConcept) {
-                            // 检查涨停理由（仅当有缓存时）
+                            // 检查KPL涨停理由（仅当有缓存时）
                             var matchesReason = false;
                             var detail = _npDetailData[s.code];
-                            if (detail && detail.limit_rows) {
+                            if (detail && detail.kpl_records) {
+                                detail.kpl_records.forEach(function(r) {
+                                    var allText = (r.concepts || '') + (r.reason_tag || '') + (r.reason_brief || '');
+                                    selectedConcepts.forEach(function(sc) {
+                                        if (allText.indexOf(sc) !== -1) {
+                                            matchesReason = true;
+                                        }
+                                    });
+                                });
+                            } else if (detail && detail.limit_rows) {
                                 detail.limit_rows.forEach(function(r) {
                                     selectedConcepts.forEach(function(sc) {
                                         if ((r.lu_desc && r.lu_desc.indexOf(sc) !== -1) ||
@@ -6733,10 +6749,17 @@ function filterNPattern() {
                     });
                 });
                 if (matchesConcept) return true;
-                // Reason filter
+                // Reason filter (KPL版)
                 var matchesReason = false;
                 var detail = _npDetailData[s.code];
-                if (detail && detail.limit_rows) {
+                if (detail && detail.kpl_records) {
+                    detail.kpl_records.forEach(function(r) {
+                        var allText = (r.concepts || '') + (r.reason_tag || '') + (r.reason_brief || '');
+                        selectedConcepts.forEach(function(sc) {
+                            if (allText.indexOf(sc) !== -1) matchesReason = true;
+                        });
+                    });
+                } else if (detail && detail.limit_rows) {
                     detail.limit_rows.forEach(function(r) {
                         selectedConcepts.forEach(function(sc) {
                             if ((r.lu_desc && r.lu_desc.indexOf(sc) !== -1) ||
@@ -7258,8 +7281,18 @@ function renderNpSimpleCard(s, prefix) {
 }
 
 function _renderCardDetailContent(code, detail, alertInfo, stockName, conceptsJson) {
-    if (!detail || !detail.limit_rows) return '<div class="empty" style="padding:8px;">暂无数据</div>';
-    var h = '<div class="ds-card-detail-wrap" style="position:relative;" data-code="' + code + '">';
+    if (!detail || (!detail.kpl_records && !detail.limit_rows)) return '<div class="empty" style="padding:8px;">暂无数据</div>';
+    // 从KPL或CSV获取股票名称
+    if (!stockName) {
+        if (detail.name) {
+            stockName = detail.name;
+        } else if (detail.kpl_records && detail.kpl_records.length > 0) {
+            stockName = detail.kpl_records[0].stock_name || '';
+        } else if (detail.limit_rows && detail.limit_rows.length > 0) {
+            stockName = detail.limit_rows[0].name || '';
+        }
+    }
+    var h = '<div class="ds-card-detail-wrap" style="position:relative;" data-code="' + code + '" data-name="' + _kplEsc(stockName || code) + '">';
     // 异动信息（紧挨日K线图上方）
     if (alertInfo && alertInfo.date) {
         var pctColor = alertInfo.pct >= 10 ? '#ff6b6b' : '#ff9800';
@@ -7280,11 +7313,11 @@ function _renderCardDetailContent(code, detail, alertInfo, stockName, conceptsJs
     h += '<button onclick="closeEnlargeCardModal();sqJumpToKpl(\\x27' + (stockName || code) + '\\x27)" style="background:#ff7043;color:#fff;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">查询概念</button>';
     h += '<button onclick="closeEnlargeCardModal();modalQueryLinkage(\\x27' + code + '\\x27)" style="margin-left:8px;background:#00d4ff;color:#0a1628;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">查询联动</button>';
     h += '</div>';
-    // 近3个月涨停统计
-    var tm = detail.three_month || {count:0, dates:[]};
-    h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">近3个月涨停：共' + tm.count + '次</div><div>';
-    if (tm.dates && tm.dates.length > 0) {
-        tm.dates.forEach(function(d) {
+    // KPL近3个月涨停统计
+    var tmKpl = detail.three_month_kpl || detail.three_month || {count:0, dates:[]};
+    h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">近3个月涨停（KPL）：共' + tmKpl.count + '次</div><div>';
+    if (tmKpl.dates && tmKpl.dates.length > 0) {
+        tmKpl.dates.forEach(function(d) {
             var display = d.length === 8 ? d.slice(0,4) + '-' + d.slice(4,6) + '-' + d.slice(6,8) : d;
             h += '<span class="stock-detail-date-chip">' + display + '</span> ';
         });
@@ -7292,13 +7325,19 @@ function _renderCardDetailContent(code, detail, alertInfo, stockName, conceptsJs
         h += '<span style="color:#666;font-size:0.85em;">近3个月无涨停</span>';
     }
     h += '</div></div>';
-    // 涨停理由表
-    h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">涨停理由（共' + detail.limit_rows.length + '条）</div>';
+    // KPL涨停记录（替换涨停理由）
+    var kplRec = detail.kpl_records || [];
+    h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">KPL涨停记录（共' + kplRec.length + '条）</div>';
     h += '<div style="max-height:210px;overflow-y:auto;">';
-    h += _renderSearchTable(detail.limit_rows, _npFilterKeyword);
+    h += renderKplRecords(kplRec, code, stockName);
     h += '</div></div>';
-    // 同花顺概念（从卡片上的data-concepts读取）
-    if (conceptsJson) {
+    // KPL概念（替换同花顺概念）
+    var kplCpts = detail.kpl_concepts || [];
+    if (kplCpts.length > 0) {
+        h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">开盘啦概念</div><div class="np-card-badges" style="margin:0;">';
+        kplCpts.forEach(function(c) { h += '<span class="np-card-badge">' + c + '</span>'; });
+        h += '</div></div>';
+    } else if (conceptsJson) {
         try {
             var concepts = JSON.parse(conceptsJson);
             if (concepts && concepts.length > 0) {
@@ -8070,30 +8109,52 @@ function loadLuReasons() {
         .catch(function() { _stockLuLoading = false; });
 }
 
-// Shared helper: render lu reason chips from cache for one element
+// Shared helper: render lu reason chips from cache for one element (KPL版)
 function _renderLuReasons(el, code) {
-    var rows = _stockDetailCache[code].limit_rows || [];
-    var seen = {};
+    var cache = _stockDetailCache[code];
+    var kplRecs = (cache && cache.kpl_records) || [];
     var freq = {};
-    rows.forEach(function(r) {
-        var desc = r.lu_desc || '';
-        if (seen[desc]) return;
-        seen[desc] = true;
-        desc.split('+').forEach(function(tag) {
-            tag = tag.trim();
+    if (kplRecs.length > 0) {
+        kplRecs.forEach(function(r) {
+            var tag = r.reason_tag || '';
             if (tag) freq[tag] = (freq[tag] || 0) + 1;
+            var cs = r.concepts || '';
+            cs.split('\u3001').forEach(function(c) {
+                c = c.trim();
+                if (c) freq[c] = (freq[c] || 0) + 1;
+            });
         });
-    });
-    var sortedTags = Object.keys(freq).sort(function(a, b) {
-        return freq[b] - freq[a];
-    }).slice(0, 10);
-    var reasons = sortedTags.map(function(tag) {
-        return '<span class=\"lu-chip lu-chip-clickable\" data-tag=\"' + tag.replace(/"/g, '') + '\" onclick=\"searchLuTag(this)\">' + tag + ' <span class=\"lu-chip-freq\">' + freq[tag] + '</span></span>';
-    }).join('');
-    if (reasons) {
-        el.innerHTML = '<div style=\"margin-top:3px;\">' + reasons + '</div>';
+        var sortedTags = Object.keys(freq).sort(function(a, b) {
+            return freq[b] - freq[a];
+        }).slice(0, 10);
+        var chips = sortedTags.map(function(tag) {
+            return '<span class="lu-chip lu-chip-clickable" data-tag="' + tag.replace(/"/g, '') + '" onclick="searchLuTag(this)">' + tag + ' <span class="lu-chip-freq">' + freq[tag] + '</span></span>';
+        }).join('');
+        el.innerHTML = '<div style="margin-top:3px;">' + chips + '</div>';
     } else {
-        el.innerHTML = '<div style=\"margin-top:3px;\"><span class=\"lu-chip\" style=\"background:transparent;color:#666;font-size:0.75em;\">暂无涨停理由</span></div>';
+        // fallback: CSV数据
+        var rows = cache ? (cache.limit_rows || []) : [];
+        var seen = {};
+        rows.forEach(function(r) {
+            var desc = r.lu_desc || '';
+            if (seen[desc]) return;
+            seen[desc] = true;
+            desc.split('+').forEach(function(tag) {
+                tag = tag.trim();
+                if (tag) freq[tag] = (freq[tag] || 0) + 1;
+            });
+        });
+        var sortedTags = Object.keys(freq).sort(function(a, b) {
+            return freq[b] - freq[a];
+        }).slice(0, 10);
+        var chips = sortedTags.map(function(tag) {
+            return '<span class="lu-chip lu-chip-clickable" data-tag="' + tag.replace(/"/g, '') + '" onclick="searchLuTag(this)">' + tag + ' <span class="lu-chip-freq">' + freq[tag] + '</span></span>';
+        }).join('');
+        if (chips) {
+            el.innerHTML = '<div style="margin-top:3px;">' + chips + '</div>';
+        } else {
+            el.innerHTML = '<div style="margin-top:3px;"><span class="lu-chip" style="background:transparent;color:#666;font-size:0.75em;">暂无涨停理由</span></div>';
+        }
     }
     el.removeAttribute('data-code');
 }
@@ -8832,7 +8893,7 @@ function getSinaCode(ts_code) {
     if (ts_code.startsWith('00') || ts_code.startsWith('30')) return 'sz' + ts_code.split('.')[0];
     return 'sh' + ts_code.split('.')[0];
 }
-function getSinaTs() { return Math.floor(Date.now() / 10000); }
+function getSinaTs() { return Date.now(); }
 function sinaKlineImg(ts_code) {
     return 'https://image.sinajs.cn/newchart/daily/n/' + getSinaCode(ts_code) + '.png?' + getSinaTs();
 }
@@ -9230,26 +9291,25 @@ function renderStockDetail(data, name, code) {
     var body = document.getElementById('dsStockModalBody');
     var html = '';
     var hasConcept = data.concept && data.concept.length > 0;
-    // Row 1: 概念标签
-    html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">同花顺概念标签</div><div>';
-    if (data.concepts && data.concepts.length > 0) {
-        data.concepts.forEach(function(c) {
+    // Row 1: KPL概念标签（替换同花顺）
+    html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">\u5f00\u76d8\u5566\u6982\u5ff5\u6807\u7b7e</div><div>';
+    if (data.kpl_concepts && data.kpl_concepts.length > 0) {
+        data.kpl_concepts.forEach(function(c) {
             html += '<span class="stock-detail-tag">' + c + '</span>';
         });
     } else {
-        html += '<span style="color:#666;font-size:0.85em;">暂无概念标签</span>';
+        html += '<span style="color:#666;font-size:0.85em;">\u6682\u65e0\u6982\u5ff5\u6807\u7b7e</span>';
     }
     html += '</div></div>';
-    // Row 2: 涨停理由（指定了concept则显示概念过滤后的数据）
-    var label2 = hasConcept ? ('概念「' + data.concept + '」涨停理由（共' + (data.limit_rows ? data.limit_rows.length : 0) + '条，该股共' + data.total_rows + '条）') : ('历史所有涨停理由（共' + (data.limit_rows ? data.limit_rows.length : 0) + '条）');
-    html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">' + label2 + '</div>';
+    // Row 2: KPL涨停记录（替换涨停理由）
+    var kplRec = data.kpl_records || [];
+    html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">KPL\u6da8\u505c\u8bb0\u5f55\uff08\u5171' + kplRec.length + '\u6761\uff09</div>';
     html += '<div style="max-height:300px;overflow-y:auto;">';
-    html += _renderSearchTable(data.limit_rows, '');
+    html += renderKplRecords(kplRec, code, name);
     html += '</div></div>';
-    // Row 3: 近3个月涨停统计
+    // Row 3: \u8fd13\u4e2a\u6708\u6da8\u505c\u7edf\u8ba1\uff08KPL\uff09
     var tm = data.three_month || {count:0, dates:[]};
-    var label3 = hasConcept ? ('近3个月概念「' + data.concept + '」涨停：共' + tm.count + '次') : ('近3个月涨停：共' + tm.count + '次');
-    html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">' + label3 + '</div><div>';
+    html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">\u8fd13\u4e2a\u6708\u6da8\u505c\uff08KPL\uff09\uff1a\u5171' + tm.count + '\u6b21</div><div>';
     if (tm.dates && tm.dates.length > 0) {
         tm.dates.forEach(function(d) {
             var display = d.length === 8 ? d.slice(0,4) + '-' + d.slice(4,6) + '-' + d.slice(6,8) : d;
@@ -9895,7 +9955,7 @@ function renderKplStockDetail(data, name, code) {
     html += '<table><thead><tr><th>\u65e5\u671f</th><th>\u677f\u5757</th><th>\u8fde\u677f</th><th>\u6807\u7b7e</th><th>\u7b80\u8ff0</th></tr></thead><tbody>';
     for (var i = 0; i < records.length; i++) {
         var r = records[i];
-        html += '<tr><td>' + (r.date||'') + '</td><td>' + (r.plate_name||'') + '</td><td>' + (r.lianban_desc||'') + '</td><td>' + (r.reason_tag||'') + '</td><td>' + (r.reason_brief||'') + '</td></tr>';
+        html += '<tr><td>' + (r.date||'') + '</td><td>' + (r.plate_name||'') + '</td><td>' + (r.lianban_desc||'') + '</td><td>' + (r.reason_tag ? '<span style="cursor:pointer;background:#e3f2fd;color:#1565c0;padding:1px 6px;border-radius:3px;" onclick="sqJumpToKpl(\\x27' + r.reason_tag.replace(/'/g, '') + '\\x27)" title="点击搜索KPL">' + r.reason_tag + '</span>' : '') + '</td><td>' + (r.reason_brief||'') + '</td></tr>';
     }
     html += '</tbody></table></div></div>';
     // Row 4: 日K线图
@@ -9926,7 +9986,7 @@ function showRealtimeCardDetail(code, name) {
         .then(function(data) {
             if (fetchId !== _realtimeCardFetchId) return; // 过时fetch丢弃
             var detail = data && data[code];
-            if (!detail || !detail.limit_rows) {
+            if (!detail || (!detail.kpl_records && !detail.limit_rows)) {
                 body.innerHTML = '<div style="padding:20px;text-align:center;color:#888;">暂无数据</div>';
                 return;
             }
@@ -9968,7 +10028,15 @@ function _showEnlargedFromWrap(wrap) {
             img.src = orig.split('?')[0] + '?' + ts;
         }
     });
+    // 添加股票名称头部（放大弹窗无卡片头部）
+    var code = wrap.getAttribute('data-code') || '';
+    var name = wrap.getAttribute('data-name') || code;
+    var header = document.createElement('div');
+    header.className = 'ds-stock-kline-section';
+    header.style.cssText = 'padding:4px 12px;margin-bottom:4px;display:flex;align-items:center;gap:8px;';
+    header.innerHTML = '<span style="font-size:1.1em;font-weight:bold;color:#00d4ff;">' + _kplEsc(name) + '</span>' + _watchStarHtml(code, name, _watchGetCategory(code)) + '<span style="color:#666;font-size:0.85em;">' + code + '</span>';
     body.innerHTML = '';
+    body.appendChild(header);
     body.appendChild(clone);
     modal.classList.add('active');
 }
@@ -9982,8 +10050,10 @@ function _fetchDetailAndShowModal(code) {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             var detail = data && data[code];
-            if (detail && detail.limit_rows) {
-                body.innerHTML = _renderCardDetailContent(code, detail, null, '', '');
+            if (detail && (detail.kpl_records || detail.limit_rows)) {
+                var stockName = detail.name || (detail.kpl_records && detail.kpl_records.length > 0 ? detail.kpl_records[0].stock_name : '') || (detail.limit_rows && detail.limit_rows[0] ? detail.limit_rows[0].name : '') || '';
+                var displayName = stockName || code;
+                body.innerHTML = '<div class="ds-stock-kline-section" style="padding:4px 12px;margin-bottom:4px;display:flex;align-items:center;gap:8px;"><span style="font-size:1.1em;font-weight:bold;color:#00d4ff;">' + _kplEsc(displayName) + '</span>' + _watchStarHtml(code, displayName, _watchGetCategory(code)) + '<span style="color:#666;font-size:0.85em;">' + code + '</span></div>' + _renderCardDetailContent(code, detail, null, stockName, '');
             } else {
                 body.innerHTML = '<div style="padding:20px;text-align:center;color:#888;">\u6682\u65e0\u8be5\u80a1\u7968\u8be6\u60c5\u6570\u636e</div>';
             }
@@ -11214,19 +11284,20 @@ function stockQueryFetch(code) {
 }
 function renderStockQueryPage(data, code, name) {
     var h = '<div class="sq-header"><h2>' + (name || '') + ' ' + _watchStarHtml(code, name, _watchGetCategory(code)) + '</h2><span class="sq-code">' + code + '</span></div>';
-    h += '<div class="sq-concepts"><div class="sq-concepts-label">同花顺概念标签</div><div>';
-    if (data.concepts && data.concepts.length > 0) {
-        data.concepts.forEach(function(c) {
-            h += '<span class="stock-detail-tag">' + c + '</span>';
+    // KPL概念标签（替换同花顺）
+    h += '<div class="sq-concepts"><div class="sq-concepts-label">\u5f00\u76d8\u5566\u6982\u5ff5\u6807\u7b7e</div><div>';
+    if (data.kpl_concepts && data.kpl_concepts.length > 0) {
+        data.kpl_concepts.forEach(function(c) {
+            h += '<span class="stock-detail-tag" style="background:#2a3f5f;border-color:#4a6f9f;">' + c + '</span>';
         });
     } else {
         h += '<span style="color:#666;font-size:0.85em;">暂无概念标签</span>';
     }
     h += '</div></div>';
-    // Limit reason table
-    h += '<div class="sq-section"><div class="sq-section-title">涨停理由</div>';
+    // KPL涨停记录（替换同花顺涨停理由）
+    h += '<div class="sq-section"><div class="sq-section-title">KPL涨停记录</div>';
     h += '<div style="max-height:300px;overflow-y:auto;">';
-    h += _renderSearchTable(data.limit_rows, '');
+    h += renderKplRecords(data.kpl_records, code, name);
     h += '</div></div>';
     var tm = data.three_month || {count:0, dates:[]};
     h += '<div class="sq-section"><div class="sq-section-title">近3个月涨停：共' + tm.count + '次</div><div>';
@@ -11265,6 +11336,58 @@ function renderStockQueryPage(data, code, name) {
     h += '<button onclick="sqJumpToKpl(\\x27' + (name || code) + '\\x27)" style="background:#ff7043;color:#fff;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">查询概念</button>';
     h += '<button onclick="switchTab(\\x27linkage\\x27);setTimeout(function(){document.getElementById(\\x27linkageStockInput\\x27).value=\\x27' + code + '\\x27;doLinkageSearch();},100)" style="margin-left:8px;background:#00d4ff;color:#0a1628;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">查询联动</button>';
     h += '</div>';
+    return h;
+}
+function renderKplRecords(records, code, name) {
+    if (!records || records.length === 0) return '<div class="empty">\u65e0KPL\u6da8\u505c\u8bb0\u5f55</div>';
+    var h = '<table><thead><tr><th>\u65e5\u671f</th><th>\u80a1\u7968</th><th>\u677f\u5757</th><th>\u8fde\u677f</th><th>\u6240\u5c5e\u6982\u5ff5</th><th>\u6da8\u505c\u539f\u56e0\u6807\u7b7e</th><th>\u539f\u56e0\u7b80\u8ff0</th></tr></thead><tbody>';
+    for (var i = 0; i < records.length; i++) {
+        var r = records[i];
+        var date = r.date || \x27\x27;
+        var stockName = r.stock_name || name || \x27\x27;
+        var stockCode = r.stock_code || code || \x27\x27;
+        var plateName = r.plate_name || \x27\x27;
+        var lianbanDesc = r.lianban_desc || \x27\x27;
+        var concepts = r.concepts || \x27\x27;
+        var reasonTag = r.reason_tag || \x27\x27;
+        var reasonBrief = r.reason_brief || \x27\x27;
+
+        // \u8fde\u677fbadge
+        var badgeHtml = \x27\x27;
+        if (lianbanDesc) {
+            var bc = \x27tag-badge\x27;
+            var t = lianbanDesc.trim();
+            if (t === \x27\u9996\u677f\x27) bc += \x27 shouban\x27;
+            else if (t.indexOf(\x27\u4e8c\u677f\x27) >= 0 || t.indexOf(\x272\u677f\x27) >= 0) bc += \x27 liangban\x27;
+            else if (t.indexOf(\x27\u4e09\u677f\x27) >= 0 || t.indexOf(\x273\u677f\x27) >= 0) bc += \x27 sanban\x27;
+            else bc += \x27 gaoban\x27;
+            badgeHtml = \x27<span class="\x27 + bc + \x27">\x27 + t + \x27</span>\x27;
+        }
+
+        // \u6982\u5ff5tags
+        var conceptsHtml = \x27\x27;
+        if (concepts) {
+            var parts = concepts.split(\x27\u3001\x27);
+            for (var ci = 0; ci < parts.length; ci++) {
+                var cp = parts[ci].trim();
+                if (cp) conceptsHtml += \x27<span class="stock-detail-tag" style="font-size:0.75em;cursor:pointer;" onclick="sqJumpToKpl(\\x27\x27 + cp.replace(/'/g, \x27\x27) + \x27\\x27)" title="\u70b9\u51fb\u641c\u7d22KPL\uff1a\x27 + cp + \x27">\x27 + cp + \x27</span> \x27;
+            }
+        }
+
+        // \u539f\u56e0\u6807\u7b7e
+        var tagHtml = reasonTag ? \x27<span style="display:inline-block;background:#e3f2fd;color:#1565c0;padding:1px 6px;border-radius:3px;font-size:0.75em;cursor:pointer;" onclick="sqJumpToKpl(\\x27\x27 + reasonTag.replace(/'/g, \x27\x27) + \x27\\x27)" title="\u70b9\u51fb\u641c\u7d22KPL\uff1a\x27 + reasonTag + \x27">\x27 + reasonTag + \x27</span>\x27 : \x27\x27;
+
+        h += \x27<tr>\x27;
+        h += \x27<td>\x27 + date + \x27</td>\x27;
+        h += \x27<td><span class="ds-name-link" onclick="stockQueryFetch(\\x27\x27 + stockCode + \x27\\x27)">\x27 + stockName + \x27</span><span style="color:#aaa;font-size:0.75em;margin-left:4px;">\x27 + stockCode + \x27</span></td>\x27;
+        h += \x27<td>\x27 + plateName + \x27</td>\x27;
+        h += \x27<td>\x27 + badgeHtml + \x27</td>\x27;
+        h += \x27<td>\x27 + conceptsHtml + \x27</td>\x27;
+        h += \x27<td>\x27 + tagHtml + \x27</td>\x27;
+        h += \x27<td style="color:#b0bec5;font-size:0.85em;">\x27 + reasonBrief + \x27</td>\x27;
+        h += \x27</tr>\x27;
+    }
+    h += \x27</tbody></table>\x27;
     return h;
 }
 function sqJumpToKpl(term) {
@@ -12768,10 +12891,28 @@ class Handler(BaseHTTPRequestHandler):
                 # 获取股票名称
                 name = finder.get_stock_name(code)
 
-                # 近3个月统计（基于过滤后的数据）
+                # KPL数据（开盘啦）—— 确保已加载
+                if not _kpl_rows_by_stock:
+                    _kpl_ensure_loaded()
+                kpl_records = _kpl_rows_by_stock.get(code, [])
+                kpl_records.sort(key=lambda x: x.get('date', ''), reverse=True)
+                kpl_concepts_set = set()
+                for r in kpl_records:
+                    cs = r.get('concepts', '') or ''
+                    for c in cs.split('、'):
+                        c = c.strip()
+                        if c:
+                            kpl_concepts_set.add(c)
+                kpl_concepts = sorted(kpl_concepts_set)
+
+                # 近3个月统计（基于KPL数据）
                 three_months_ago = (datetime.now() - timedelta(days=90)).strftime('%Y%m%d')
-                three_month_rows = [r for r in limit_rows if (r.get('trade_date', '') or '') >= three_months_ago]
-                three_month_dates = sorted(set(r.get('trade_date', '') for r in three_month_rows), reverse=True)
+                three_month_dates_kpl = set()
+                for r in kpl_records:
+                    rd = (r.get('date', '') or '').replace('-', '')
+                    if rd >= three_months_ago:
+                        three_month_dates_kpl.add(rd)
+                three_month_dates = sorted(three_month_dates_kpl, reverse=True)
 
                 # 联动数据：从CSV中找出同概念下与该股票同日期涨停的其他股票
                 linkage = []
@@ -12815,6 +12956,8 @@ class Handler(BaseHTTPRequestHandler):
                     'concept': concept,
                     'concepts': concepts,
                     'limit_rows': limit_rows,
+                    'kpl_concepts': kpl_concepts,
+                    'kpl_records': kpl_records[:50],
                     'three_month': {
                         'count': len(three_month_dates),
                         'dates': three_month_dates
@@ -12849,15 +12992,45 @@ class Handler(BaseHTTPRequestHandler):
             cache_key = 'detail_batch_' + '_'.join(sorted(codes))
             result = _get_cached(cache_key)
             if result is None:
+                # 确保KPL数据已加载
+                if not _kpl_rows_by_stock:
+                    _kpl_ensure_loaded()
+                three_months_ago = (datetime.now() - timedelta(days=90)).strftime('%Y%m%d')
                 result = {}
                 for c in codes:
+                    # CSV数据保留
                     rows = sorted(_limit_rows_by_code.get(c, []), key=lambda x: x.get('trade_date', '') or '', reverse=True)
-                    three_months_ago = (datetime.now() - timedelta(days=90)).strftime('%Y%m%d')
-                    three_month_rows = [r for r in rows if (r.get('trade_date', '') or '') >= three_months_ago]
-                    three_month_dates = sorted(set(r.get('trade_date', '') for r in three_month_rows), reverse=True)
+                    three_month_csv_rows = [r for r in rows if (r.get('trade_date', '') or '') >= three_months_ago]
+                    three_month_csv_dates = sorted(set(r.get('trade_date', '') for r in three_month_csv_rows), reverse=True)
+                    # KPL数据
+                    kpl_records = _kpl_rows_by_stock.get(c, [])
+                    kpl_records.sort(key=lambda x: x.get('date', ''), reverse=True)
+                    kpl_concepts_set = set()
+                    for kr in kpl_records:
+                        ks = kr.get('concepts', '') or ''
+                        for kc in ks.split('、'):
+                            kc = kc.strip()
+                            if kc:
+                                kpl_concepts_set.add(kc)
+                    kpl_concepts = sorted(kpl_concepts_set)
+                    # KPL-based three_month
+                    three_month_dates_kpl = set()
+                    for kr in kpl_records:
+                        krd = (kr.get('date', '') or '').replace('-', '')
+                        if krd >= three_months_ago:
+                            three_month_dates_kpl.add(krd)
+                    three_month_kpl = sorted(three_month_dates_kpl, reverse=True)
+                    # 名称
+                    name = finder.get_stock_name(c)
+                    if not name and kpl_records:
+                        name = kpl_records[0].get('stock_name', '')
                     result[c] = {
                         'limit_rows': rows[:20],
-                        'three_month': {'count': len(three_month_dates), 'dates': three_month_dates}
+                        'three_month': {'count': len(three_month_csv_dates), 'dates': three_month_csv_dates},
+                        'kpl_records': kpl_records[:50],
+                        'kpl_concepts': kpl_concepts,
+                        'three_month_kpl': {'count': len(three_month_kpl), 'dates': three_month_kpl},
+                        'name': name,
                     }
                 _set_cache(cache_key, result)
             self._respond_json(result, cors_headers)
