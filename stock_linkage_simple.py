@@ -754,6 +754,32 @@ def _kpl_get_gem_strong_rise(stock_codes, lookback=20):
     return result
 
 
+def _kpl_get_all_stock_codes_for_keyword(keyword):
+    """从reason_index全量数据中查找与关键词相关的所有股票代码（不分日期范围）
+    搜索字段：reason_tag（标签名）、reason_brief（原因简述）、concepts（所属概念）"""
+    if not keyword:
+        return []
+    kw_lower = keyword.lower()
+    matched = set()
+    for tag, records in _kpl_reason_index.items():
+        if kw_lower in tag.lower():
+            # 标签名直接包含关键词 → 该标签下所有记录都相关
+            for r in records:
+                code = r.get('stock_code', '')
+                if code:
+                    matched.add(code)
+        else:
+            # 标签名不含关键词 → 检查每条记录的reason_brief和concepts字段
+            for r in records:
+                brief = (r.get('reason_brief', '') or '').lower()
+                concepts = (r.get('concepts', '') or '').lower()
+                if kw_lower in brief or kw_lower in concepts:
+                    code = r.get('stock_code', '')
+                    if code:
+                        matched.add(code)
+    return list(matched)
+
+
 def _kpl_get_top_tags(n=40):
     """从_kpl_unique_tags获取前N个频度最高的涨停原因标签"""
     global _kpl_unique_tags
@@ -1621,6 +1647,48 @@ button:disabled { background: #555; cursor: not-allowed; }
 .mode-toggle .mode-opt:first-child { border-radius: 3px 0 0 3px; }
 .mode-toggle .mode-opt:last-child { border-radius: 0 3px 3px 0; }
 .mode-toggle .mode-opt.active { background: #0f3460; color: #00d4ff; border-color: #00d4ff; }
+
+/* Global refresh button */
+.global-refresh-btn {
+    display: inline-flex; align-items: center; gap: 4px;
+    cursor: pointer; border: 1px solid rgba(255,255,255,0.25);
+    border-radius: 16px; padding: 2px 10px;
+    font-size: 0.85em; color: rgba(255,255,255,0.7);
+    background: rgba(255,255,255,0.08);
+    transition: all 0.3s; white-space: nowrap;
+    line-height: 1.4; margin-left: 8px;
+    user-select: none;
+}
+.global-refresh-btn:hover {
+    border-color: #4caf50; color: #4caf50;
+    background: rgba(76,175,80,0.1);
+}
+.global-refresh-btn.active {
+    background: rgba(76,175,80,0.15);
+    border-color: #4caf50; color: #4caf50;
+    box-shadow: 0 0 10px rgba(76,175,80,0.25);
+}
+.global-refresh-btn .gr-pulse-dot {
+    display: inline-block;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: #4caf50;
+    animation: gr-pulse 1.5s ease-in-out infinite;
+    margin-right: 2px;
+}
+@keyframes gr-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.3; transform: scale(0.6); }
+}
+.global-refresh-btn.lunch {
+    border-color: #ff9800; color: #ff9800;
+    background: rgba(255,152,0,0.1);
+}
+.global-refresh-btn.closed {
+    border-color: #666; color: #999;
+    background: rgba(255,255,255,0.04);
+    cursor: default;
+}
+
 /* Simple mode: hide non-simple tabs */
 .tabs.simple .tab[data-not-simple] { display: none; }
 /* Show kpltree (开盘啦) in simple mode by overriding inline display:none */
@@ -3439,6 +3507,7 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
             <span class="mode-opt" data-mode="simple" onclick="setTabMode('simple')">简版</span>
             <span class="mode-opt active" data-mode="full" onclick="setTabMode('full')">完整</span>
         </span>
+        <span class="global-refresh-btn" id="globalRefreshBtn" onclick="toggleGlobalRefresh()">&#x23f1; 全局刷新</span>
     </p>
 
     <div class="tabs">
@@ -3760,7 +3829,6 @@ function switchTab(tab) {
     }
     if (tab === 'linkage') loadLinkageDefaultSections();
     if (tab === 'specialwatch') loadSpecialWatch();
-    if (tab !== 'etf' && _etfAutoRefreshActive) toggleEtfAutoRefresh();
     if (tab === 'etf') { _etfLoaded = false; loadEtfData(); }
 }
 
@@ -6711,6 +6779,110 @@ function toggleSniperAutoRefresh() {
         }
         updateBtn();
     }, 1000);
+}
+
+// 全局自动刷新 —— 3分钟周期，只刷当前可见 tab
+var _globalRefreshActive = false;
+var _globalRefreshTimer = null;
+var _globalRefreshRemaining = 0;
+
+function toggleGlobalRefresh() {
+    var btn = document.getElementById('globalRefreshBtn');
+    if (!btn) return;
+
+    if (_globalRefreshActive) {
+        clearInterval(_globalRefreshTimer);
+        _globalRefreshActive = false;
+        _globalRefreshTimer = null;
+        btn.innerHTML = '\u23f1 \u5168\u5c40\u5237\u65b0';
+        btn.classList.remove('active');
+        btn.classList.remove('lunch');
+        btn.classList.remove('closed');
+        showToast('\u5df2\u505c\u6b62\u5168\u5c40\u81ea\u52a8\u5237\u65b0', 'info');
+        return;
+    }
+
+    // Check A-stock trading hours (Beijing time 9:25 ~ 15:00)
+    var now = new Date();
+    var beijingHour = (now.getUTCHours() + 8) % 24;
+    var beijingMin = now.getUTCMinutes();
+    var totalMin = beijingHour * 60 + beijingMin;
+    if (totalMin < 565 || totalMin >= 900) {
+        showToast('\u23f0 \u975e\u4ea4\u6613\u65f6\u6bb5 (9:25~15:00)\uff0c\u5168\u5c40\u81ea\u52a8\u5237\u65b0\u4e0d\u53ef\u7528', 'warning');
+        return;
+    }
+
+    _globalRefreshActive = true;
+    _globalRefreshRemaining = 180;
+    btn.classList.add('active');
+
+    function updateBtn() {
+        var now2 = new Date();
+        var h2 = (now2.getUTCHours() + 8) % 24;
+        var m2 = now2.getUTCMinutes();
+        var total2 = h2 * 60 + m2;
+        // Lunch break: 11:30 ~ 13:00
+        if (total2 >= 690 && total2 < 780) {
+            btn.innerHTML = '<span class="gr-pulse-dot"></span> \u5348\u4f11\u4e2d (11:30~13:00)';
+            btn.classList.add('lunch');
+            return;
+        }
+        btn.classList.remove('lunch');
+        var sec = _globalRefreshRemaining;
+        var mm = Math.floor(sec / 60);
+        var ss = sec % 60;
+        btn.innerHTML = '<span class="gr-pulse-dot"></span> \u5168\u5c40\u5237\u65b0 (' + mm + ':' + (ss < 10 ? '0' : '') + ss + ')';
+    }
+    updateBtn();
+
+    _globalRefreshTimer = setInterval(function() {
+        // Re-check Beijing time each tick
+        var now2 = new Date();
+        var h2 = (now2.getUTCHours() + 8) % 24;
+        var m2 = now2.getUTCMinutes();
+        var total2 = h2 * 60 + m2;
+
+        // Past 15:00 → auto stop
+        if (total2 >= 900) {
+            clearInterval(_globalRefreshTimer);
+            _globalRefreshActive = false;
+            _globalRefreshTimer = null;
+            btn.innerHTML = '\u231a \u5df2\u6536\u76d8';
+            btn.classList.remove('active');
+            btn.classList.remove('lunch');
+            btn.classList.add('closed');
+            showToast('\u23f0 \u5df2\u8fc7\u4ea4\u6613\u65f6\u6bb5\uff0c\u5168\u5c40\u81ea\u52a8\u5237\u65b0\u5df2\u505c\u6b62', 'info');
+            return;
+        }
+
+        // Lunch break: stop countdown during 11:30~13:00
+        if (total2 >= 690 && total2 < 780) {
+            updateBtn();
+            return;
+        }
+
+        _globalRefreshRemaining--;
+        if (_globalRefreshRemaining <= 0) {
+            _globalRefreshRemaining = 180;
+            refreshCurrentTab();
+        }
+        updateBtn();
+    }, 1000);
+}
+
+function refreshCurrentTab() {
+    switch (currentTab) {
+        case 'sniper':
+            manualRefreshSniper();
+            break;
+        case 'etf':
+            manualRefreshEtf();
+            break;
+        case 'realtime':
+            manualRefreshTodayZt();
+            break;
+        // 其他tab暂不支持自动刷新
+    }
 }
 
 // 精准狙击 —— 题材走势切换
@@ -14223,9 +14395,47 @@ class Handler(BaseHTTPRequestHandler):
                 strict = query.get('strict', [None])[0]
                 gem_extra = query.get('gem_extra', ['0'])[0] == '1'
                 result = _kpl_analyze_rows(q, date_start, date_end, no_st, strict)
-                if gem_extra and result.get('results'):
-                    stock_codes = list(set(r.get('stock_code', '') for r in result['results'] if r.get('stock_code')))
-                    strong_rise = _kpl_get_gem_strong_rise(stock_codes)
+                if gem_extra:
+                    # 获取搜索结果中的股票代码
+                    result_codes = list(set(r.get('stock_code', '') for r in result.get('results', []) if r.get('stock_code')))
+                    # 额外从reason_index全量数据中查找该关键词关联的所有股票
+                    # 用于创业板/科创板：即使记录超出日期范围，只要有强涨(>10%)就展示
+                    all_linked = _kpl_get_all_stock_codes_for_keyword(q)
+                    all_codes = list(set(result_codes + all_linked))
+                    strong_rise = _kpl_get_gem_strong_rise(all_codes) if all_codes else {}
+                    # 对有强涨但不在主搜索结果中的创业板/科创板股票，创建合成条目
+                    if strong_rise:
+                        new_entries = []
+                        for code, sr_entries in strong_rise.items():
+                            latest = _kpl_stock_latest_tag.get(code, {})
+                            stock_name = latest.get('stock_name', '') or _kpl_stock_index.get(code, {}).get('stock_name', '')
+                            if not stock_name:
+                                continue
+                            for sr in sr_entries:
+                                # 检查该股票在此强涨日期是否已有记录（避免重复）
+                                already_exists = any(
+                                    r.get('stock_code') == code and r.get('date') == sr['date']
+                                    for r in result.get('results', [])
+                                )
+                                if already_exists:
+                                    continue
+                                new_entries.append({
+                                    'stock_code': code,
+                                    'stock_name': stock_name,
+                                    'reason_tag': latest.get('tag', q),
+                                    'reason_brief': latest.get('reason_brief', ''),
+                                    'plate_name': '',
+                                    'concepts': '',
+                                    'date': sr['date'],
+                                    'lianban_desc': '',
+                                    'lianban_computed': 0,
+                                    'is_strong_rise': True,
+                                    'change_pct': sr['change_pct'],
+                                })
+                        if new_entries:
+                            result['results'].extend(new_entries)
+                            result['results'].sort(key=lambda x: x.get('date', ''), reverse=True)
+                            result['total_hits'] = len(result['results'])
                     result['gem_strong_rise'] = strong_rise
                 self._respond_json(result, cors_headers)
             except Exception as e:
