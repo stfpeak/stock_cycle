@@ -11633,8 +11633,9 @@ function loadKplTopTags() {
         });
 }
 
-function doKplSearch() {
-    var q = document.getElementById('kplSearchInput2').value.trim();
+function doKplSearch(q) {
+    if (!q) q = document.getElementById('kplSearchInput2').value.trim();
+    if (q) document.getElementById('kplSearchInput2').value = q;
     if (!q) { document.getElementById('kplSearchResult').innerHTML = '<div class="empty">输入关键词搜索KPL涨停数据</div>'; return; }
     var dateStart = document.getElementById('kplSearchDateStart').value;
     var dateEnd = document.getElementById('kplSearchDateEnd').value;
