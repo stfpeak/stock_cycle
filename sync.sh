@@ -42,8 +42,11 @@ do_sync() {
         --include="data/zt_pool/*.csv" \
         --include="data/concept_stock/" \
         --include="data/concept_stock/*.json" \
+        --include="data/zt_data/" \
+        --include="data/zt_data/*.json" \
         --include="data/trade_calendar_2026.json" \
         --include="data/trading_days.csv" \
+        --include="data/industry_chain_data.json" \
         --include="invest_logic/" \
         --include="invest_logic/**" \
         --exclude="invest_logic/.git/" \
