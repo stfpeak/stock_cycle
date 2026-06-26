@@ -4197,6 +4197,7 @@ var _icCurrentId = null;
 var _icRenderTimer = null;
 var _icDirty = false;
 var _icZoomLevel = 100;
+var _icTopTagsHtml = null;
 
 var _simpleTabIds = ['realtime','sniper','kpltree','kpllevel','kplsearch','stockquery','etf','specialwatch','industrychain'];
 
@@ -15197,6 +15198,10 @@ function icSearchTag(tag) {
 function icLoadTopTags() {
     var container = document.getElementById('icTopTagsContainer');
     if (!container) return;
+    if (_icTopTagsHtml) {
+        container.innerHTML = _icTopTagsHtml;
+        return;
+    }
     container.innerHTML = '<div class="ic-tags-loading">\u52A0\u8F7D\u4E2D...</div>';
     fetch('/api/sniper_data?exclude_data=1').then(function(r){return r.json();}).then(function(data){
         var tags = data.rank_tag_totals || {};
@@ -15212,6 +15217,7 @@ function icLoadTopTags() {
             var cnt = tags[tag];
             h += '<span class="ic-tag-item" onclick="icSearchTag(\\x27' + escapeHtml(tag) + '\\x27)" title="' + escapeHtml(tag) + ' (' + cnt + '\u6B21)">' + escapeHtml(tag) + ' <small>' + cnt + '</small></span>';
         }
+        _icTopTagsHtml = h;
         container.innerHTML = h;
     }).catch(function(){
         container.innerHTML = '<div class="ic-tags-loading">\u52A0\u8F7D\u5931\u8D25</div>';
