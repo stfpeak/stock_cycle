@@ -4356,6 +4356,30 @@ var _emtRefreshTimer = null;
 var _emtRefreshRemaining = 0;
 var _emtRefreshIntervalMin = 0;
 var _emtPostsCache = null;
+var _EMT_REFRESH_KEY = 'emt_auto_refresh';
+
+function _emtSaveRefreshState() {
+    if (!_emtRefreshActive) { localStorage.removeItem(_EMT_REFRESH_KEY); return; }
+    var data = JSON.stringify({
+        active: true,
+        intervalMin: _emtRefreshIntervalMin,
+        remaining: _emtRefreshRemaining,
+        updatedAt: Date.now()
+    });
+    try { localStorage.setItem(_EMT_REFRESH_KEY, data); } catch(e) {}
+}
+
+function _emtLoadRefreshState() {
+    var raw;
+    try { raw = localStorage.getItem(_EMT_REFRESH_KEY); } catch(e) { return null; }
+    if (!raw) return null;
+    var s;
+    try { s = JSON.parse(raw); } catch(e) { return null; }
+    if (!s.active || s.intervalMin <= 0) return null;
+    var elapsed = (Date.now() - (s.updatedAt || 0)) / 1000;
+    var rem = Math.max(0, (s.remaining || 0) - Math.round(elapsed));
+    return { active: true, intervalMin: s.intervalMin, remaining: rem };
+}
 
 function _cachedFetch(url) {
     if (_tabCache[url] !== undefined) {
@@ -4454,14 +4478,7 @@ function switchTab(tab) {
     if (tab === 'industrychain') loadIndustryChain();
     if (tab === 'sentiment') {
         loadSentimentData();
-        // 恢复自动刷新显示（跨 tab 保持定时器）
-        if (_emtRefreshActive) {
-            var stEl = document.getElementById('emtAutoStatus');
-            if (stEl) stEl.style.display = 'inline-block';
-            emtUpdateCountdownDisplay();
-            var selEl = document.getElementById('emtRefreshSelect');
-            if (selEl) selEl.value = String(_emtRefreshIntervalMin);
-        }
+        // 恢复自动刷新显示由 renderSentimentData 内 _emtRestoreAutoRefreshUI 负责（DOM就绪后）
     }
 }
 
@@ -10871,6 +10888,28 @@ function checkDataStatus() {
 loadDataStatus();
 checkDataStatus();
 loadRealtime();
+// 从 localStorage 恢复舆情自动刷新状态（跨页面持久化）
+(function() {
+    var state = _emtLoadRefreshState();
+    if (state) {
+        _emtRefreshActive = true;
+        _emtRefreshIntervalMin = state.intervalMin;
+        _emtRefreshRemaining = state.remaining;
+        if (_emtRefreshRemaining <= 0) {
+            _emtRefreshRemaining = _emtRefreshIntervalMin * 60;
+            emtRefreshPosts();
+        }
+        _emtRefreshTimer = setInterval(function() {
+            _emtRefreshRemaining--;
+            if (_emtRefreshRemaining <= 0) {
+                _emtRefreshRemaining = _emtRefreshIntervalMin * 60;
+                emtRefreshPosts();
+            }
+            emtUpdateCountdownDisplay();
+            _emtSaveRefreshState();
+        }, 1000);
+    }
+})();
 _prefetchAllTabs();
 _loadKplDataEager();
 // 预加载产业链和精准狙击，切换tab无需等待
@@ -15938,6 +15977,17 @@ function renderSentimentData(container) {
     container.innerHTML = html;
     _emtSetDefaultDates();
     emtFilterPosts();
+    // 渲染完成后恢复自动刷新UI（异步fetch完成后DOM才就绪）
+    _emtRestoreAutoRefreshUI();
+}
+
+function _emtRestoreAutoRefreshUI() {
+    if (!_emtRefreshActive) return;
+    var stEl = document.getElementById('emtAutoStatus');
+    if (stEl) stEl.style.display = 'inline-block';
+    emtUpdateCountdownDisplay();
+    var selEl = document.getElementById('emtRefreshSelect');
+    if (selEl) selEl.value = String(_emtRefreshIntervalMin);
 }
 
 
@@ -16016,6 +16066,7 @@ function emtRefreshPosts() {
             if (_emtRefreshActive) {
                 _emtRefreshRemaining = _emtRefreshIntervalMin * 60;
                 emtUpdateCountdownDisplay();
+                _emtSaveRefreshState();
             }
         })
         .catch(function(err) {
@@ -16038,7 +16089,7 @@ function emtToggleAutoRefresh(minutes) {
     if (cd) cd.textContent = '';
     var st = document.getElementById('emtAutoStatus');
     if (st) st.style.display = 'none';
-    if (val <= 0) { showToast('\u5DF2\u505C\u6B62\u81EA\u52A8\u5237\u5E16', 'info'); return; }
+    if (val <= 0) { localStorage.removeItem(_EMT_REFRESH_KEY); showToast('\u5DF2\u505C\u6B62\u81EA\u52A8\u5237\u5E16', 'info'); return; }
     _emtRefreshActive = true;
     _emtRefreshIntervalMin = val;
     _emtRefreshRemaining = val * 60;
@@ -16051,6 +16102,7 @@ function emtToggleAutoRefresh(minutes) {
             emtRefreshPosts();
         }
         emtUpdateCountdownDisplay();
+        _emtSaveRefreshState();
     }, 1000);
     showToast('\u81EA\u52A8\u5237\u5E16\u5DF2\u5F00\u542F: ' + val + '\u5206\u949F', 'info');
 }
