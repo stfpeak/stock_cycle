@@ -3992,7 +3992,7 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 .ic-mm-toolbar { display:flex; gap:8px; padding:10px 12px; background:rgba(15,52,96,0.15); border-bottom:1px solid rgba(15,52,96,0.3); flex-wrap:wrap; align-items:center; }
 .ic-mm-toolbar .ic-name-input { flex:1; min-width:120px; }
 .ic-mm-preview-panel { min-height:0; }
-.ic-mm-preview-panel .ic-preview-body { min-height:800px; max-height:90vh; overflow:auto; }
+.ic-mm-preview-panel .ic-preview-body { min-height:800px; max-height:90vh; overflow:hidden; }
 .ic-mm-preview-panel .ic-preview-body svg { min-height:780px; }
 .ic-markmap-placeholder { color:#555; font-size:0.82em; padding:12px; text-align:center; }
 .ic-item-sub { display:block; font-size:0.68em; color:#888; padding:1px 0 1px 12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -4369,6 +4369,9 @@ function _emtSaveRefreshState() {
     try { localStorage.setItem(_EMT_REFRESH_KEY, data); } catch(e) {}
 }
 
+// 页面关闭前持久化保存刷新状态
+window.addEventListener('beforeunload', _emtSaveRefreshState);
+
 function _emtLoadRefreshState() {
     var raw;
     try { raw = localStorage.getItem(_EMT_REFRESH_KEY); } catch(e) { return null; }
@@ -4491,6 +4494,7 @@ var _icMmTimer = null;
 var _icMarkmapInstance = null;
 var _icDirty = false;
 var _icZoomLevel = 100;
+var _icMmZoomLevel = 100;
 var _icTopTagsHtml = null;
 var _icPendingSearch = null;  // set by stock card button, consumed by loadIndustryChain
 
@@ -15306,7 +15310,11 @@ function renderIndustryChain(data, container) {
     html += '<textarea class="ic-textarea" id="icMarkmapEditor" placeholder="\u8F93\u5165 Markdown \u683C\u5F0F\u7684\u601D\u7EF4\u5BFC\u56FE\u4EE3\u7801...\\n\\n\u793A\u4F8B:\\n# AI\u82AF\u7247\u4EA7\u4E1A\u94FE\\n## \u4E0A\u6E38 - \u8BBE\u5907\u6750\u6599\\n## \u4E2D\u6E38 - \u82AF\u7247\u8BBE\u8BA1\u5236\u9020\\n## \u4E0B\u6E38 - \u5C01\u88C5\u6D4B\u8BD5\u5E94\u7528"></textarea></div>';
 
     // Markmap preview
-    html += '<div class="ic-preview-panel ic-mm-preview-panel"><div class="ic-preview-header"><span>\U0001F5FA</span> \u5B9E\u65F6\u9884\u89C8</div>';
+    html += '<div class="ic-preview-panel ic-mm-preview-panel"><div class="ic-preview-header"><span>\U0001F5FA</span> \u5B9E\u65F6\u9884\u89C8';
+    html += '<span class="ic-zoom-controls"><button class="ic-zoom-btn" onclick="icMmSetZoom(-10)" title="\u7F29\u5C0F">\u2212</button>';
+    html += '<span class="ic-zoom-level" id="icMmZoomLevel">100%</span>';
+    html += '<button class="ic-zoom-btn" onclick="icMmSetZoom(10)" title="\u653E\u5927">+</button>';
+    html += '<button class="ic-zoom-btn ic-zoom-reset" onclick="icMmSetZoom(0)" title="\u91CD\u7F6E">\u27F2</button></span></div>';
     html += '<div class="ic-preview-body" id="icMarkmapPreview"><div style="color:#555;font-size:0.82em;">\u8F93\u5165 Markdown \u81EA\u52A8\u751F\u6210\u601D\u7EF4\u5BFC\u56FE</div></div></div>';
     html += '</div>';  // end ic-mm-section
 
@@ -15544,8 +15552,75 @@ function icRefreshSidebar(data, activeId) {
     icLoadTopTags();
 }
 
+// ===== Markmap 思维导图缩放 + 拖动 =====
+
+function icMmSetZoom(delta) {
+    // Use Markmap's native d3-zoom for smooth zoom/pan
+    if (!_icMarkmapInstance) return;
+    try {
+        var svg = _icMarkmapInstance.svg;
+        var zoomBehavior = _icMarkmapInstance.zoom;
+        var t = d3.zoomTransform(svg.node());
+        if (delta === 0) {
+            svg.transition().duration(200).call(zoomBehavior.transform, d3.zoomIdentity);
+        } else {
+            var factor = delta > 0 ? 1.2 : 0.85;
+            var newK = Math.max(0.25, Math.min(3, t.k * factor));
+            svg.transition().duration(200).call(zoomBehavior.transform, t.scale(newK / t.k));
+        }
+    } catch(e) {}
+}
+
+function _icMmApplyZoom() {
+    // Update zoom level display only; actual zoom handled by Markmap's d3-zoom
+    var zl = document.getElementById('icMmZoomLevel');
+    if (zl) zl.textContent = Math.round(_icMmZoomLevel) + '%';
+}
+
+function _icAttachMarkmapPreviewEvents(pb) {
+    // Sync zoom level display with Markmap's native d3-zoom
+    if (!_icMarkmapInstance) return;
+    try {
+        _icMarkmapInstance.svg.on('zoom.icSync', function(event) {
+            _icMmZoomLevel = event.transform.k * 100;
+            var zl = document.getElementById('icMmZoomLevel');
+            if (zl) zl.textContent = Math.round(_icMmZoomLevel) + '%';
+        });
+    } catch(e) {}
+
+    // Scroll wheel zoom on preview body (when mouse is outside SVG)
+    pb.onwheel = function(e) {
+        var svg = pb.querySelector('svg');
+        if (svg && svg.contains(e.target)) return; // d3-zoom handles it
+        e.preventDefault();
+        icMmSetZoom(e.deltaY < 0 ? 10 : -10);
+    };
+
+    // Click to zoom in (no drag)
+    var _down = false, _moved = false, _sx, _sy;
+    pb.onmousedown = function(e) {
+        _down = true; _moved = false;
+        _sx = e.clientX; _sy = e.clientY;
+    };
+    document.onmousemove = function(e) {
+        if (!_down) return;
+        var dx = e.clientX - _sx, dy = e.clientY - _sy;
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) _moved = true;
+    };
+    document.onmouseup = function() {
+        if (!_down) return;
+        _down = false;
+        if (!_moved) {
+            icMmSetZoom(10);
+        }
+    };
+}
+
 // ===== Markmap 思维导图功能 =====
 function _icClearMarkmapPreview() {
+    _icMmZoomLevel = 100;
+    var zl = document.getElementById('icMmZoomLevel');
+    if (zl) zl.textContent = '100%';
     var preview = document.getElementById('icMarkmapPreview');
     if (_icMarkmapInstance) {
         try { _icMarkmapInstance.destroy(); } catch(e) {}
@@ -15585,6 +15660,8 @@ function icRenderMarkmapPreview() {
             duration: 200,
             maxWidth: 600,
         }, root);
+        _icMmApplyZoom();
+        _icAttachMarkmapPreviewEvents(preview);
     } catch(e) {
         preview.innerHTML = '<div style="color:#ff5252;padding:12px;font-size:0.82em;">\u601D\u7EF4\u5BFC\u56FE\u6E32\u67D3\u9519\u8BEF: ' + escapeHtml(e.message||e) + '</div>';
     }
@@ -16045,36 +16122,31 @@ function emtClearFilters() {
     emtFilterPosts();
 }
 
-// 刷新韭研帖子
+// 刷新韭研帖子（不受tab切换影响，始终执行fetch）
 function emtRefreshPosts() {
     var btn = document.querySelector('.emt-btn-refresh');
-    if (!btn) return;
-    btn.textContent = '\u5237\u65B0\u4E2D...';
-    btn.disabled = true;
+    if (btn) { btn.textContent = '\u5237\u65B0\u4E2D...'; btn.disabled = true; }
     fetch('/api/refresh_posts')
         .then(function(r) { if (!r.ok) throw new Error('\u8BF7\u6C42\u5931\u8D25 ' + r.status); return r.json(); })
         .then(function(data) {
             if (data.error) throw new Error(data.error);
             _emtPostsCache = data.items;
             if (data.new_count === 0) {
-                showToast('\u6682\u65E0\u65B0\u5E16', 'info');
-                emtFilterPosts();
+                showToast('\u6682\u65B0\u65B0\u5E16', 'info');
             } else {
                 showToast('\u5DF2\u5237\u65B0 ' + data.new_count + ' \u6761\u65B0\u5E16', 'info');
-                emtFilterPosts();
             }
+            emtFilterPosts();
             if (_emtRefreshActive) {
                 _emtRefreshRemaining = _emtRefreshIntervalMin * 60;
                 emtUpdateCountdownDisplay();
                 _emtSaveRefreshState();
             }
+            if (btn) { btn.textContent = '\u27F3 \u5237\u5E16'; btn.disabled = false; }
         })
         .catch(function(err) {
             alert('\u5237\u65B0\u5E16\u5B50\u5931\u8D25: ' + err.message);
-        })
-        .finally(function() {
-            btn.textContent = '\u27F3 \u5237\u5E16';
-            btn.disabled = false;
+            if (btn) { btn.textContent = '\u27F3 \u5237\u5E16'; btn.disabled = false; }
         });
 }
 
@@ -17462,11 +17534,11 @@ class Handler(BaseHTTPRequestHandler):
             import update_data_fast
             cal = update_data_fast.load_trade_calendar()
             missing = update_data_fast.get_db_missing_dates()
-            latest_cal = cal[-1] if cal else 'N/A'
-            # 使用北京时间
+            # 二次过滤未来日期，确保前端不展示未来缺失
             bj_tz = timezone(timedelta(hours=8))
             bj_now = datetime.now(bj_tz)
             today = bj_now.strftime('%Y%m%d')
+            missing = [d for d in missing if d <= today]
             is_today_trade_day = today in cal if cal else False
             now_hour = bj_now.hour
             market_open = is_today_trade_day and (now_hour >= 9 and (now_hour < 15 or (now_hour == 15 and bj_now.minute < 30)))
@@ -18160,8 +18232,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/refresh_posts':
             try:
                 merged, new_count = _fetch_jiuyan_posts()
-                if new_count > 0:
-                    threading.Thread(target=_send_feishu_webhook, daemon=True).start()
+                threading.Thread(target=_send_feishu_webhook, daemon=True).start()
                 self._respond_json({'items': merged, 'total': len(merged), 'new_count': new_count}, cors_headers)
             except Exception as e:
                 self._respond_json({'error': str(e)}, cors_headers)

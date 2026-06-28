@@ -113,6 +113,10 @@ def get_db_missing_dates() -> list:
     # 预期每条数据应有约 total_stocks 条记录（允许10%误差）
     expected = total_stocks * 0.9
 
+    # 过滤未来日期，不将尚未发生的交易日计为缺失
+    today = datetime.now().strftime('%Y-%m-%d')
+    cal = [d for d in cal if d <= today]
+
     missing = []
     for d in cal:
         d_fmt = d.replace('-', '')  # YYYY-MM-DD → YYYYMMDD
