@@ -110,6 +110,9 @@ STALE_THRESHOLD = 30 * 60  # 30分钟阈值，超过则自动从韭研公社抓�
 _FEISHU_WEBHOOK_URL = 'https://open.feishu.cn/open-apis/bot/v2/hook/2883efe9-1af7-4afa-815a-c33168bba440'
 _FEISHU_NOTIFY_LIMIT = 60   # 分析用帖子数量
 _FEISHU_TOP_K = 20          # 关键词/个股 TOP N
+# 非题材类标签（并购重组类），精准狙击+KPL搜索统一过滤
+SNIPER_EXCLUDE_TAGS = {'并购重组', '股权转让', '实控人变更', '借壳上市',
+                       '资产注入', '定增', '增发'}
 
 def _fetch_jiuyan_posts(existing_items=None, existing_urls=None):
     """从韭研公社 study_publish 抓取最新帖子，去重合并，返回 (merged_items, new_count)
@@ -449,9 +452,6 @@ def _get_sniper_data(lookback=20):
         for tag in sorted_tags:
             freq_by_date[d][tag] = freq.get(tag, {}).get(d, 0)
 
-    # 过滤非题材类标签（并购重组类）
-    SNIPER_EXCLUDE_TAGS = {'并购重组', '股权转让', '实控人变更', '借壳上市',
-                           '资产注入', '定增', '增发'}
     sorted_tags = [t for t in sorted_tags if t not in SNIPER_EXCLUDE_TAGS]
     # Top标签：取总数前40的标签用于频度矩阵
     top_tags = sorted_tags[:40]
@@ -641,6 +641,7 @@ def _get_sniper_data(lookback=20):
                 freq_by_date.setdefault(_today_fmt, {})[tag] = 0
         # 重算 sorted_tags 和 top_tags
         sorted_tags = sorted(tag_totals.keys(), key=lambda t: -tag_totals[t])
+        sorted_tags = [t for t in sorted_tags if t not in SNIPER_EXCLUDE_TAGS]
         top_tags = sorted_tags[:40]
         # 更新 rank_dates（10个交易日，含今日）
         rank_dates = valid_dates[:10]
@@ -882,6 +883,7 @@ def _kpl_analyze_rows(q, date_start=None, date_end=None, no_st=None, strict=None
     results = result.get('results', [])
     if no_st == '1':
         results = [r for r in results if not _kpl_is_st(r)]
+    results = [r for r in results if r.get('reason_tag', '') not in SNIPER_EXCLUDE_TAGS]
     if date_start:
         results = [r for r in results if ((r.get('date', '') or '').replace('-', '')) >= ds]
     if date_end:
@@ -972,7 +974,9 @@ def _kpl_get_top_tags(n=40):
     """从_kpl_unique_tags获取前N个频度最高的涨停原因标签"""
     global _kpl_unique_tags
     sorted_tags = sorted(_kpl_unique_tags.items(), key=lambda x: -x[1])
-    return [{'tag': tag, 'count': count} for tag, count in sorted_tags[:n]]
+    # 排除泛标签（并购重组、股权转让等）
+    filtered = [(tag, count) for tag, count in sorted_tags if tag not in SNIPER_EXCLUDE_TAGS]
+    return [{'tag': tag, 'count': count} for tag, count in filtered[:n]]
 
 
 def _kpl_suggest_rows(q):
@@ -991,6 +995,8 @@ def _kpl_suggest_rows(q):
     # reason_tag匹配
     tag_results = []
     for tag, entries in _kpl_reason_index.items():
+        if tag in SNIPER_EXCLUDE_TAGS:  # 排除泛标签
+            continue
         if q in tag.lower():
             tag_results.append({'tag': tag, 'count': len(entries)})
             if len(tag_results) >= 5:
@@ -3685,17 +3691,19 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 
 /* K线网格 */
 .concept-kline-wrap { overflow: hidden; transition: max-height .3s ease; }
-.concept-kline-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; padding: 8px 0; }
+.concept-kline-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px,1fr)); gap: 8px; padding: 8px 0; }
 .concept-kline-cell {
     border: 1px solid #0f3460; border-radius: 8px; padding: 6px 6px 8px;
     background: #16213e; text-align: center;
 }
+@media (max-width:768px){.concept-kline-cell{padding:4px 4px 6px;}}
 .concept-kline-cell .sk-header {
     display: flex; align-items: center; justify-content: center; gap: 6px;
     padding: 4px 8px; margin: -6px -6px 6px;
     border-radius: 8px 8px 0 0;
     background: linear-gradient(135deg, #1a3a6a, #0f3460); color: #fff;
 }
+@media (max-width:768px){.concept-kline-cell .sk-header{padding:3px 6px;margin:-4px -4px 4px;gap:4px;}}
 .concept-kline-cell .sk-name { font-size: 13px; font-weight: 700; }
 .concept-kline-cell .sk-code { font-size: 10px; opacity: 0.8; padding: 1px 6px; border-radius: 8px; background: rgba(255,255,255,0.15); }
 .concept-kline-cell .sk-concepts { margin-left: auto; font-size: 9px; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; text-align: right; flex-shrink: 1; }
@@ -3998,6 +4006,21 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 .ic-item-sub { display:block; font-size:0.68em; color:#888; padding:1px 0 1px 12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .ic-item-sub::before { content:"\\2514"; color:#555; margin-right:4px; }
 
+/* ===== 产业链核心标的 ===== */
+.ic-stocks-section { margin-top:6px; background:rgba(13,27,42,0.4); border-radius:8px; border:1px solid #0f3460; display:none; }
+.ic-stocks-section-header { padding:8px 12px; font-size:0.82em; font-weight:bold; color:#4fc3f7; background:linear-gradient(135deg,#1a2a4e,#0f3460); border-radius:8px 8px 0 0; display:flex; align-items:center; gap:8px; }
+.ic-stocks-badge { display:inline-block; font-size:0.72em; padding:1px 7px; border-radius:10px; background:rgba(79,195,247,0.15); color:#4fc3f7; font-weight:500; }
+.ic-stocks-list { padding:8px 10px; display:flex; flex-wrap:wrap; gap:6px; }
+.ic-stock-tag { display:inline-flex; align-items:center; gap:4px; padding:3px 8px; border-radius:12px; font-size:0.75em; cursor:pointer; background:rgba(79,195,247,0.1); border:1px solid rgba(79,195,247,0.2); color:#c0e0ff; transition:all .15s; white-space:nowrap; }
+.ic-stock-tag:hover { background:rgba(79,195,247,0.25); border-color:#4fc3f7; }
+.ic-stock-tag .st-code { color:#6688aa; font-size:0.85em; }
+.ic-stock-tag .st-source { display:inline-block; font-size:0.62em; padding:0 4px; border-radius:3px; background:rgba(255,152,0,0.15); color:#ff9800; font-weight:600; line-height:1.3; }
+.ic-stock-tag.not-in-kpl { opacity:0.45; border-style:dashed; }
+.ic-stocks-kline-toggle { padding:6px 12px; font-size:0.78em; color:#4fc3f7; cursor:pointer; display:flex; align-items:center; gap:6px; border-top:1px solid rgba(15,52,96,0.3); user-select:none; }
+.ic-stocks-kline-toggle:hover { background:rgba(79,195,247,0.05); }
+.ic-stocks-kline-wrap { overflow:hidden; transition:max-height .3s ease; }
+.ic-stocks-kline-wrap .concept-kline-grid { padding:6px 8px; }
+
 .tabs.simple .tab[data-tab="industrychain"] { display:inline-block !important; order:7; }
 .tabs.simple .tab[data-tab="sentiment"] { display:inline-block !important; order:8; }
 /* ===== 舆情监控 - 毛玻璃设计 ===== */
@@ -4061,6 +4084,11 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 .emt-analysis-chip .chip-name { color:#e0e8f0; font-weight:500; }
 .emt-analysis-chip .chip-count { color:#ff6b6b; font-weight:600; font-size:0.92em; }
 .emt-analysis-empty { text-align:center; padding:16px; color:#555; font-size:0.78em; }
+/* 个股频度K线走势 */
+.emt-stock-kline-toggle { padding:8px 12px; margin-top:8px; font-size:0.82em; color:#4fc3f7; cursor:pointer; display:flex; align-items:center; gap:6px; border-top:1px solid rgba(15,52,96,0.3); user-select:none; }
+.emt-stock-kline-toggle:hover { background:rgba(79,195,247,0.05); }
+.emt-stock-kline-wrap { overflow:hidden; transition:max-height .3s ease; }
+.emt-stock-kline-wrap .concept-kline-grid { padding:6px 8px; }
 @media (max-width:768px) { .emt-controls { padding:14px 16px; } .emt-controls .emt-input-item { min-width:100%; } .emt-controls .emt-filter-row { flex-direction:column; align-items:stretch; } .emt-controls .emt-date-group { width:100%; justify-content:flex-start; } .emt-controls .emt-date-group input[type="date"] { flex:1; min-width:0; } .emt-refresh-group { margin-left:0; margin-top:6px; } }
 @media (max-width:768px) { .ic-wrapper { flex-direction:column; } .ic-sidebar { width:100%; max-height:180px; } }
 </style>
@@ -7617,7 +7645,7 @@ function toggleTagTrend(tag) {
             (concepts ? '<span class="sk-concepts">' + _kplEsc(concepts) + '</span>' : '') +
             '</div>' +
             '<img class="kline-img" src="' + kurl + '" onerror="retryImg(this)">' +
-            '<img class="kline-img min" src="' + murl + '" onerror="retryImg(this)">' +
+            '<img class="kline-img min" src="' + murl + '" onload="checkMinImgLoad(this)" onerror="retryImg(this)">' +
             '</div>');
     });
     // 4列网格
@@ -9392,7 +9420,7 @@ function _renderCardDetailContent(code, detail, alertInfo, stockName, conceptsJs
     h += '<img data-orig-src="' + sinaKlineImg(code) + '" src="' + sinaKlineImg(code) + '" class="ds-stock-kline-img" loading="lazy" onerror="retryImg(this)"></div>';
     // 分时图
     h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">分时图（新浪）<button class="img-refresh-btn" onclick="reloadSinaImg(this)" title="重新加载">⟳</button></div>';
-    h += '<img data-orig-src="' + sinaMinImg(code) + '" src="' + sinaMinImg(code) + '" class="ds-stock-kline-img" loading="lazy" onerror="retryImg(this)"></div>';
+    h += '<img data-orig-src="' + sinaMinImg(code) + '" src="' + sinaMinImg(code) + '" class="ds-stock-kline-img" loading="lazy" onload="checkMinImgLoad(this)" onerror="retryImg(this)"></div>';
     // 查询概念 + 查询产业链按钮
     h += '<div style="text-align:center;padding:8px 0;">';
     h += '<button onclick="closeEnlargeCardModal();sqJumpToKpl(\\x27' + (stockName || code) + '\\x27)" style="background:#ff7043;color:#fff;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">查询概念</button>';
@@ -11040,6 +11068,12 @@ function retryImg(img, maxRetries) {
     setTimeout(function() { img.src = newSrc; }, (retries + 1) * 1000);
 }
 
+function checkMinImgLoad(img) {
+    if (img.naturalWidth === 0 || img.naturalHeight === 0) {
+        retryImg(img);
+    }
+}
+
 // 渲染K线网格
 function renderDeepKlineGrid(hits, forceTs) {
     if (!hits || hits.length === 0) return '<div class="empty" style="padding:10px 0;">暂无含代码的标的</div>';
@@ -11051,24 +11085,20 @@ function renderDeepKlineGrid(hits, forceTs) {
         var code = s.ts_code || '';
         if (!seen[key] && code) { seen[key] = true; unique.push({name:key, code:code}); }
     }
-    var rows = [];
-    for (var i = 0; i < unique.length; i += 4) {
-        var cells = '';
-        for (var j = i; j < i + 4 && j < unique.length; j++) {
-            var s = unique[j];
-            var kurl = sinaKlineImg(s.code);
-            var murl = sinaMinImg(s.code);
-            var srcK = forceTs ? kurl.replace(/\?\d*$/, '') + '?' + forceTs : kurl;
-            var srcM = forceTs ? murl.replace(/\?\d*$/, '') + '?' + forceTs : murl;
-            cells += '<div class="concept-kline-cell" onclick="showEnlargedConceptCell(this)" style="cursor:pointer;">' +
-                '<div class="sk-header"><span class="sk-name">' + s.name + '</span><span class="sk-code">' + s.code.replace('.SH','').replace('.SZ','') + '</span></div>' +
-                '<img class="kline-img" src="' + srcK + '" onerror="retryImg(this)">' +
-                '<img class="kline-img min" src="' + srcM + '" onerror="retryImg(this)">' +
-                '</div>';
-        }
-        rows.push('<div class="concept-kline-grid">' + cells + '</div>');
+    var cells = '';
+    for (var i = 0; i < unique.length; i++) {
+        var s = unique[i];
+        var kurl = sinaKlineImg(s.code);
+        var murl = sinaMinImg(s.code);
+        var srcK = forceTs ? kurl.replace(/\?\d*$/, '') + '?' + forceTs : kurl;
+        var srcM = forceTs ? murl.replace(/\?\d*$/, '') + '?' + forceTs : murl;
+        cells += '<div class="concept-kline-cell" onclick="showEnlargedConceptCell(this)" style="cursor:pointer;">' +
+            '<div class="sk-header"><span class="sk-name">' + s.name + '</span><span class="sk-code">' + s.code.replace('.SH','').replace('.SZ','') + '</span></div>' +
+            '<img class="kline-img" src="' + srcK + '" onerror="retryImg(this)">' +
+            '<img class="kline-img min" src="' + srcM + '" onload="checkMinImgLoad(this)" onerror="retryImg(this)">' +
+            '</div>';
     }
-    return rows.join('');
+    return '<div class="concept-kline-grid">' + cells + '</div>';
 }
 
 function toggleDeepKlines(secId) {
@@ -11452,7 +11482,7 @@ function renderStockDetail(data, name, code) {
     html += '<img data-orig-src="' + sinaKlineImg(code) + '" src="' + sinaKlineImg(code) + '" class="ds-stock-kline-img" loading="lazy" onerror="retryImg(this)"></div>';
     // Row 6: 分时图
     html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">分时图（新浪）<button class="img-refresh-btn" onclick="reloadSinaImg(this)" title="重新加载">⟳</button></div>';
-    html += '<img data-orig-src="' + sinaMinImg(code) + '" src="' + sinaMinImg(code) + '" class="ds-stock-kline-img" loading="lazy" onerror="retryImg(this)"></div>';
+    html += '<img data-orig-src="' + sinaMinImg(code) + '" src="' + sinaMinImg(code) + '" class="ds-stock-kline-img" loading="lazy" onload="checkMinImgLoad(this)" onerror="retryImg(this)"></div>';
     // Row 7: 查询概念 + 查询产业链按钮（点击关闭弹框）
     html += '<div style="text-align:center;padding:8px 0;">';
     html += '<button onclick="closeDsStockModal();sqJumpToKpl(\\x27' + (name || code) + '\\x27)" style="background:#ff7043;color:#fff;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">查询概念</button>';
@@ -11738,24 +11768,20 @@ function renderKplKlineGrid(hits, forceTs) {
         var code = s.stock_code || '';
         if (!seen[key] && code) { seen[key] = true; unique.push({name:key, code:code}); }
     }
-    var rows = [];
-    for (var i = 0; i < unique.length; i += 4) {
-        var cells = '';
-        for (var j = i; j < i + 4 && j < unique.length; j++) {
-            var s = unique[j];
-            var kurl = sinaKlineImg(s.code);
-            var murl = sinaMinImg(s.code);
-            var srcK = forceTs ? kurl.replace(/\?\d*$/, '') + '?' + forceTs : kurl;
-            var srcM = forceTs ? murl.replace(/\?\d*$/, '') + '?' + forceTs : murl;
-            cells += '<div class="concept-kline-cell" onclick="showEnlargedConceptCell(this)" style="cursor:pointer;">' +
-                '<div class="sk-header"><span class="sk-name">' + s.name + '</span><span class="sk-code">' + s.code + '</span></div>' +
-                '<img class="kline-img" src="' + srcK + '" onerror="retryImg(this)">' +
-                '<img class="kline-img min" src="' + srcM + '" onerror="retryImg(this)">' +
-                '</div>';
-        }
-        rows.push('<div class="concept-kline-grid">' + cells + '</div>');
+    var cells = '';
+    for (var i = 0; i < unique.length; i++) {
+        var s = unique[i];
+        var kurl = sinaKlineImg(s.code);
+        var murl = sinaMinImg(s.code);
+        var srcK = forceTs ? kurl.replace(/\?\d*$/, '') + '?' + forceTs : kurl;
+        var srcM = forceTs ? murl.replace(/\?\d*$/, '') + '?' + forceTs : murl;
+        cells += '<div class="concept-kline-cell" onclick="showEnlargedConceptCell(this)" style="cursor:pointer;">' +
+            '<div class="sk-header"><span class="sk-name">' + s.name + '</span><span class="sk-code">' + s.code + '</span></div>' +
+            '<img class="kline-img" src="' + srcK + '" onerror="retryImg(this)">' +
+            '<img class="kline-img min" src="' + srcM + '" onload="checkMinImgLoad(this)" onerror="retryImg(this)">' +
+            '</div>';
     }
-    return rows.join('');
+    return '<div class="concept-kline-grid">' + cells + '</div>';
 }
 
 function toggleKplKlines(secId) {
@@ -12346,7 +12372,7 @@ function renderKplStockDetail(data, name, code) {
     html += '<img data-orig-src="' + sinaKlineImg(code) + '" src="' + sinaKlineImg(code) + '" class="ds-stock-kline-img" loading="lazy" onerror="retryImg(this)"></div>';
     // Row 5: 分时图
     html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">\u5206\u65f6\u56fe\uff08\u65b0\u6d6a\uff09<button class="img-refresh-btn" onclick="reloadSinaImg(this)" title="\u91cd\u65b0\u52a0\u8f7d">\u27f3</button></div>';
-    html += '<img data-orig-src="' + sinaMinImg(code) + '" src="' + sinaMinImg(code) + '" class="ds-stock-kline-img" loading="lazy" onerror="retryImg(this)"></div>';
+    html += '<img data-orig-src="' + sinaMinImg(code) + '" src="' + sinaMinImg(code) + '" class="ds-stock-kline-img" loading="lazy" onload="checkMinImgLoad(this)" onerror="retryImg(this)"></div>';
     // Row 6: 查询概念按钮
     html += '<div style="text-align:center;padding:8px 0;">';
     html += '<button onclick="closeDsStockModal();sqJumpToKpl(\\x27' + (name || code) + '\\x27)" style="background:#ff7043;color:#fff;border:none;padding:8px 24px;border-radius:6px;font-size:0.95em;font-weight:600;cursor:pointer;">\u67e5\u8be2\u6982\u5ff5</button>';
@@ -12523,8 +12549,22 @@ function closeEnlargeCardModal() {
     _enlargeNavList = [];
     _enlargeNavIndex = -1;
 }
-// 题材走势网格细胞放大
+// 题材走势网格细胞放大（支持导航和标题）
 function showEnlargedConceptCell(el) {
+    // 构建导航列表：同.grid下所有cell
+    var grid = el.closest('.concept-kline-grid') || el.parentElement;
+    var cells = grid.querySelectorAll('.concept-kline-cell');
+    _enlargeNavList = [];
+    var navIdx = -1;
+    cells.forEach(function(c, idx) {
+        if (c === el) navIdx = idx;
+        var hd = c.querySelector('.sk-header');
+        var code = hd ? hd.querySelector('.sk-code') : null;
+        _enlargeNavList.push({code: code ? code.textContent.trim() : ''});
+    });
+    _enlargeNavIndex = navIdx;
+    _updateEnlargeNavButtons();
+
     var modal = document.getElementById('enlargeCardModal');
     var body = document.getElementById('enlargeCardModalBody');
     var clone = el.cloneNode(true);
@@ -12538,6 +12578,12 @@ function showEnlargedConceptCell(el) {
     });
     body.innerHTML = '';
     body.appendChild(clone);
+    // 更新标题
+    var hd = el.querySelector('.sk-header');
+    var name = hd ? hd.querySelector('.sk-name') : null;
+    var code = hd ? hd.querySelector('.sk-code') : null;
+    var titleEl = document.getElementById('enlargeModalTitle');
+    if (titleEl) titleEl.textContent = (name ? name.textContent : '') + ' ' + (code ? code.textContent : '');
     modal.classList.add('active');
 }
 
@@ -14657,7 +14703,7 @@ function renderStockQueryPage(data, code, name) {
     h += '<div class="sq-kline-col"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><span style="color:#aaa;font-size:0.85em;">日K线图</span><button class="img-refresh-btn" onclick="reloadSinaImg(this)" title="重新加载">&#x27f3;</button></div>';
     h += '<img data-orig-src="' + sinaKlineImg(code) + '" src="' + sinaKlineImg(code) + '" class="ds-stock-kline-img" loading="lazy" onerror="retryImg(this)"></div>';
     h += '<div class="sq-kline-col"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><span style="color:#aaa;font-size:0.85em;">分时图</span><button class="img-refresh-btn" onclick="reloadSinaImg(this)" title="重新加载">&#x27f3;</button></div>';
-    h += '<img data-orig-src="' + sinaMinImg(code) + '" src="' + sinaMinImg(code) + '" class="ds-stock-kline-img" loading="lazy" onerror="retryImg(this)"></div>';
+    h += '<img data-orig-src="' + sinaMinImg(code) + '" src="' + sinaMinImg(code) + '" class="ds-stock-kline-img" loading="lazy" onload="checkMinImgLoad(this)" onerror="retryImg(this)"></div>';
     h += '</div>';
     h += '<div class="sq-section"><div class="sq-section-title">开盘啦题材树</div>';
     if (typeof _kplTreeData !== 'undefined' && _kplTreeData) {
@@ -15318,6 +15364,12 @@ function renderIndustryChain(data, container) {
     html += '<div class="ic-preview-body" id="icMarkmapPreview"><div style="color:#555;font-size:0.82em;">\u8F93\u5165 Markdown \u81EA\u52A8\u751F\u6210\u601D\u7EF4\u5BFC\u56FE</div></div></div>';
     html += '</div>';  // end ic-mm-section
 
+    // 产业链核心标的
+    html += '<div class="ic-stocks-section" id="icStocksSection"><div class="ic-stocks-section-header">\U0001F4CA \u4EA7\u4E1A\u94FE\u6838\u5FC3\u6807\u7684 <span class="ic-stocks-badge" id="icStocksBadge">0</span></div>';
+    html += '<div class="ic-stocks-list" id="icStocksList"></div>';
+    html += '<div class="ic-stocks-kline-toggle" onclick="toggleIcChainKline()">\U0001F4C8 \u4EA7\u4E1A\u94FEK\u7EBF\u8D70\u52BF\u25BC</div>';
+    html += '<div class="ic-stocks-kline-wrap" id="icChainKlineWrap" style="max-height:0;"></div></div>';
+
     html += '<div id="icSearchResultsPanel" class="ic-search-results" style="display:none;"></div></div></div>';
 
     container.innerHTML = html;
@@ -15372,6 +15424,7 @@ function icSelectDiagram(did) {
         } else {
             _icClearMarkmapPreview();
         }
+        icLoadStocks(did);
     });
 }
 
@@ -15392,6 +15445,8 @@ function icNewDiagram() {
     _icDirty = true;
     icRenderPreview();
     _icClearMarkmapPreview();
+    var stSec = document.getElementById('icStocksSection');
+    if (stSec) stSec.style.display = 'none';
 }
 
 function icScrollToMarkmap() {
@@ -15485,6 +15540,106 @@ function icDeleteDiagram(did) {
 }
 
 function icDeleteCurrentDiagram() { if (_icCurrentId) icDeleteDiagram(_icCurrentId); }
+
+// ===== 产业链核心标的 =====
+var _icChainStocks = []; // cache for kline toggle
+
+function icLoadStocks(did) {
+    var section = document.getElementById('icStocksSection');
+    if (!section) return;
+    if (!did) { section.style.display = 'none'; return; }
+    fetch('/api/industry_chain?action=stocks&id=' + did).then(function(r){return r.json();}).then(function(data){
+        if (data.error || !data.stocks || data.stocks.length === 0) { section.style.display = 'none'; return; }
+        _icChainStocks = data.stocks || [];
+        icRenderStocksList(_icChainStocks);
+        section.style.display = 'block';
+        // 折叠K线
+        var wrap = document.getElementById('icChainKlineWrap');
+        if (wrap) { wrap.style.maxHeight = '0'; wrap.setAttribute('data-open', '0'); }
+        var toggle = document.querySelector('.ic-stocks-kline-toggle');
+        if (toggle) toggle.innerHTML = '\U0001F4C8 \u4EA7\u4E1A\u94FEK\u7EBF\u8D70\u52BF\u25BC';
+    }).catch(function(){
+        var section = document.getElementById('icStocksSection');
+        if (section) section.style.display = 'none';
+    });
+}
+
+function icRenderStocksList(stocks) {
+    var list = document.getElementById('icStocksList');
+    var badge = document.getElementById('icStocksBadge');
+    if (!list) return;
+    if (badge) badge.textContent = stocks.length;
+    var valid = 0;
+    var html = '';
+    for (var i = 0; i < stocks.length; i++) {
+        var s = stocks[i];
+        if (s.in_kpl) valid++;
+        var cls = 'ic-stock-tag' + (s.in_kpl ? '' : ' not-in-kpl');
+        var sourceLabel = s.source === 'both' ? 'M+m' : (s.source === 'mermaid' ? 'M' : 'm');
+        html += '<div class="' + cls + '" onclick="icShowStockKline(this)" data-code="' + s.code + '" data-name="' + escapeHtml(s.name) + '">';
+        html += '<span>' + escapeHtml(s.name) + '</span> <span class="st-code">' + s.code + '</span> <span class="st-source">' + sourceLabel + '</span>';
+        html += '</div>';
+    }
+    list.innerHTML = html;
+    if (badge) badge.textContent = valid + '/' + stocks.length;
+}
+
+function icShowStockKline(el) {
+    var name = el.getAttribute('data-name') || '';
+    var code = el.getAttribute('data-code') || '';
+    if (!code) return;
+    // 构造一个临时kline-cell元素以复用 enlarge 弹窗
+    var kurl = sinaKlineImg(code);
+    var murl = sinaMinImg(code);
+    var ts = String(Math.floor(Date.now() / 10000));
+    var cell = document.createElement('div');
+    cell.className = 'concept-kline-cell';
+    cell.style.cursor = 'pointer';
+    cell.innerHTML = '<div class="sk-header"><span class="sk-name">' + escapeHtml(name) + '</span><span class="sk-code">' + code + '</span></div>' +
+        '<img class="kline-img" src="' + kurl + '?' + ts + '" onerror="retryImg(this)">' +
+        '<img class="kline-img min" src="' + murl + '?' + ts + '" onload="checkMinImgLoad(this)" onerror="retryImg(this)">';
+    // 复用现有 enlarge 弹窗
+    var modal = document.getElementById('enlargeCardModal');
+    var body = document.getElementById('enlargeCardModalBody');
+    if (!modal || !body) return;
+    cell.style.cursor = 'default';
+    cell.className = 'enlarged-card-content';
+    body.innerHTML = '';
+    body.appendChild(cell);
+    modal.classList.add('active');
+}
+
+function toggleIcChainKline() {
+    var wrap = document.getElementById('icChainKlineWrap');
+    if (!wrap) return;
+    var isOpen = wrap.getAttribute('data-open') === '1';
+    var toggle = document.querySelector('.ic-stocks-kline-toggle');
+    if (isOpen) {
+        wrap.style.maxHeight = '0';
+        wrap.setAttribute('data-open', '0');
+        if (toggle) toggle.innerHTML = '\U0001F4C8 \u4EA7\u4E1A\u94FEK\u7EBF\u8D70\u52BF\u25BC';
+    } else {
+        renderIcChainKlineGrid();
+        wrap.style.maxHeight = '10000px';
+        wrap.setAttribute('data-open', '1');
+        if (toggle) toggle.innerHTML = '\U0001F4C8 \u4EA7\u4E1A\u94FEK\u7EBF\u8D70\u52BF\u25B2';
+    }
+}
+
+function renderIcChainKlineGrid() {
+    var wrap = document.getElementById('icChainKlineWrap');
+    if (!wrap || !_icChainStocks || _icChainStocks.length === 0) {
+        if (wrap) wrap.innerHTML = '<div class="empty" style="padding:8px 0;">\u6682\u65E0\u6807\u7684</div>';
+        return;
+    }
+    // 转换为 renderKplKlineGrid 兼容格式 (stock_name/stock_code)
+    var adapted = [];
+    for (var i = 0; i < _icChainStocks.length; i++) {
+        var s = _icChainStocks[i];
+        if (s.code) adapted.push({stock_name: s.name, stock_code: s.code});
+    }
+    wrap.innerHTML = renderKplKlineGrid(adapted);
+}
 
 function icMoveDiagram(did, direction) {
     if (!_icData || !_icData.diagrams[did]) return;
@@ -15988,12 +16143,21 @@ function loadSentimentData() {
     var container = document.getElementById('sentimentContainer');
     if (!container) return;
     container.innerHTML = '<div class="loading">加载帖子...</div>';
+    _emtLoadRetry(0);
+}
+function _emtLoadRetry(n) {
     fetch('/api/sentiment_posts').then(function(r){return r.json();}).then(function(pdata){
         var items = (pdata && pdata.items) || [];
         _emtPostsCache = items;
-        renderSentimentData(container);
+        var container = document.getElementById('sentimentContainer');
+        if (container) renderSentimentData(container);
     }).catch(function(){
-        container.innerHTML = '<div class="emt-empty">加载帖子失败</div>';
+        if (n < 3) {
+            setTimeout(function(){ _emtLoadRetry(n + 1); }, (n + 1) * 1000);
+        } else {
+            var container = document.getElementById('sentimentContainer');
+            if (container) container.innerHTML = '<div class="emt-empty">加载帖子失败 <span style="color:#4fc3f7;cursor:pointer;text-decoration:underline;" onclick="loadSentimentData()">重试</span></div>';
+        }
     });
 }
 
@@ -16046,7 +16210,7 @@ function renderSentimentData(container) {
     html += '<span class="cat-name">\\u4e2a\\u80a1\\u9891\\u5ea6</span>';
     html += '<span class="cat-arrow">\\u25be</span>';
     html += '</div>';
-    html += '<div class="emt-analysis-body collapsed" id="emtStockBody"><div id="emtStockContent" class="emt-analysis-chips"></div></div>';
+    html += '<div class="emt-analysis-body collapsed" id="emtStockBody"><div id="emtStockContent" class="emt-analysis-chips"></div><div class="emt-stock-kline-toggle" onclick="emtToggleStockKline()">\U0001F4C8 \u6807\u7684K\u7EBF\u8D70\u52BF \u25BC</div><div class="emt-stock-kline-wrap" id="emtStockKlineWrap" style="max-height:0;overflow:hidden;"></div></div>';
     html += '</div>';
     // Posts
     html += '<div id="emtPostsContainer"></div>';
@@ -16266,6 +16430,12 @@ function emtToggleAnalysis(el, type) {
         } else {
             body.classList.add('collapsed');
             body.style.display = 'none';
+            if (type === 'stock') {
+                var kwrap = document.getElementById('emtStockKlineWrap');
+                if (kwrap) { kwrap.style.maxHeight = '0'; kwrap.setAttribute('data-open', '0'); }
+                var ktoggle = document.querySelector('.emt-stock-kline-toggle');
+                if (ktoggle) ktoggle.innerHTML = '\U0001F4C8 \u6807\u7684K\u7EBF\u8D70\u52BF \u25BC';
+            }
         }
     }
 }
@@ -16319,12 +16489,15 @@ function emtRunKeywordAnalysis(posts) {
         container.innerHTML = '<div class="emt-analysis-empty">加载失败: ' + escapeHtml(String(e)) + '</div>';
     });
 }
+var _emtStockKlineData = [];
+
 function emtRunStockAnalysis(posts) {
     var container = document.getElementById('emtStockContent');
     try {
         if (!posts || !posts.length) { container.innerHTML = '<div class="emt-analysis-empty">暂无帖子数据</div>'; return; }
         var slice = posts.slice(0, 60);
         var freq = {};
+        _emtStockKlineData = [];
         for (var i = 0; i < slice.length; i++) {
             var stocks = slice[i].stocks;
             if (!stocks || !stocks.length) continue;
@@ -16333,6 +16506,14 @@ function emtRunStockAnalysis(posts) {
                 var name = parts.length > 1 ? parts.slice(1).join(' ') : parts[0];
                 if (!name) continue;
                 freq[name] = (freq[name] || 0) + 1;
+                // 收集股票代码（去除 sz/sh/bj 前缀）
+                if (parts.length > 1) {
+                    var rawCode = parts[0].trim();
+                    var code = rawCode.replace(/^(sz|sh|bj)/i, '');
+                    if (/^\d{6}$/.test(code) && !_emtStockKlineData.some(function(s){return s.code===code;})) {
+                        _emtStockKlineData.push({name: name, code: code});
+                    }
+                }
             }
         }
         var keys = Object.keys(freq);
@@ -16349,6 +16530,32 @@ function emtRunStockAnalysis(posts) {
         container.innerHTML = html;
     } catch(e) {
         container.innerHTML = '<div class="emt-analysis-empty">分析出错: ' + escapeHtml(String(e)) + '</div>';
+    }
+}
+
+function emtToggleStockKline() {
+    var wrap = document.getElementById('emtStockKlineWrap');
+    if (!wrap) return;
+    var isOpen = wrap.getAttribute('data-open') === '1';
+    var toggle = document.querySelector('.emt-stock-kline-toggle');
+    if (isOpen) {
+        wrap.style.maxHeight = '0';
+        wrap.setAttribute('data-open', '0');
+        if (toggle) toggle.innerHTML = '\U0001F4C8 \u6807\u7684K\u7EBF\u8D70\u52BF \u25BC';
+    } else {
+        var adapted = [];
+        for (var i = 0; i < _emtStockKlineData.length; i++) {
+            var s = _emtStockKlineData[i];
+            if (s.code) adapted.push({stock_name: s.name, stock_code: s.code});
+        }
+        if (adapted.length) {
+            wrap.innerHTML = renderKplKlineGrid(adapted);
+        } else {
+            wrap.innerHTML = '<div class="empty" style="padding:8px 0;color:#888;">\u6682\u65E0\u5E26\u4EE3\u7801\u7684\u6807\u7684</div>';
+        }
+        wrap.style.maxHeight = '10000px';
+        wrap.setAttribute('data-open', '1');
+        if (toggle) toggle.innerHTML = '\U0001F4C8 \u6807\u7684K\u7EBF\u8D70\u52BF \u25B2';
     }
 }
 
@@ -17638,6 +17845,9 @@ class Handler(BaseHTTPRequestHandler):
                             stock_name = latest.get('stock_name', '') or _kpl_stock_index.get(code, {}).get('stock_name', '')
                             if not stock_name:
                                 continue
+                            latest_tag = latest.get('tag', '')
+                            if latest_tag in SNIPER_EXCLUDE_TAGS:
+                                continue
                             for sr in sr_entries:
                                 # 检查该股票在此强涨日期是否已有记录（避免重复）
                                 already_exists = any(
@@ -18398,6 +18608,49 @@ class Handler(BaseHTTPRequestHandler):
                     if len(suggestions) >= 20:
                         break
                 self._respond_json({'suggestions': suggestions[:20]}, cors_headers)
+            elif action == 'stocks':
+                did = query.get('id', [''])[0].strip()
+                if not did or did not in data['diagrams']:
+                    self._respond_json({'error': 'not_found'}, cors_headers)
+                    return
+                d = data['diagrams'][did]
+                mermaid_code = d.get('mermaid_code', '') or ''
+                markmap_code = d.get('markmap_code', '') or ''
+                found = {}  # code -> {name, source, in_kpl}
+                # 1. 解析 Mermaid: 名称(6位代码)
+                mm_re = re.findall(r'([\u4e00-\u9fff\w]+)\((\d{6})\)', mermaid_code)
+                for name, code in mm_re:
+                    name = name.strip()
+                    code = code.strip()
+                    if code not in found:
+                        kpl_info = _kpl_stock_index.get(code, {})
+                        in_kpl = bool(kpl_info)
+                        found[code] = {'name': name, 'code': code, 'source': 'mermaid', 'in_kpl': in_kpl}
+                    else:
+                        found[code]['source'] = 'both'
+                # 2. 解析 Markmap: Markdown 列表项中的股票名称
+                if markmap_code:
+                    name_map = _load_astock_name_map()
+                    for line in markmap_code.split('\n'):
+                        line = line.strip()
+                        m_list = re.match(r'^[-*]\s+([\u4e00-\u9fff\w]+)', line)
+                        if m_list:
+                            stock_name = m_list.group(1).strip()
+                            if not stock_name:
+                                continue
+                            mcode = name_map.get(stock_name, '')
+                            if mcode:
+                                if mcode not in found:
+                                    kpl_info = _kpl_stock_index.get(mcode, {})
+                                    in_kpl = bool(kpl_info)
+                                    found[mcode] = {'name': stock_name, 'code': mcode, 'source': 'markmap', 'in_kpl': in_kpl}
+                                else:
+                                    found[mcode]['source'] = 'both'
+                stocks = list(found.values())
+                # 排序：in_kpl 在前
+                stocks.sort(key=lambda x: (0 if x['in_kpl'] else 1, x['name']))
+                valid_count = sum(1 for s in stocks if s['in_kpl'])
+                self._respond_json({'stocks': stocks, 'valid_count': valid_count}, cors_headers)
             else:
                 self._respond_json({'error': 'unknown_action'}, cors_headers)
 
