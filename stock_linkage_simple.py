@@ -2111,8 +2111,8 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 /* 3板+ - 亮红色 */
 .stock-block.lb-3 { background: linear-gradient(135deg, #991b1b, #dc2626); border: 1px solid #ef4444; color: #fff; }
 .stock-block.lb-3 .lb-tag { background: rgba(0,0,0,0.3); }
-/* 大涨（非涨停）- 亮绿色 */
-.stock-block.lb-0 { background: linear-gradient(135deg, #065f46, #059669); border: 1px solid #10b981; color: #fff; }
+/* 大涨（非涨停）- 紫色 */
+.stock-block.lb-0 { background: linear-gradient(135deg, #5B21B6, #7C3AED); border: 1px solid #8B5CF6; color: #fff; }
 .stock-block.lb-0 .pct-tag { background: rgba(0,0,0,0.3); }
 /* Hover/高亮 — 只加外框，不减亮度 */
 .rhythm-item:hover .stock-block, .stock-block:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
@@ -2124,7 +2124,7 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 .legend .dot.lb-1 { background: linear-gradient(135deg, #1a4a8a, #2563eb); }
 .legend .dot.lb-2 { background: linear-gradient(135deg, #92400e, #d97706); }
 .legend .dot.lb-3 { background: linear-gradient(135deg, #991b1b, #dc2626); }
-.legend .dot.lb-0 { background: linear-gradient(135deg, #065f46, #059669); }
+.legend .dot.lb-0 { background: linear-gradient(135deg, #5B21B6, #7C3AED); }
 
 .show-all-btn {
     font-size: 0.78em;
