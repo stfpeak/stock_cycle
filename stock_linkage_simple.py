@@ -11638,9 +11638,10 @@ function getSinaCode(ts_code) {
     if (!ts_code) return '';
     if (ts_code.startsWith('60') || ts_code.startsWith('68')) return 'sh' + ts_code.split('.')[0];
     if (ts_code.startsWith('00') || ts_code.startsWith('30')) return 'sz' + ts_code.split('.')[0];
+    if (ts_code.startsWith('4') || ts_code.startsWith('8')) return 'bj' + ts_code.split('.')[0];
     return 'sh' + ts_code.split('.')[0];
 }
-function getSinaTs() { return Date.now(); }
+function getSinaTs() { return Math.floor(Date.now() / 10000); }
 function sinaKlineImg(ts_code) {
     return 'https://image.sinajs.cn/newchart/daily/n/' + getSinaCode(ts_code) + '.png?' + getSinaTs();
 }
@@ -11653,7 +11654,7 @@ function reloadSinaImg(btn) {
     var img = btn.parentNode.nextElementSibling;
     if (!img) return;
     var src = img.getAttribute('data-orig-src') || img.src;
-    img.src = src.replace(/\?\d*$/, '') + '?' + Date.now();
+    img.src = src.replace(/\?\d*$/, '') + '?' + getSinaTs();
 }
 
 // 图片加载失败重试（最多3次，逐次增加延迟）
