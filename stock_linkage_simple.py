@@ -103,6 +103,8 @@ _kpl_unique_tags = {}           # reason_tag → count
 _kpl_unique_concepts = {}       # concept → count
 _kpl_stock_latest_tag = {}      # stock_code → {tag, date, reason_brief} (全量历史)
 _kpl_day_files = []             # 所有日JSON文件名（不含路径），排序后
+_KPL_SEARCH_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'kpl_search_cache')
+_KPL_SEARCH_CACHE_TTL = 1800  # 30分钟
 _INDUSTRY_CHAIN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'industry_chain_data.json')
 _SENTIMENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'sentiment')
 _POSTS_FILE = os.path.join(_SENTIMENT_DIR, 'posts.json')
@@ -113,6 +115,10 @@ _FEISHU_TOP_K = 20          # 关键词/个股 TOP N
 # 非题材类标签（并购重组类），精准狙击+KPL搜索统一过滤
 SNIPER_EXCLUDE_TAGS = {'并购重组', '股权转让', '实控人变更', '借壳上市',
                        '资产注入', '定增', '增发'}
+# KPL顶部标签文件缓存
+_KPL_TOP_TAGS_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'kpl_top_tags_cache.json')
+_KPL_TOP_TAGS_CACHE_TTL = 300    # 5分钟文件缓存生命周期
+_kpl_top_tags_cache_timestamp = 0  # 上次成功写入时间戳
 
 def _fetch_jiuyan_posts(existing_items=None, existing_urls=None):
     """从韭研公社 study_publish 抓取最新帖子，去重合并，返回 (merged_items, new_count)
@@ -292,9 +298,27 @@ try:
 except Exception as e:
     print(f"加载KPL涨停深挖索引失败: {e}")
 
+_kpl_last_file_count = 0  # 记录上次扫描的文件数，用于自动检测目录变化
+
+def _kpl_rescan():
+    """重新扫描zt_data目录，刷新_kpl_day_files并清除行缓存"""
+    global _kpl_day_files, _kpl_day_cache, _kpl_rows, _kpl_rows_by_date, _kpl_rows_by_stock
+    _kpl_day_files = sorted([f for f in os.listdir(_KPL_DATA_DIR)
+        if f.endswith('.json') and f not in ('index.json', 'reason_index.json')])
+    _kpl_day_cache = {}
+    _kpl_rows = []
+    _kpl_rows_by_date = {}
+    _kpl_rows_by_stock = {}
 
 def _kpl_ensure_loaded(date_start=None, date_end=None):
     """按日期范围逐一加载日JSON到缓存"""
+    global _kpl_last_file_count
+    # 自动检测目录是否有新文件
+    current_count = len([f for f in os.listdir(_KPL_DATA_DIR)
+        if f.endswith('.json') and f not in ('index.json', 'reason_index.json')]) if os.path.isdir(_KPL_DATA_DIR) else 0
+    if current_count != _kpl_last_file_count and _kpl_last_file_count > 0:
+        _kpl_rescan()
+    _kpl_last_file_count = current_count
     if not _kpl_day_files:
         return
     # 默认只加载最近 200 个日文件（有界性能）
@@ -862,6 +886,38 @@ def _kpl_search_rows(q, strict=False):
     return {'results': deduped, 'mode': 'single', 'query': q, 'total_hits': len(deduped), 'kw_results': {}, 'keywords': []}
 
 
+def _kpl_race_match_stock(sc, q_lower, strict):
+    """检查股票是否匹配关键词（用于赛马今日涨停检查）。
+    strict=True时仅匹配reason_tag。"""
+    # 1. 检查_kpl_rows_by_stock中的记录
+    records = _kpl_rows_by_stock.get(sc, [])
+    for r in records:
+        tag = (r.get('reason_tag', '') or '').strip()
+        if tag in SNIPER_EXCLUDE_TAGS:
+            continue
+        if strict:
+            search_text = tag
+        else:
+            search_text = (r.get('stock_name', '') + r.get('stock_code', '')
+                           + r.get('plate_name', '') + tag
+                           + (r.get('reason_brief', '') or '') + (r.get('concepts', '') or ''))
+        if q_lower and q_lower in search_text.lower():
+            return True
+    # 2. 降级到_kpl_stock_latest_tag
+    if sc in _kpl_stock_latest_tag:
+        lt = _kpl_stock_latest_tag[sc]
+        tag = lt.get('tag', '') or ''
+        if tag in SNIPER_EXCLUDE_TAGS:
+            return False
+        if strict:
+            search_text = tag
+        else:
+            search_text = tag + (lt.get('concepts', '') or '')
+        if q_lower and q_lower in search_text.lower():
+            return True
+    return False
+
+
 def _kpl_compute_lianban(stock_code, date_str):
     """根据KPL实际数据计算股票在指定日期的连续涨停天数（连板数）。
     date_str: YYYY-MM-DD 格式。"""
@@ -970,6 +1026,83 @@ def _kpl_analyze_rows(q, date_start=None, date_end=None, no_st=None, strict=None
     return result
 
 
+def _kpl_search_cache_key(q, date_start, date_end, no_st, strict):
+    import hashlib
+    raw = f"kpl_search|{q}|{date_start or ''}|{date_end or ''}|{no_st or ''}|{strict or ''}"
+    return hashlib.md5(raw.encode('utf-8')).hexdigest()[:16]
+
+def _kpl_search_cache_load(cache_key):
+    path = os.path.join(_KPL_SEARCH_CACHE_DIR, f"{cache_key}.json")
+    if not os.path.exists(path): return None
+    try:
+        entry = json.load(open(path, 'r', encoding='utf-8'))
+        return entry.get('data')
+    except:
+        return None
+
+def _kpl_search_cache_save(cache_key, data):
+    os.makedirs(_KPL_SEARCH_CACHE_DIR, exist_ok=True)
+    path = os.path.join(_KPL_SEARCH_CACHE_DIR, f"{cache_key}.json")
+    try:
+        json.dump({'data': data, 'timestamp': time.time(), 'version': 2},
+                  open(path, 'w', encoding='utf-8'), ensure_ascii=False)
+    except Exception as e:
+        print(f"[KPL搜索缓存] 写入失败: {e}")
+
+def _kpl_search_cache_clear():
+    import glob
+    if os.path.isdir(_KPL_SEARCH_CACHE_DIR):
+        for f in glob.glob(os.path.join(_KPL_SEARCH_CACHE_DIR, '*.json')):
+            try: os.remove(f)
+            except: pass
+
+def _kpl_full_search(q, date_start, date_end, no_st, strict, gem_extra=True):
+    """全量计算KPL搜索，返回完整结果"""
+    result = _kpl_analyze_rows(q, date_start, date_end, no_st, strict)
+    if gem_extra:
+        result_codes = list(set(r.get('stock_code', '') for r in result.get('results', []) if r.get('stock_code')))
+        all_linked = _kpl_get_all_stock_codes_for_keyword(q)
+        all_codes = list(set(result_codes + all_linked))
+        strong_rise = _kpl_get_gem_strong_rise(all_codes) if all_codes else {}
+        if strong_rise:
+            new_entries = []
+            for code, sr_entries in strong_rise.items():
+                latest = _kpl_stock_latest_tag.get(code, {})
+                stock_name = latest.get('stock_name', '') or _kpl_stock_index.get(code, {}).get('stock_name', '')
+                if not stock_name:
+                    continue
+                latest_tag = latest.get('tag', '')
+                if latest_tag in SNIPER_EXCLUDE_TAGS:
+                    continue
+                for sr in sr_entries:
+                    already_exists = any(
+                        r.get('stock_code') == code and r.get('date') == sr['date']
+                        for r in result.get('results', [])
+                    )
+                    if already_exists:
+                        continue
+                    new_entries.append({
+                        'stock_code': code,
+                        'stock_name': stock_name,
+                        'reason_tag': latest.get('tag', q),
+                        'reason_brief': latest.get('reason_brief', ''),
+                        'plate_name': latest.get('plate_name', ''),
+                        'concepts': latest.get('concepts', ''),
+                        'date': sr['date'],
+                        'lianban_desc': '',
+                        'lianban_computed': 0,
+                        'is_strong_rise': True,
+                        'change_pct': sr['change_pct'],
+                        'reason_detail': latest.get('reason_detail', ''),
+                    })
+            if new_entries:
+                result['results'].extend(new_entries)
+                result['results'].sort(key=lambda x: x.get('date', ''), reverse=True)
+                result['total_hits'] = len(result['results'])
+        result['gem_strong_rise'] = strong_rise
+    return result
+
+
 def _kpl_get_gem_strong_rise(stock_codes, lookback=20):
     """查询创业板/科创板股票近N个交易日涨幅>10%的强涨交易日"""
     if not stock_codes:
@@ -1038,17 +1171,121 @@ def _kpl_get_all_stock_codes_for_keyword(keyword):
     return list(matched)
 
 
+def _kpl_reload_indices():
+    """从磁盘重载reason_index.json并重建板块/概念/标签索引"""
+    global _kpl_reason_index, _kpl_stock_index, _kpl_unique_tags, _kpl_unique_plates, _kpl_unique_concepts
+    _ridx_path = os.path.join(_KPL_DATA_DIR, 'reason_index.json')
+    _idx_path = os.path.join(_KPL_DATA_DIR, 'index.json')
+    if os.path.exists(_ridx_path) and os.path.exists(_idx_path):
+        try:
+            _kpl_reason_index = json.load(open(_ridx_path, 'r', encoding='utf-8'))
+            _kpl_stock_index = json.load(open(_idx_path, 'r', encoding='utf-8'))
+            _kpl_unique_tags = {}
+            _kpl_unique_plates = {}
+            _kpl_unique_concepts = {}
+            for tag, entries in _kpl_reason_index.items():
+                _kpl_unique_tags[tag] = len(entries)
+                for e in entries:
+                    pn = e.get('plate_name', '')
+                    if pn:
+                        _kpl_unique_plates[pn] = _kpl_unique_plates.get(pn, 0) + 1
+                    cs = e.get('concepts', '') or ''
+                    for c in cs.split('\u3001'):
+                        c = c.strip()
+                        if c:
+                            _kpl_unique_concepts[c] = _kpl_unique_concepts.get(c, 0) + 1
+            print(f"[KPL索引重载] {len(_kpl_reason_index)}个标签, {len(_kpl_stock_index)}只股票, {len(_kpl_unique_plates)}个板块, {len(_kpl_unique_concepts)}个概念")
+        except Exception as e:
+            print(f"[KPL索引重载] 失败: {e}")
+
+
 def _kpl_get_top_tags(n=40):
     """从_kpl_unique_tags获取前N个频度最高的涨停原因标签"""
     global _kpl_unique_tags
+    if not _kpl_unique_tags:
+        _kpl_reload_indices()
     sorted_tags = sorted(_kpl_unique_tags.items(), key=lambda x: -x[1])
     # 排除泛标签（并购重组、股权转让等）
     filtered = [(tag, count) for tag, count in sorted_tags if tag not in SNIPER_EXCLUDE_TAGS]
     return [{'tag': tag, 'count': count} for tag, count in filtered[:n]]
 
 
+def _kpl_top_tags_cache_load(n=40):
+    """读取KPL顶部标签缓存文件，验证tag/count字段 + 条目数充足，返回tags或None"""
+    global _kpl_top_tags_cache_timestamp
+    try:
+        if not os.path.exists(_KPL_TOP_TAGS_CACHE_PATH):
+            return None
+        mtime = os.path.getmtime(_KPL_TOP_TAGS_CACHE_PATH)
+        with open(_KPL_TOP_TAGS_CACHE_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            return None
+        if len(data) < n:
+            return None
+        # 验证格式
+        for item in data[:n]:
+            if not isinstance(item, dict) or 'tag' not in item or 'count' not in item:
+                return None
+        _kpl_top_tags_cache_timestamp = int(mtime)
+        return data[:n]
+    except Exception as e:
+        print(f"[KPL标签缓存] 读取失败: {e}")
+        return None
+
+
+def _kpl_top_tags_cache_save(tags):
+    """原子写入KPL顶部标签缓存文件"""
+    global _kpl_top_tags_cache_timestamp
+    try:
+        cache_dir = os.path.dirname(_KPL_TOP_TAGS_CACHE_PATH)
+        if not os.path.exists(cache_dir):
+            os.makedirs(cache_dir, exist_ok=True)
+        tmp_path = _KPL_TOP_TAGS_CACHE_PATH + '.tmp'
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            json.dump(tags, f, ensure_ascii=False, indent=2)
+        os.rename(tmp_path, _KPL_TOP_TAGS_CACHE_PATH)
+        _kpl_top_tags_cache_timestamp = int(time.time())
+        print(f"[KPL标签缓存] 写入 {len(tags)} 个标签")
+    except Exception as e:
+        print(f"[KPL标签缓存] 写入失败: {e}")
+
+
+def _kpl_top_tags_cache_refresh():
+    """后台计算并写入KPL顶部标签缓存，使用_get_sniper_data()保持与原始算法一致"""
+    try:
+        sniper = _get_sniper_data()
+        rank_tag_totals = sniper.get('rank_tag_totals', {})
+        if rank_tag_totals:
+            rank_sorted = sorted(rank_tag_totals.keys(), key=lambda t: -rank_tag_totals[t])
+            # 过滤泛概念（与_kpl_get_top_tags一致）
+            rank_sorted = [t for t in rank_sorted if t not in SNIPER_EXCLUDE_TAGS]
+            tags = [{'tag': t, 'count': rank_tag_totals[t]} for t in rank_sorted[:80]]
+        else:
+            # _get_sniper_data成功但返回空 → 降级到全量数据
+            tags = _kpl_get_top_tags(80)
+        if tags:
+            _kpl_top_tags_cache_save(tags)
+            print(f"[KPL标签缓存] 刷新完成 {len(tags)} 个标签 (sniper_data)")
+        else:
+            print(f"[KPL标签缓存] 刷新失败: 返回空")
+    except Exception as e:
+        print(f"[KPL标签缓存] 刷新异常: {e}")
+        # 异常时也尝试降级
+        try:
+            tags = _kpl_get_top_tags(80)
+            if tags: _kpl_top_tags_cache_save(tags)
+        except:
+            pass
+
+
 def _kpl_suggest_rows(q):
     """从KPL索引中搜索自动补全建议"""
+    # 确保行缓存已加载（日JSON文件）
+    _kpl_ensure_loaded()
+    # 如果reason_index为空，尝试从磁盘重载
+    if not _kpl_reason_index:
+        _kpl_reload_indices()
     q = q.strip().lower()
     if not q:
         return {'stocks': [], 'reason_tags': [], 'plates': [], 'concepts': []}
@@ -3582,6 +3819,17 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
     to { transform: rotate(360deg); }
 }
 
+/* KPL reload link for trajectory section */
+.kpl-reload-link {
+    display: inline-flex; align-items: center;
+    cursor: pointer; font-size: 0.72em;
+    color: #888; margin-left: 6px;
+    user-select: none; transition: color 0.2s;
+}
+.kpl-reload-link:hover {
+    color: #4fc3f7; text-decoration: underline;
+}
+
 /* Auto-refresh toggle button */
 .rt-auto-refresh-btn {
     display: inline-flex; align-items: center; gap: 4px;
@@ -4314,6 +4562,90 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 .emt-stock-kline-wrap .concept-kline-grid { padding:6px 8px; }
 @media (max-width:768px) { .emt-controls { padding:14px 16px; } .emt-controls .emt-input-item { min-width:100%; } .emt-controls .emt-filter-row { flex-direction:column; align-items:stretch; } .emt-controls .emt-date-group { width:100%; justify-content:flex-start; } .emt-controls .emt-date-group input[type="date"] { flex:1; min-width:0; } .emt-refresh-group { margin-left:0; margin-top:6px; } }
 @media (max-width:768px) { .ic-wrapper { flex-direction:column; } .ic-sidebar { width:100%; max-height:180px; } }
+
+/* ===== 题材赛马 (KPL Race) ===== */
+.kpl-race-header {
+    display:flex; align-items:center; gap:8px; padding:8px 14px;
+    background:linear-gradient(135deg,#1a2a4e,#0f3460); border-radius:8px;
+    border-left:3px solid #ffd700; cursor:pointer; user-select:none;
+    transition:filter 0.15s; margin-bottom:0;
+}
+.kpl-race-header:hover { filter:brightness(1.2); }
+.kpl-race-header span:first-child { font-size:1.1em; }
+.kpl-race-header span:nth-child(2) { color:#ffd700; font-weight:bold; font-size:0.88em; }
+.race-count-badge {
+    display:inline-flex; align-items:center; justify-content:center;
+    min-width:20px; height:20px; padding:0 6px; border-radius:10px;
+    background:#ffd700; color:#0d1b2a; font-size:0.7em; font-weight:700;
+}
+.kpl-race-toolbar {
+    display:flex; align-items:center; gap:8px; padding:8px 0; flex-wrap:wrap;
+}
+.kpl-race-btn {
+    padding:7px 18px; background:linear-gradient(135deg,#ffd700,#ffab00);
+    border:none; border-radius:6px; color:#1a1a2e; font-weight:700;
+    font-size:0.85em; cursor:pointer; transition:all 0.15s;
+}
+.kpl-race-btn:hover { filter:brightness(1.12); transform:translateY(-1px); }
+.kpl-race-btn:disabled { opacity:0.5; cursor:not-allowed; transform:none; filter:none; }
+#kplRaceCanvas {
+    width:100%; height:1000px; background:#0a1628; border:1px solid #0f3460;
+    border-radius:8px; display:block; box-sizing:border-box;
+}
+.kpl-race-legend {
+    display:flex; flex-wrap:wrap; gap:5px; padding:6px 0; margin-top:6px;
+}
+.kpl-race-legend-item {
+    display:inline-flex; align-items:center; gap:4px; padding:2px 8px;
+    border-radius:4px; background:rgba(15,52,96,0.3); cursor:pointer;
+    font-size:0.72em; color:#aaa; transition:all 0.15s; user-select:none;
+    border:1px solid transparent;
+}
+.kpl-race-legend-item:hover { border-color:currentColor; }
+.kpl-race-legend-item .legend-dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex-shrink:0; }
+.kpl-race-legend-item .legend-name { color:#ccc; }
+.kpl-race-legend-item .legend-pct { font-weight:600; }
+.kpl-race-legend-item .legend-pct.up { color:#ff6b6b; }
+.kpl-race-legend-item .legend-pct.down { color:#4caf50; }
+.kpl-race-legend-item.hidden { opacity:0.35; }
+.race-stat-row-hidden { opacity:0.4; }
+.race-toggle-all { display:inline-flex;align-items:center;gap:6px;margin-bottom:4px; }
+.race-toggle-all button { background:transparent;border:1px solid #555;color:#aaa;border-radius:4px;padding:2px 10px;cursor:pointer;font-size:0.78em; }
+.race-toggle-all button:hover { border-color:#90caf9;color:#90caf9; }
+.race-name-toggle { cursor:pointer; }
+.race-name-toggle:hover { text-decoration:underline; }
+#kplRaceStatus { text-align:center; color:#666; font-size:0.78em; padding:4px; }
+#kplRaceStats { margin-top:8px; overflow-x:auto; }
+#kplRaceStats table {
+    width:100%; border-collapse:collapse; font-size:0.82em;
+    background:#0a1628; border-radius:8px; overflow:hidden;
+}
+#kplRaceStats table th {
+    background:#0f3460; color:#90caf9; padding:6px 10px; text-align:left;
+    white-space:nowrap; position:sticky; top:0; font-size:0.85em;
+}
+#kplRaceStats table td { padding:5px 10px; border-bottom:1px solid #0f3460; }
+#kplRaceStats table tbody tr:hover { background:rgba(0,212,255,0.06); }
+#kplRaceStats table tbody tr:nth-child(even) { background:rgba(15,52,96,0.15); }
+.race-stat-up { color:#ff6b6b; font-weight:600; }
+.race-stat-down { color:#4caf50; font-weight:600; }
+.race-stat-zero { color:#78909c; }
+.race-climax-sep { margin:6px 0; height:1px; background:rgba(255,215,0,0.2); }
+.race-climax-info { padding:6px 10px; background:rgba(255,215,0,0.04); border-radius:6px; border:1px solid rgba(255,215,0,0.12); font-size:0.78em; color:#ffd700; margin-top:4px; }
+/* 赛马涨幅排名徽标 */
+.race-badge-rank {
+    display: inline-flex; align-items: center;
+    background: linear-gradient(90deg, #ffd700, #ffab00);
+    color: #000; font-size: 0.7em; font-weight: bold;
+    padding: 1px 5px; border-radius: 3px; white-space: nowrap;
+    margin-left: 3px; vertical-align: middle;
+}
+/* 板块颜色 */
+.stock-board-board-gem { color:#ff6b6b; font-size:0.78em; }
+.stock-board-board-star { color:#4d96ff; font-size:0.78em; }
+.stock-board-board-main { color:#ccc; font-size:0.78em; }
+/* 连板徽标 */
+.lianban-badge { display:inline-block; padding:0 5px; height:18px; line-height:18px; border-radius:3px; background:#ff6b6b; color:#fff; font-size:0.72em; font-weight:700; margin-left:3px; }
 </style>
 </head>
 <body>
@@ -4473,6 +4805,34 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
             </span>
         </div>
         <div id="kplTopTags" style="margin:6px 0 8px;"></div>
+        <div id="kplRaceSection" style="margin:0 0 6px;">
+            <div class="kpl-race-header" onclick="toggleKplRace()">
+                <span>🏇</span><span id="kplRaceTitle">题材赛马</span>
+                <span style="margin-left:auto;color:#888;font-size:0.75em;" id="kplRaceToggleBtn">收起 &#x25B2;</span>
+                <span class="race-count-badge" id="kplRaceBadge" style="display:none;"></span>
+            </div>
+            <div id="kplRaceBody" style="display:block;">
+                <div class="kpl-race-toolbar">
+                </div>
+                <div id="kplRaceCanvasContainer" style="position:relative;width:100%;">
+                    <canvas id="kplRaceCanvas" width="600" height="1000"></canvas>
+                    <div id="kplRaceTooltip" style="display:none;position:absolute;pointer-events:none;background:rgba(10,22,40,0.92);border:1px solid #ffd700;border-radius:6px;padding:6px 10px;font-size:0.78em;color:#eee;z-index:1000;"></div>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;padding:2px 0;">
+                    <label for="kplRaceZoom" style="color:#90caf9;font-size:0.78em;">横向</label>
+                    <input type="range" id="kplRaceZoom" min="10" max="100" value="100" style="flex:1;max-width:200px;height:4px;">
+                    <span id="kplRaceZoomLabel" style="color:#aaa;font-size:0.72em;min-width:30px;">100%</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;padding:2px 0;">
+                    <label for="kplRaceYZoom" style="color:#90caf9;font-size:0.78em;">纵向</label>
+                    <input type="range" id="kplRaceYZoom" min="10" max="200" value="100" style="flex:1;max-width:200px;height:4px;">
+                    <span id="kplRaceYZoomLabel" style="color:#aaa;font-size:0.72em;min-width:30px;">100%</span>
+                </div>
+                <div class="kpl-race-legend" id="kplRaceLegend"></div>
+                <div id="kplRaceStats"></div>
+                <div id="kplRaceStatus" style="text-align:center;color:#666;font-size:0.78em;padding:4px;">请先搜索题材</div>
+            </div>
+        </div>
         <div id="kplSearchResult"><div class="empty">输入关键词搜索KPL涨停数据</div></div>
     </div>
     <div class="tab-content" id="tab-deepsearch">
@@ -4717,6 +5077,11 @@ function switchTab(tab) {
         var kplInput = document.getElementById('kplSearchInput2');
         if (kplInput && kplInput.value.trim()) {
             setTimeout(function() { kplInput.focus(); }, 100);
+        }
+        // 确保热门标签加载
+        var topEl = document.getElementById('kplTopTags');
+        if (topEl && !topEl.innerHTML.trim()) {
+            loadKplTopTags();
         }
     }
     if (tab === 'deepsearch') {
@@ -8509,18 +8874,18 @@ function loadNPattern() {
                 if (!cat) return;
                 var allStocks = (cat.main_board || []).concat(cat.gem || []).concat(cat.star || []).concat(cat.bj || []);
                 allStocks.forEach(function(stock) {
-                    renderNpKline('npk_' + stock.code, stock.klines);
+                    renderNpKline('npk_' + stock.code, stock.klines, stock.name, stock.code);
                 });
             });
             // Render alert klines
             if (data.alerts) {
                 (data.alerts.zha_ban || []).concat(data.alerts.gem_alert || []).forEach(function(s) {
-                    if (s.klines) renderNpKline('npk_' + s.code + '_alert', s.klines);
+                    if (s.klines) renderNpKline('npk_' + s.code + '_alert', s.klines, s.name, s.code);
                 });
             }
             // Render new pattern klines
-            (data.yang_pattern || []).forEach(function(s) { renderNpKline('yang_' + s.code, s.klines); });
-            (data.three_yin_pattern || []).forEach(function(s) { renderNpKline('three_yin_' + s.code, s.klines); });
+            (data.yang_pattern || []).forEach(function(s) { renderNpKline('yang_' + s.code, s.klines, s.name, s.code); });
+            (data.three_yin_pattern || []).forEach(function(s) { renderNpKline('three_yin_' + s.code, s.klines, s.name, s.code); });
             // Render hot concept buttons
             renderNpHotConceptButtons();
             // Init sidebar IntersectionObserver
@@ -9128,14 +9493,14 @@ function filterNPattern() {
                 if (!cat) return;
                 var allStocks = (cat.main_board || []).concat(cat.gem || []).concat(cat.star || []).concat(cat.bj || []);
                 allStocks.forEach(function(stock) {
-                    renderNpKline('npk_' + stock.code, stock.klines);
+                    renderNpKline('npk_' + stock.code, stock.klines, stock.name, stock.code);
                 });
             });
             // Render alert klines
             var alertData = filteredData.alerts;
             if (alertData) {
                 (alertData.zha_ban || []).concat(alertData.gem_alert || []).forEach(function(s) {
-                    if (s.klines) renderNpKline('npk_' + s.code + '_alert', s.klines);
+                    if (s.klines) renderNpKline('npk_' + s.code + '_alert', s.klines, s.name, s.code);
                 });
             }
             // Collapse categories
@@ -9449,7 +9814,7 @@ function loadNpOscillation() {
                     var stocks = oscData.stocks || [];
                     for (var i = 0; i < stocks.length; i++) {
                         if (stocks[i].code === code && stocks[i].klines) {
-                            renderNpKline(canvas.id, stocks[i].klines);
+                            renderNpKline(canvas.id, stocks[i].klines, stocks[i].name, stocks[i].code);
                             break;
                         }
                     }
@@ -9693,7 +10058,7 @@ function _renderCardDetailContent(code, detail, alertInfo, stockName, conceptsJs
     return h;
 }
 
-function renderNpKline(canvasId, klines) {
+function renderNpKline(canvasId, klines, stockName, stockCode) {
     var canvas = document.getElementById(canvasId);
     if (!canvas || !klines || klines.length < 2) return;
 
@@ -9723,6 +10088,19 @@ function renderNpKline(canvasId, klines) {
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = '#1a1a2e';
     ctx.fillRect(0, 0, W, H);
+
+    // 左上角股票名称+代码
+    if (stockName || stockCode) {
+        var labelText = (stockName || '') + (stockCode ? ' ' + stockCode : '');
+        ctx.font = 'bold 13px sans-serif';
+        var textW = ctx.measureText(labelText).width;
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillRect(2, 2, textW + 8, 20);
+        ctx.fillStyle = '#fff';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText(labelText, 6, 4);
+    }
 
     var barWidth = Math.max(1, plotW / n * 0.6);
     var halfBar = barWidth / 2;
@@ -9946,7 +10324,7 @@ function loadNpZtWindow() {
                     var code = canvas.id.replace('ztk_', '');
                     for (var i = 0; i < allStocks.length; i++) {
                         if (allStocks[i].code === code && allStocks[i].klines) {
-                            renderNpKline(canvas.id, allStocks[i].klines);
+                            renderNpKline(canvas.id, allStocks[i].klines, allStocks[i].name, allStocks[i].code);
                             break;
                         }
                     }
@@ -10073,7 +10451,7 @@ function showStockCard(code, name, skipLoading) {
                 existingCanvas = document.getElementById('klineModalChart');
             }
             if (existingCanvas) {
-                renderNpKline('klineModalChart', klines);
+                renderNpKline('klineModalChart', klines, stockName, code);
             }
         } else {
             canvasContainer.innerHTML = '<div style="color:#888;padding:12px;text-align:center;">K线数据不足（仅' + klines.length + '条）</div>';
@@ -10176,7 +10554,7 @@ function loadRealtime() {
 
         // === 连板股涨停原因标签轨迹（只统计连板 >= 2，断板重置序号） ===
         html += '<div class="rt-section lt-trajectory-section" id="ltTrajectoryLbSection">';
-        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ff8a65;">🔥 连板股涨停原因标签轨迹 <span class="count-badge" id="ltTrajectoryLbBadge">近20日</span> <span class="rt-refresh-icon" onclick="manualRefreshTrajectory()" title="刷新轨迹数据">↻</span></h3>';
+        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ff8a65;">🔥 连板股涨停原因标签轨迹 <span class="count-badge" id="ltTrajectoryLbBadge">近20日</span> <span class="rt-refresh-icon" onclick="manualRefreshTrajectory()" title="刷新轨迹数据">↻</span><span class="kpl-reload-link" onclick="reloadKplIndex()" title="重新扫描数据目录">重载</span></h3>';
         html += '<div id="ltTrajectoryLbBody">';
         if (ladderTrajectoryLb && ladderTrajectoryLb.dates && ladderTrajectoryLb.dates.length > 0) {
             html += renderLadderLianbanTagTrajectory(ladderTrajectoryLb);
@@ -10197,7 +10575,7 @@ function loadRealtime() {
 
         // === 涨停原因标签轨迹（标签发展矩阵） ===
         html += '<div class="rt-section lt-trajectory-section" id="ltTrajectorySection">';
-        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#4fc3f7;">🌐 涨停原因标签轨迹 <span class="count-badge" id="ltTrajectoryBadge">近20日</span> <span class="rt-refresh-icon" onclick="manualRefreshTrajectory()" title="刷新轨迹数据">↻</span></h3>';
+        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#4fc3f7;">🌐 涨停原因标签轨迹 <span class="count-badge" id="ltTrajectoryBadge">近20日</span> <span class="rt-refresh-icon" onclick="manualRefreshTrajectory()" title="刷新轨迹数据">↻</span><span class="kpl-reload-link" onclick="reloadKplIndex()" title="重新扫描数据目录">重载</span></h3>';
         html += '<div id="ltTrajectoryBody">';
         if (ladderTrajectory && ladderTrajectory.dates && ladderTrajectory.dates.length > 0) {
             html += renderLadderTagTrajectory(ladderTrajectory);
@@ -10335,6 +10713,14 @@ function manualRefreshTrajectory() {
         .catch(function(e) {
             console.error('刷新轨迹失败:', e);
         });
+}
+
+// 重载KPL数据索引（重新扫描zt_data目录）
+function reloadKplIndex() {
+    fetch('/api/kpl_reload_index?_t=' + Date.now())
+        .then(function(r) { return r.json(); })
+        .then(function(d) { manualRefreshTrajectory(); })
+        .catch(function(e) { console.error('重载索引失败:', e); });
 }
 
 // 按日期加载历史连板天梯
@@ -10652,11 +11038,11 @@ function searchLuTag(el) {
     if (!tag) return;
     switchTab('deepsearch');
     document.getElementById('deepSearchInput').value = tag;
-    // 默认近2个月，与直接搜索一致
+    // 默认近1个月，与直接搜索一致
     var now = new Date();
     document.getElementById('deepSearchDateEnd').value = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
     var start = new Date(now);
-    start.setMonth(start.getMonth() - 2);
+    start.setMonth(start.getMonth() - 1);
     document.getElementById('deepSearchDateStart').value = start.getFullYear() + '-' + String(start.getMonth()+1).padStart(2,'0') + '-' + String(start.getDate()).padStart(2,'0');
     doDeepSearch();
 }
@@ -10779,11 +11165,11 @@ function loadZtWordFreqTimeline() {
 function searchLuTagFromWf(tag) {
     switchTab('deepsearch');
     document.getElementById('deepSearchInput').value = tag;
-    // 默认近2个月，与直接搜索一致
+    // 默认近1个月，与直接搜索一致
     var now = new Date();
     document.getElementById('deepSearchDateEnd').value = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
     var start = new Date(now);
-    start.setMonth(start.getMonth() - 2);
+    start.setMonth(start.getMonth() - 1);
     document.getElementById('deepSearchDateStart').value = start.getFullYear() + '-' + String(start.getMonth()+1).padStart(2,'0') + '-' + String(start.getDate()).padStart(2,'0');
     doDeepSearch();
 }
@@ -11569,7 +11955,7 @@ var _deepSearchHits = [];
     var d = String(now.getDate()).padStart(2,'0');
     var endStr = y + '-' + m + '-' + d;
     var start = new Date(now);
-    start.setMonth(start.getMonth() - 2);
+    start.setMonth(start.getMonth() - 1);
     var sy = start.getFullYear();
     var sm = String(start.getMonth()+1).padStart(2,'0');
     var sd = String(start.getDate()).padStart(2,'0');
@@ -11924,7 +12310,7 @@ function resetDeepSearch() {
     var de = document.getElementById('deepSearchDateEnd');
     if (de) de.value = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
     var start = new Date(now);
-    start.setMonth(start.getMonth() - 2);
+    start.setMonth(start.getMonth() - 1);
     var ds = document.getElementById('deepSearchDateStart');
     if (ds) ds.value = start.getFullYear() + '-' + String(start.getMonth()+1).padStart(2,'0') + '-' + String(start.getDate()).padStart(2,'0');
     document.getElementById('deepSearchResult').innerHTML = '<div class="empty">输入关键词和时间范围搜索涨停理由</div>';
@@ -12211,7 +12597,7 @@ var _kplGemStrongRise = {};
     var d = String(now.getDate()).padStart(2,'0');
     var endStr = y + '-' + m + '-' + d;
     var start = new Date(now);
-    start.setMonth(start.getMonth() - 2);
+    start.setMonth(start.getMonth() - 1);
     var sy = start.getFullYear();
     var sm = String(start.getMonth()+1).padStart(2,'0');
     var sd = String(start.getDate()).padStart(2,'0');
@@ -12578,10 +12964,17 @@ function selectKplSuggestConcept(concept) {
     doKplSearch();
 }
 
-function loadKplTopTags() {
+function loadKplTopTags(retries) {
+    if (retries === undefined) retries = 3;
     fetch('/api/kpl_top_tags?n=40')
         .then(function(r) { return r.json(); })
         .then(function(tags) {
+            if (!tags || tags.length === 0) {
+                if (retries > 0) {
+                    setTimeout(function(){ loadKplTopTags(retries - 1); }, 2000);
+                }
+                return;
+            }
             var html = '<div style="display:flex;flex-wrap:wrap;gap:6px;">';
             for (var i = 0; i < tags.length; i++) {
                 var t = tags[i];
@@ -12594,12 +12987,19 @@ function loadKplTopTags() {
                 html += '</span>';
             }
             html += '</div>';
-            document.getElementById('kplTopTags').innerHTML = html;
+            var topEl = document.getElementById('kplTopTags');
+            if (topEl) topEl.innerHTML = html;
         })
         .catch(function(e) {
             console.error('Top tags load failed:', e);
+            if (retries > 0) {
+                setTimeout(function(){ loadKplTopTags(retries - 1); }, 2000);
+            }
         });
 }
+
+// KPL搜索前端缓存（同页面session内避免重复请求）
+var _kplSearchCache = {};
 
 function doKplSearch(q) {
     if (!q) q = document.getElementById('kplSearchInput2').value.trim();
@@ -12617,10 +13017,41 @@ function doKplSearch(q) {
     url += '&no_st=' + (noSt && noSt.checked ? '1' : '0');
     url += '&strict=' + (strict && strict.checked ? '1' : '0');
     url += '&gem_extra=1';
+
+    var _strictMode = document.getElementById('kplStrictCheck') && document.getElementById('kplStrictCheck').checked;
+
+    // 前端缓存命中 → 直接渲染，后台异步刷新
+    if (_kplSearchCache[url]) {
+        renderFullKplSearch(_kplSearchCache[url], q);
+        if (_raceTimer) {
+            clearInterval(_raceTimer);
+            _raceTimer = null;
+        }
+        _loadRaceForTag(q, dateStart, dateEnd, _strictMode);
+        // 后台异步刷新（silent update，不阻塞）
+        fetch(url)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                _kplSearchCache[url] = data;
+                // 如果用户仍在当前关键词，更新显示
+                var curQ = document.getElementById('kplSearchInput2').value.trim();
+                if (curQ === q) renderFullKplSearch(data, q);
+            })
+            .catch(function() {});
+        return;
+    }
+
     fetch(url)
         .then(function(r) { return r.json(); })
         .then(function(data) {
+            _kplSearchCache[url] = data;
             renderFullKplSearch(data, q);
+            // 自动加载赛马数据
+            if (_raceTimer) {
+                clearInterval(_raceTimer);
+                _raceTimer = null;
+            }
+            _loadRaceForTag(q, dateStart, dateEnd, _strictMode);
         })
         .catch(function(e) {
             el.innerHTML = '<div class="error">搜索失败: ' + e.message + '</div>';
@@ -12839,13 +13270,1081 @@ function resetKplSearch() {
     var de = document.getElementById('kplSearchDateEnd');
     if (de) de.value = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
     var start = new Date(now);
-    start.setMonth(start.getMonth() - 2);
+    start.setMonth(start.getMonth() - 1);
     var ds = document.getElementById('kplSearchDateStart');
     if (ds) ds.value = start.getFullYear() + '-' + String(start.getMonth()+1).padStart(2,'0') + '-' + String(start.getDate()).padStart(2,'0');
     document.getElementById('kplSearchResult').innerHTML = '<div class="empty">输入关键词搜索KPL涨停数据</div>';
     _kplSearchHits = [];
     _kplSectionHits = {};
+    _kplSearchCache = {};
+    // 清空赛马数据
+    if (_raceTimer) {
+        clearInterval(_raceTimer);
+        _raceTimer = null;
+    }
+    _raceData = null;
+    _raceKeyword = '';
+    _raceHiddenHorses = {};
+    document.getElementById('kplRaceTitle').textContent = '题材赛马';
+    document.getElementById('kplRaceBadge').style.display = 'none';
+    document.getElementById('kplRaceStatus').innerHTML = '请先搜索题材';
+    var climaxGroup = document.getElementById('kplRaceClimaxGroup');
+    if (climaxGroup) climaxGroup.style.display = 'none';
+    var legend = document.getElementById('kplRaceLegend');
+    if (legend) legend.innerHTML = '';
+    var stats = document.getElementById('kplRaceStats');
+    if (stats) stats.innerHTML = '';
+    var canvas = document.getElementById('kplRaceCanvas');
+    if (canvas) {
+        var ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
 }
+
+// ===== 题材赛马相关变量 =====
+var _raceData = null;
+var _raceColors = ['#ff6b6b','#ffd93d','#6bcb77','#4d96ff','#ff8fab','#845ec2','#00c9a7','#ff9671','#0081cf','#ffc75f',
+  '#f9666b','#78dec7','#b39ddb','#ef9a9a','#81d4fa','#aed581','#fff176','#ffab91','#ce93d8','#80cbc4'];
+var _raceTimer = null;
+var _raceHiddenHorses = {};  // code -> true (legend click to hide)
+var _raceKeyword = '';        // 当前赛马题材关键词
+var _raceHitPoints = [];      // [{x, y, label, date, changePct}]
+var _raceLabelPositions = []; // [{x, y, label, stock_code}] 点击标签用
+var _raceClimaxDayLines = []; // [{x, date, stocks: [{stock_name, stock_code, daily_change_pct, cum_close, type}]}] 高潮日竖线hover用
+var _raceZoomValue = 100;     // 水平缩放百分比（时间窗口）
+var _raceYZoomValue = 100;    // 垂直缩放百分比（Y轴涨跌幅范围）
+var _racePanX = 0;            // 水平平移 0~1，0=最右侧(默认最新)，1=最左侧(最早)
+var _racePanY = 0;            // 垂直平移 -1~1，0=居中(默认)
+var _raceDragging = false;
+var _raceDragStart = null;    // {mx, my, panX, panY}
+var _raceSortKey = '';        // 表格排序key
+var _raceSortDir = '';        // 排序方向 asc/desc
+var _raceStrict = false;
+var _raceDateStart = '';
+var _raceDateEnd = '';
+
+function toggleKplRace() {
+    var body = document.getElementById('kplRaceBody');
+    if (!body) return;
+    var btn = document.getElementById('kplRaceToggleBtn');
+    if (body.style.display === 'none') {
+        body.style.display = 'block';
+        btn.innerHTML = '收起 \\u25B2';
+        // Redraw canvas if data exists (fix size after display shows)
+        if (_raceData) setTimeout(function(){ _raceRedraw(); }, 100);
+    } else {
+        body.style.display = 'none';
+        btn.innerHTML = '展开 \\u25BC';
+    }
+}
+
+function _loadRaceForTag(keyword, ds, de, strictMode) {
+    _raceKeyword = keyword;
+    _raceStrict = (strictMode === undefined ? (document.getElementById('kplStrictCheck') && document.getElementById('kplStrictCheck').checked) : strictMode);
+    _raceDateStart = ds;
+    _raceDateEnd = de;
+    var statusEl = document.getElementById('kplRaceStatus');
+    statusEl.innerHTML = '加载中...';
+    if (!ds) {
+        var now = new Date();
+        var start = new Date(now);
+        start.setDate(start.getDate() - 30);
+        ds = start.getFullYear() + '-' + String(start.getMonth()+1).padStart(2,'0') + '-' + String(start.getDate()).padStart(2,'0');
+        de = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
+    }
+    // 立即清除旧数据，防止异步期间工具提示显示缓存
+    _raceData = null;
+    _raceHitPoints = [];
+    _raceLabelPositions = [];
+    _raceClimaxDayLines = [];
+    var raceCanvas = document.getElementById('kplRaceCanvas');
+    if (raceCanvas) {
+        var raceCtx = raceCanvas.getContext('2d');
+        raceCtx.clearRect(0, 0, raceCanvas.width, raceCanvas.height);
+    }
+    _raceHideTooltip();
+
+    var strictChecked = _raceStrict ? '1' : '0';
+    var url = '/api/kpl_race_data?mode=init&keyword=' + encodeURIComponent(keyword) + '&date_start=' + ds + '&date_end=' + de + '&strict=' + strictChecked;
+    fetch(url)
+        .then(function(r){ return r.json(); })
+        .then(function(data){
+            if (data.error) {
+                statusEl.innerHTML = data.message || data.error;
+                document.getElementById('kplRaceBadge').style.display = 'none';
+                document.getElementById('kplRaceTitle').textContent = '题材赛马';
+                var climaxGroup = document.getElementById('kplRaceClimaxGroup');
+                if (climaxGroup) climaxGroup.style.display = 'none';
+                return;
+            }
+            _raceData = data;
+            _raceHiddenHorses = {};
+            _raceSortKey = '';
+            _raceSortDir = '';
+            _raceZoomValue = 100;
+            _raceYZoomValue = 100;
+            var zs = document.getElementById('kplRaceZoom');
+            if (zs) zs.value = '100';
+            var zl = document.getElementById('kplRaceZoomLabel');
+            if (zl) zl.textContent = '100%';
+            var yzs = document.getElementById('kplRaceYZoom');
+            if (yzs) yzs.value = '100';
+            var yzl = document.getElementById('kplRaceYZoomLabel');
+            if (yzl) yzl.textContent = '100%';
+            _renderRaceChart();
+            _renderRaceStats();
+            document.getElementById('kplRaceTitle').textContent = '赛马：' + keyword;
+            document.getElementById('kplRaceBadge').style.display = 'inline-flex';
+            document.getElementById('kplRaceBadge').textContent = data.horses_count + '匹';
+            statusEl.innerHTML = data.horses_count + '匹马 | 约3分钟自动刷新';
+            // 展开面板
+            var body = document.getElementById('kplRaceBody');
+            if (body) body.style.display = 'block';
+            var btn = document.getElementById('kplRaceToggleBtn');
+            if (btn) btn.innerHTML = '收起 \\u25B2';
+            // 启动3分钟定时器（交易时段）
+            _startRaceTimer();
+        })
+        .catch(function(err){
+            statusEl.innerHTML = '加载失败: ' + err.message;
+        });
+}
+
+function _startRaceTimer() {
+    if (_raceTimer) clearInterval(_raceTimer);
+    _raceTimer = setInterval(function(){
+        // 交易时段检查 (9:25-15:00)
+        var nowH = new Date().getHours();
+        var nowM = new Date().getMinutes();
+        var tradeTime = (nowH > 9 || (nowH === 9 && nowM >= 25)) && (nowH < 15 || (nowH === 15 && nowM === 0));
+        if (!tradeTime) {
+            var statusEl = document.getElementById('kplRaceStatus');
+            if (statusEl) statusEl.innerHTML = statusEl.innerHTML.replace('约3分钟自动刷新', '非交易时段');
+            return;
+        }
+        _refreshRace();
+    }, 180000);
+}
+
+function _refreshRace() {
+    if (!_raceData || !_raceData.horses || !_raceKeyword) return;
+    var codes = _raceData.horses.map(function(h){ return h.stock_code; }).join(',');
+    var url = '/api/kpl_race_data?mode=refresh&keyword=' + encodeURIComponent(_raceKeyword)
+        + '&horses=' + encodeURIComponent(codes)
+        + '&strict=' + (_raceStrict ? '1' : '0')
+        + '&date_start=' + encodeURIComponent(_raceDateStart || '')
+        + '&date_end=' + encodeURIComponent(_raceDateEnd || '');
+    fetch(url)
+        .then(function(r){ return r.json(); })
+        .then(function(data){
+            if (data.error) return;
+            // 合并新马
+            if (data.new_horses && data.new_horses.length > 0) {
+                for (var i = 0; i < data.new_horses.length; i++) {
+                    _raceData.horses.push(data.new_horses[i]);
+                }
+                _raceData.horses.sort(function(a,b){ return Math.abs(b.final_change) - Math.abs(a.final_change); });
+                _raceData.horses = _raceData.horses.slice(0, 120);
+                document.getElementById('kplRaceBadge').textContent = _raceData.horses.length + '匹';
+            }
+            // 更新实时涨跌幅
+            if (data.price_updates) {
+                for (var code in data.price_updates) {
+                    if (_raceData.today_realtime) {
+                        _raceData.today_realtime[code] = data.price_updates[code];
+                    }
+                }
+            }
+            if (data.today_zt_codes) {
+                _raceData.today_zt_codes = data.today_zt_codes;
+            }
+            if (data.today_lianban) {
+                if (!_raceData.today_lianban) _raceData.today_lianban = {};
+                for (var code2 in data.today_lianban) {
+                    _raceData.today_lianban[code2] = data.today_lianban[code2];
+                }
+            }
+            _raceRedraw();
+            var statusEl = document.getElementById('kplRaceStatus');
+            if (statusEl) statusEl.innerHTML = '已刷新 ' + new Date().toLocaleTimeString() + ' | ' + _raceData.horses.length + '匹 | 约3分钟自动刷新';
+        })
+        .catch(function(){});
+}
+
+function _raceRedraw() {
+    if (!_raceData) return;
+    _raceHitPoints = [];
+    _raceLabelPositions = [];
+    _raceClimaxDayLines = [];
+    _renderRaceChart();
+    _renderRaceStats();
+    // 绑定事件：tooltip + click + 拖动平移
+    var canvas = document.getElementById('kplRaceCanvas');
+    if (canvas) {
+        canvas.style.cursor = _raceDragging ? 'grabbing' : 'grab';
+        canvas.onmousemove = _raceOnCanvasMouseMove;
+        canvas.onmouseleave = _raceHideTooltip;
+        canvas.onclick = _raceOnCanvasClick;
+        canvas.onmousedown = _raceOnCanvasMouseDown;
+    }
+    // 全局mouseup确保拖拽释放
+    document.onmouseup = _raceOnCanvasMouseUp;
+}
+
+function _renderRaceChart() {
+    var canvas = document.getElementById('kplRaceCanvas');
+    if (!canvas) return;
+    var ctx = canvas.getContext('2d');
+    var container = document.getElementById('kplRaceCanvasContainer');
+    if (!container) return;
+    // 高DPI适配
+    var dpr = window.devicePixelRatio || 1;
+    var rect = container.getBoundingClientRect();
+    var w = Math.max(rect.width - 2, 200);
+    var h = 1000;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    ctx.scale(dpr, dpr);
+
+    var horses = _raceData.horses || [];
+    if (horses.length === 0) {
+        ctx.fillStyle = '#666';
+        ctx.font = '14px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('无数据', w/2, h/2);
+        return;
+    }
+
+    var padding = {top: 20, right: 16, bottom: 28, left: 48};
+    var plotW = w - padding.left - padding.right;
+    var plotH = h - padding.top - padding.bottom;
+
+    // 收集所有曲线点的日期范围
+    var minDate = Infinity, maxDate = -Infinity;
+    var minVal = 0, maxVal = 10;
+    for (var i = 0; i < horses.length; i++) {
+        if (_raceHiddenHorses[horses[i].stock_code]) continue;
+        var curve = horses[i].curve || [];
+        for (var j = 0; j < curve.length; j++) {
+            var ts = new Date(curve[j].trade_date).getTime();
+            if (ts < minDate) minDate = ts;
+            if (ts > maxDate) maxDate = ts;
+            var v = curve[j].cum_close;
+            if (v < minVal) minVal = v;
+            if (v > maxVal) maxVal = v;
+        }
+    }
+    // 缩放+平移：保留 _raceZoomValue% 的时间窗口，_racePanX 控制偏移
+    if (_raceZoomValue < 100) {
+        var totalSpan = maxDate - minDate;
+        var visibleSpan = totalSpan * _raceZoomValue / 100;
+        var panRange = totalSpan - visibleSpan;
+        minDate = minDate + panRange * (1 - _racePanX);
+        maxDate = minDate + visibleSpan;
+    }
+    if (minDate === Infinity) {
+        ctx.fillStyle = '#666';
+        ctx.font = '14px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('无数据', w/2, h/2);
+        return;
+    }
+    // 扩展Y轴范围，留出10%余量
+    var yRange = Math.max(maxVal - minVal, 10);
+    maxVal = maxVal + yRange * 0.1;
+    minVal = minVal - yRange * 0.1;
+    // 垂直缩放+平移（以中心为基准收缩/扩展，_racePanY 控制上下偏移）
+    if (_raceYZoomValue !== 100) {
+        var yFullMin = minVal;
+        var yFullMax = maxVal;
+        var yCenter = (minVal + maxVal) / 2;
+        var yFullSpan = maxVal - minVal;
+        var yVisSpan = yFullSpan * (_raceYZoomValue / 100);
+        var yPanRange = yFullSpan - yVisSpan;
+        minVal = yCenter - yVisSpan / 2 + _racePanY * yPanRange / 2;
+        maxVal = yCenter + yVisSpan / 2 + _racePanY * yPanRange / 2;
+    }
+    var ySpan = maxVal - minVal;
+
+    // 涨停/大涨检测函数
+    function _isZtLimit(code, dailyPct) {
+        if (!dailyPct) return false;
+        if (code.startsWith('8')) return dailyPct >= 29.5;
+        if (code.startsWith('30') || code.startsWith('300') || code.startsWith('301')) return dailyPct >= 19.5;
+        if (code.startsWith('68') || code.startsWith('688') || code.startsWith('689')) return dailyPct >= 19.5;
+        return dailyPct >= 9.5;
+    }
+    function _isDaZhang(code, dailyPct) {
+        if (!dailyPct) return false;
+        return dailyPct >= 5 && !_isZtLimit(code, dailyPct);
+    }
+    // 自动检测高潮日
+    function _detectClimaxDays(horses) {
+        var dateMap = {};
+        for (var i = 0; i < horses.length; i++) {
+            if (_raceHiddenHorses[horses[i].stock_code]) continue;
+            var curve = horses[i].curve || [];
+            for (var j = 0; j < curve.length; j++) {
+                var dt = curve[j].trade_date;
+                if (!dateMap[dt]) dateMap[dt] = [];
+                dateMap[dt].push({ horse: horses[i], point: curve[j] });
+            }
+        }
+        var climaxDays = [];
+        var dateKeys = Object.keys(dateMap).sort();
+        for (var di = 0; di < dateKeys.length; di++) {
+            var dt = dateKeys[di];
+            var items = dateMap[dt];
+            var ztCount = 0, dzCount = 0;
+            var stockDetails = [];
+            for (var ii = 0; ii < items.length; ii++) {
+                var h = items[ii].horse;
+                var pt = items[ii].point;
+                var dp = pt.daily_change_pct;
+                var isZt = _isZtLimit(h.stock_code, dp);
+                var isDz = false;
+                if (isZt) {
+                    ztCount++;
+                } else if (_isDaZhang(h.stock_code, dp)) {
+                    dzCount++;
+                    isDz = true;
+                }
+                if (isZt || isDz) {
+                    stockDetails.push({
+                        stock_name: h.stock_name || h.stock_code,
+                        stock_code: h.stock_code,
+                        daily_change_pct: dp,
+                        cum_close: pt.cum_close,
+                        type: isZt ? 'zt' : 'strong_rise'
+                    });
+                }
+            }
+            var total = ztCount + dzCount;
+            if (total >= 5) {
+                climaxDays.push({ date: dt, ztCount: ztCount, dzCount: dzCount, total: total, stocks: stockDetails });
+            }
+        }
+        return climaxDays;
+    }
+    var climaxDays = _detectClimaxDays(horses);
+
+    // 辅助函数：数据点到Canvas坐标
+    function xPos(ts) {
+        return padding.left + (ts - minDate) / (maxDate - minDate) * plotW;
+    }
+    function yPos(val) {
+        return padding.top + plotH - (val - minVal) / ySpan * plotH;
+    }
+
+    // 清空背景
+    ctx.fillStyle = '#0a1628';
+    ctx.fillRect(0, 0, w, h);
+
+    // 水平网格线：统一使用10%为步长，清晰显示涨跌幅
+    var gridStep = 10;
+    var gridStart = Math.ceil(minVal / gridStep) * gridStep;
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    for (var gv = gridStart; gv <= maxVal; gv += gridStep) {
+        var gy = yPos(gv);
+        if (gy < padding.top - 5 || gy > h - padding.bottom + 5) continue;
+        // 10%整倍数网格线加粗
+        var isTenLine = (gv % 10 === 0);
+        ctx.strokeStyle = isTenLine ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.06)';
+        ctx.lineWidth = isTenLine ? 1.0 : 0.5;
+        ctx.beginPath();
+        ctx.moveTo(padding.left, gy);
+        ctx.lineTo(w - padding.right, gy);
+        ctx.stroke();
+        // 标签
+        ctx.fillStyle = isTenLine ? '#aaa' : '#666';
+        ctx.fillText((gv > 0 ? '+' : '') + gv + '%', padding.left - 4, gy);
+    }
+    // 0%基线
+    if (minVal < 0 && maxVal > 0) {
+        var zeroY = yPos(0);
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(padding.left, zeroY);
+        ctx.lineTo(w - padding.right, zeroY);
+        ctx.stroke();
+    }
+
+    // X轴日期标签 (每5个交易日)
+    if (maxDate > minDate) {
+        ctx.fillStyle = '#888';
+        ctx.font = '9px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        // 遍历所有曲线的日期来找到分布均匀的日期
+        var allDates = {};
+        for (var i = 0; i < horses.length; i++) {
+            if (_raceHiddenHorses[horses[i].stock_code]) continue;
+            var curve = horses[i].curve || [];
+            for (var j = 0; j < curve.length; j++) {
+                allDates[curve[j].trade_date] = true;
+            }
+        }
+        var dateKeys = Object.keys(allDates).sort();
+        var labelStep = Math.max(1, Math.floor(dateKeys.length / Math.floor(plotW / 50)));
+        for (var di = 0; di < dateKeys.length; di += labelStep) {
+            var d = dateKeys[di];
+            var ts = new Date(d).getTime();
+            var lx = xPos(ts);
+            if (lx >= padding.left && lx <= w - padding.right) {
+                var shortLabel = d.slice(5).replace(/^0/, '').replace('-0', '-').replace('-', '/');
+                ctx.fillText(shortLabel, lx, h - padding.bottom + 6);
+            }
+        }
+    }
+
+    // 高潮日竖线（多条）
+    for (var cdi = 0; cdi < climaxDays.length; cdi++) {
+        var day = climaxDays[cdi];
+        var cTs = new Date(day.date).getTime();
+        var cx = xPos(cTs);
+        if (cx >= padding.left && cx <= w - padding.right) {
+            // 记录高潮日竖线位置用于hover
+            _raceClimaxDayLines.push({x: cx, date: day.date, stocks: day.stocks || []});
+            ctx.save();
+            ctx.setLineDash([4, 4]);
+            ctx.strokeStyle = 'rgba(255,215,0,0.6)';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(cx, padding.top);
+            ctx.lineTo(cx, h - padding.bottom);
+            ctx.stroke();
+            ctx.restore();
+            ctx.fillStyle = '#ffd700';
+            ctx.font = '9px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+            var shortLabel = day.date.slice(5).replace(/^0/, '').replace('-0', '-').replace('-', '/');
+            ctx.fillText('高潮日' + shortLabel, cx, padding.top - 2);
+        }
+    }
+
+    // 折线标记防挤
+    var _usedLabelRegions = [];
+
+    // 绘制每匹马
+    for (var i = 0; i < horses.length; i++) {
+        var hData = horses[i];
+        if (_raceHiddenHorses[hData.stock_code]) continue;
+        var curve = hData.curve || [];
+        if (curve.length < 2) continue;
+        var color = _raceColors[i % _raceColors.length];
+
+        // 收盘线
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        var first = true;
+        for (var j = 0; j < curve.length; j++) {
+            var pt = curve[j];
+            var px = xPos(new Date(pt.trade_date).getTime());
+            var py = yPos(pt.cum_close);
+            if (px < padding.left - 10) continue;
+            if (px > w - padding.right + 10) break;
+            if (first) {
+                ctx.moveTo(px, py);
+                first = false;
+            } else {
+                ctx.lineTo(px, py);
+            }
+        }
+        ctx.stroke();
+
+        // 每日小点（半透明） + 填充 _raceHitPoints
+        for (var j = 0; j < curve.length; j++) {
+            var pt2 = curve[j];
+            var dpx = xPos(new Date(pt2.trade_date).getTime());
+            var dpy = yPos(pt2.cum_close);
+            if (dpx < padding.left || dpx > w - padding.right) continue;
+            ctx.beginPath();
+            ctx.arc(dpx, dpy, 2.2, 0, Math.PI * 2);
+            ctx.fillStyle = color + '99';
+            ctx.fill();
+            _raceHitPoints.push({x: dpx, y: dpy, label: hData.stock_name || hData.stock_code, date: pt2.trade_date, changePct: pt2.cum_close, dailyChangePct: pt2.daily_change_pct, isEvent: false});
+        }
+
+        // 事件圆点
+        var events = hData.events || [];
+        for (var ei = 0; ei < events.length; ei++) {
+            var ev = events[ei];
+            var ets = new Date(ev.date).getTime();
+            // 在曲线中找到对应日期点的位置
+            var evIdx = -1;
+            for (var j = 0; j < curve.length; j++) {
+                if (curve[j].trade_date === ev.date) {
+                    evIdx = j;
+                    break;
+                }
+            }
+            if (evIdx < 0) continue;
+            var ex2 = xPos(ets);
+            var ey = yPos(curve[evIdx].cum_close);
+            if (ex2 < padding.left - 5 || ex2 > w - padding.right + 5) continue;
+            // 涨停红点，大涨紫点
+            var dotColor = '#ff1744';  // 涨停红
+            if (ev.type === 'strong_rise') {
+                dotColor = '#ce93d8';  // 大涨紫
+            }
+            ctx.beginPath();
+            ctx.arc(ex2, ey, 3.5, 0, Math.PI * 2);
+            ctx.fillStyle = dotColor;
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 0.8;
+            ctx.stroke();
+            // 标记为事件点用于tooltip
+            _raceHitPoints.push({x: ex2, y: ey, label: hData.stock_name || hData.stock_code, date: ev.date, changePct: curve[evIdx].cum_close, dailyChangePct: curve[evIdx].daily_change_pct, isEvent: true, eventType: ev.type});
+        }
+
+        // 创业板/科创板 >10% 青色空心菱形标记
+        var sc = hData.stock_code || '';
+        var isGem = sc.startsWith('30') || sc.startsWith('300') || sc.startsWith('301');
+        var isStar = sc.startsWith('68') || sc.startsWith('688') || sc.startsWith('689');
+        if (isGem || isStar) {
+            for (var j = 0; j < curve.length; j++) {
+                var pt3 = curve[j];
+                var dp = pt3.daily_change_pct;
+                if (!dp || dp <= 10) continue;
+                // 检查该日期是否已有事件点（zt/strong_rise）
+                var hasEvent = false;
+                for (var ei2 = 0; ei2 < events.length; ei2++) {
+                    if (events[ei2].date === pt3.trade_date) {
+                        hasEvent = true;
+                        break;
+                    }
+                }
+                if (hasEvent) continue;
+                var dx = xPos(new Date(pt3.trade_date).getTime());
+                var dy = yPos(pt3.cum_close);
+                if (dx < padding.left || dx > w - padding.right) continue;
+                var ds = 4;
+                ctx.save();
+                ctx.translate(dx, dy);
+                ctx.rotate(Math.PI / 4);
+                ctx.strokeStyle = '#00bcd4';
+                ctx.lineWidth = 1.5;
+                ctx.strokeRect(-ds, -ds, ds * 2, ds * 2);
+                ctx.restore();
+            }
+        }
+
+        // ===== 折线标记股票名（防碰撞） =====
+        var stockLabel = hData.stock_name || hData.stock_code;
+        var candidates = [];
+        // 第一条数据点右上
+        var firstP = curve[0];
+        if (firstP) {
+            var fpx = xPos(new Date(firstP.trade_date).getTime());
+            var fpy = yPos(firstP.cum_close);
+            if (fpx >= padding.left && fpx <= w - padding.right) {
+                candidates.push({x: fpx, y: fpy, label: stockLabel, priority: 1, align: 'left', dx: 4});
+            }
+        }
+        // 最后一条数据点左上
+        if (curve.length > 1) {
+            var lastPt = curve[curve.length - 1];
+            var lpx = xPos(new Date(lastPt.trade_date).getTime());
+            var lpy = yPos(lastPt.cum_close);
+            if (lpx >= padding.left && lpx <= w - padding.right) {
+                candidates.push({x: lpx, y: lpy, label: stockLabel, priority: 2, align: 'right', dx: -4});
+            }
+        }
+        // 事件圆点正上方
+        for (var ei3 = 0; ei3 < events.length; ei3++) {
+            var ev3 = events[ei3];
+            var evx = xPos(new Date(ev3.date).getTime());
+            var evIdx2 = -1;
+            for (var j5 = 0; j5 < curve.length; j5++) {
+                if (curve[j5].trade_date === ev3.date) { evIdx2 = j5; break; }
+            }
+            if (evIdx2 < 0) continue;
+            var evy = yPos(curve[evIdx2].cum_close);
+            if (evx >= padding.left - 5 && evx <= w - padding.right + 5) {
+                candidates.push({x: evx, y: evy, label: stockLabel, priority: 3, align: 'center', dx: 0});
+            }
+        }
+        // 按优先级降序
+        candidates.sort(function(a, b) { return b.priority - a.priority; });
+        // 防碰撞绘制
+        var labelDrawn = false;
+        for (var ci = 0; ci < candidates.length && !labelDrawn; ci++) {
+            var cand = candidates[ci];
+            var lbx = cand.x + cand.dx;
+            var lby = cand.y - 4; // 点上方4px
+            // 估算label尺寸
+            var lblHalfW = stockLabel.length * 4 + 4;
+            var region = {x1: lbx - lblHalfW, x2: lbx + lblHalfW, y1: lby - 16, y2: lby};
+            // 碰撞检测
+            var overlaps = false;
+            for (var ri = 0; ri < _usedLabelRegions.length; ri++) {
+                var r = _usedLabelRegions[ri];
+                if (!(region.x2 <= r.x1 || region.x1 >= r.x2 || region.y2 <= r.y1 || region.y1 >= r.y2)) {
+                    overlaps = true; break;
+                }
+            }
+            if (overlaps) continue;
+            // 绘制label
+            ctx.save();
+            ctx.font = 'bold 11px sans-serif';
+            ctx.textBaseline = 'bottom';
+            ctx.textAlign = cand.align;
+            // 半透明背景
+            var tw = ctx.measureText(stockLabel).width;
+            var bgL, bgT, bgW, bgH;
+            if (cand.align === 'center') { bgL = lbx - tw/2 - 3; }
+            else if (cand.align === 'left') { bgL = lbx; }
+            else { bgL = lbx - tw; }
+            bgT = lby - 14; bgW = tw + 6; bgH = 14;
+            ctx.fillStyle = 'rgba(10,22,40,0.80)';
+            ctx.fillRect(bgL - 1, bgT - 1, bgW + 2, bgH + 2);
+            ctx.fillStyle = color;
+            ctx.fillText(stockLabel, lbx, lby);
+            ctx.restore();
+            _usedLabelRegions.push(region);
+            _raceLabelPositions.push({x: lbx, y: lby, label: stockLabel, stock_code: hData.stock_code});
+            labelDrawn = true;
+        }
+    }
+
+    // 图例
+    _renderRaceLegend();
+}
+
+// ===== 赛马图表tooltip =====
+function _raceShowTooltip(label, date, changePct, dailyChangePct) {
+    var el = document.getElementById('kplRaceTooltip');
+    if (!el) return;
+    // 解析事件标签
+    var showLabel = label;
+    var evTag = '';
+    var idx = label.indexOf(' [');
+    if (idx > 0) {
+        showLabel = label.substring(0, idx);
+        evTag = label.substring(idx);
+    }
+    // 第二行：日期｜累计:X%｜当日:X%
+    var dcp = dailyChangePct !== undefined && dailyChangePct !== null ? '｜当日:' + dailyChangePct.toFixed(1) + '%' : '';
+    el.innerHTML = '<b>' + showLabel + '</b>' + evTag + '<br>' + date + '｜累计:' + changePct.toFixed(1) + '%' + dcp;
+    el.style.display = 'block';
+}
+function _raceHideTooltip() {
+    var el = document.getElementById('kplRaceTooltip');
+    if (el) el.style.display = 'none';
+}
+function _raceShowClimaxTooltip(date, stocks, mx, my, tooltip) {
+    if (!tooltip) tooltip = document.getElementById('kplRaceTooltip');
+    if (!tooltip) return;
+    tooltip.style.left = '-999px';
+    var html = '<div style="font-weight:bold;color:#ffd700;border-bottom:1px solid rgba(255,215,0,0.3);margin-bottom:4px;padding-bottom:3px;">📊 高潮日 ' + date + '</div>';
+    for (var i = 0; i < stocks.length; i++) {
+        var s = stocks[i];
+        var pctSign = s.daily_change_pct >= 0 ? '+' : '';
+        var cumSign = s.cum_close >= 0 ? '+' : '';
+        var typeColor = s.type === 'zt' ? '#ff6b6b' : '#ce93d8';
+        var typeLabel = s.type === 'zt' ? '涨停' : '大涨';
+        html += '<div style="display:flex;gap:6px;font-size:0.88em;line-height:1.5;">'
+            + '<span style="color:' + typeColor + ';font-weight:600;">' + s.stock_name + '</span>'
+            + '<span style="color:#ffd700;font-size:0.72em;background:rgba(255,215,0,0.1);padding:0 4px;border-radius:2px;">' + typeLabel + '</span>'
+            + '<span style="color:#eee;">当日:' + pctSign + s.daily_change_pct.toFixed(1) + '%</span>'
+            + '<span style="color:#90caf9;">累计:' + cumSign + s.cum_close.toFixed(1) + '%</span>'
+            + '</div>';
+    }
+    tooltip.innerHTML = html;
+    tooltip.style.display = 'block';
+    // 智能位置
+    var canvas = document.getElementById('kplRaceCanvas');
+    var cw = canvas ? canvas.offsetWidth : 600;
+    var tooltipWidth = tooltip.offsetWidth;
+    var leftPos = mx + 12;
+    if (leftPos + tooltipWidth > cw) {
+        leftPos = mx - tooltipWidth - 12;
+        if (leftPos < 0) leftPos = 4;
+    }
+    tooltip.style.left = leftPos + 'px';
+    tooltip.style.top = Math.max(my - 30, 0) + 'px';
+}
+
+function _raceOnCanvasClick(e) {
+    var canvas = document.getElementById('kplRaceCanvas');
+    if (!canvas) return;
+    if (_raceLabelPositions.length === 0) return;
+    var rect = canvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+    for (var i = 0; i < _raceLabelPositions.length; i++) {
+        var lp = _raceLabelPositions[i];
+        var dx = mx - lp.x;
+        var dy = my - lp.y;
+        if (Math.abs(dx) < 40 && Math.abs(dy) < 16) {
+            _raceToggleHorse(lp.stock_code);
+            return;
+        }
+    }
+}
+
+// ===== 赛马图拖拽平移 =====
+function _raceOnCanvasMouseDown(e) {
+    var canvas = document.getElementById('kplRaceCanvas');
+    if (!canvas) return;
+    var rect = canvas.getBoundingClientRect();
+    _raceDragging = true;
+    _raceDragStart = {
+        mx: e.clientX,
+        my: e.clientY,
+        panX: _racePanX,
+        panY: _racePanY
+    };
+    canvas.style.cursor = 'grabbing';
+}
+
+function _raceOnCanvasMouseUp(e) {
+    if (!_raceDragging) return;
+    _raceDragging = false;
+    _raceDragStart = null;
+    var canvas = document.getElementById('kplRaceCanvas');
+    if (canvas) canvas.style.cursor = 'grab';
+}
+
+function _raceOnCanvasMouseMove(e) {
+    var canvas = document.getElementById('kplRaceCanvas');
+    var tooltip = document.getElementById('kplRaceTooltip');
+    if (!canvas || !tooltip) return;
+    // 如果在拖拽中 → 平移
+    if (_raceDragging && _raceDragStart) {
+        var rect = canvas.getBoundingClientRect();
+        var plotW = rect.width - 64;  // padding.left(48) + padding.right(16)
+        var plotH = rect.height - 48; // padding.top(20) + padding.bottom(28)
+        var dxNorm = (e.clientX - _raceDragStart.mx) / plotW;
+        var dyNorm = -(e.clientY - _raceDragStart.my) / plotH;
+        _racePanX = Math.max(0, Math.min(1, _raceDragStart.panX + dxNorm));
+        _racePanY = Math.max(-1, Math.min(1, _raceDragStart.panY + dyNorm));
+        _raceRedraw();
+        return;
+    }
+    // 不在拖拽中 → 原有tooltip逻辑
+    if (_raceHitPoints.length === 0) { _raceHideTooltip(); return; }
+    var rect = canvas.getBoundingClientRect();
+    var mx = e.clientX - rect.left;
+    var my = e.clientY - rect.top;
+    var found = null;
+    for (var i = 0; i < _raceHitPoints.length; i++) {
+        var hp = _raceHitPoints[i];
+        var dx = mx - hp.x;
+        var dy = my - hp.y;
+        if (dx * dx + dy * dy < 64) {
+            found = hp;
+            break;
+        }
+    }
+    if (found) {
+        var evTag = found.isEvent ? (found.eventType === 'strong_rise' ? ' [大涨]' : ' [涨停]') : '';
+        _raceShowTooltip(found.label + evTag, found.date, found.changePct, found.dailyChangePct);
+        tooltip.style.left = '-999px';
+        var tooltipWidth = tooltip.offsetWidth;
+        var leftPos = mx + 12;
+        if (leftPos + tooltipWidth > rect.width) {
+            leftPos = mx - tooltipWidth - 12;
+            if (leftPos < 0) leftPos = 4;
+        }
+        tooltip.style.left = leftPos + 'px';
+        tooltip.style.top = Math.max(my - 30, 0) + 'px';
+    } else {
+        var foundClimax = null;
+        for (var ci = 0; ci < _raceClimaxDayLines.length; ci++) {
+            var cl = _raceClimaxDayLines[ci];
+            var ddx = mx - cl.x;
+            if (Math.abs(ddx) < 8) {
+                foundClimax = cl;
+                break;
+            }
+        }
+        if (foundClimax && foundClimax.stocks.length > 0) {
+            _raceShowClimaxTooltip(foundClimax.date, foundClimax.stocks, mx, my, tooltip);
+        } else {
+            _raceHideTooltip();
+        }
+    }
+}
+
+function _renderRaceLegend() {
+    var legendEl = document.getElementById('kplRaceLegend');
+    if (!legendEl || !_raceData) return;
+    var horses = _raceData.horses || [];
+    // 按累计涨幅从高到低排序
+    var sorted = horses.map(function(h, idx) { return {horse: h, idx: idx}; });
+    sorted.sort(function(a, b) { return (b.horse.final_change || 0) - (a.horse.final_change || 0); });
+    var html = '';
+    for (var si = 0; si < sorted.length; si++) {
+        var h = sorted[si].horse;
+        var color = _raceColors[sorted[si].idx % _raceColors.length];
+        var fc = h.final_change || 0;
+        var pctClass = fc >= 0 ? 'up' : 'down';
+        var pctSign = fc >= 0 ? '+' : '';
+        var hiddenClass = _raceHiddenHorses[h.stock_code] ? 'hidden' : '';
+        var name = h.stock_name || h.stock_code;
+        html += '<span class="kpl-race-legend-item ' + hiddenClass + '" onclick="_raceToggleHorse(\\x27' + h.stock_code + '\\x27)" style="border-color:' + color + '40;">'
+            + '<span class="legend-dot" style="background:' + color + ';"></span>'
+            + '<span class="legend-name">' + name + '</span>'
+            + '<span class="legend-pct ' + pctClass + '">' + pctSign + fc.toFixed(1) + '%</span>'
+            + '</span>';
+    }
+    legendEl.innerHTML = html;
+}
+
+function _raceToggleHorse(code) {
+    _raceHiddenHorses[code] = !_raceHiddenHorses[code];
+    _raceRedraw();
+}
+
+function _raceSelectAll(show) {
+    if (!_raceData) return;
+    var horses = _raceData.horses || [];
+    for (var i = 0; i < horses.length; i++) {
+        if (show) {
+            delete _raceHiddenHorses[horses[i].stock_code];
+        } else {
+            _raceHiddenHorses[horses[i].stock_code] = true;
+        }
+    }
+    _raceRedraw();
+}
+
+function _raceGetBoardClass(code) {
+    if (!code) return 'board-main';
+    if (code.startsWith('30') || code.startsWith('300') || code.startsWith('301')) return 'board-gem';
+    if (code.startsWith('68') || code.startsWith('688') || code.startsWith('689')) return 'board-star';
+    return 'board-main';
+}
+
+function _renderRaceStats() {
+    var statsEl = document.getElementById('kplRaceStats');
+    if (!statsEl || !_raceData) return;
+    var horses = _raceData.horses || [];
+    if (horses.length === 0) {
+        statsEl.innerHTML = '';
+        return;
+    }
+    // 计算累计涨幅Top8
+    var fcRanking = horses.map(function(h,i){ return {idx:i, fc:h.final_change || 0}; });
+    fcRanking.sort(function(a,b){ return b.fc - a.fc; });
+    var fcTop8Set = {};
+    for (var ti = 0; ti < Math.min(8, fcRanking.length); ti++) {
+        fcTop8Set[fcRanking[ti].idx] = true;
+    }
+    // 排序
+    var sortedHorses = horses.slice();
+    if (_raceSortKey) {
+        sortedHorses.sort(function(a, b) {
+            var va, vb;
+            if (_raceSortKey === 'name') {
+                va = (a.stock_name || a.stock_code || '').toLowerCase();
+                vb = (b.stock_name || b.stock_code || '').toLowerCase();
+                return _raceSortDir === 'asc' ? (va < vb ? -1 : va > vb ? 1 : 0) : (vb < va ? -1 : vb > va ? 1 : 0);
+            } else if (_raceSortKey === 'change') {
+                va = a.final_change || 0;
+                vb = b.final_change || 0;
+            } else if (_raceSortKey === 'evcount') {
+                va = (a.events || []).length;
+                vb = (b.events || []).length;
+            } else if (_raceSortKey === 'realtime') {
+                va = (_raceData.today_realtime && _raceData.today_realtime[a.stock_code]) || 0;
+                vb = (_raceData.today_realtime && _raceData.today_realtime[b.stock_code]) || 0;
+            }
+            return _raceSortDir === 'asc' ? va - vb : vb - va;
+        });
+    }
+    function _sortIcon(key) {
+        if (_raceSortKey !== key) return '';
+        return _raceSortDir === 'asc' ? ' ▲' : ' ▼';
+    }
+    var html = '<table><thead><tr>'
+        + '<th>#</th>'
+        + '<th onclick="_raceToggleSort(\\x27name\\x27)" style="cursor:pointer;">股票' + _sortIcon('name') + '</th>'
+        + '<th>题材标签</th>'
+        + '<th style="max-width:180px;">板块·涨停简介</th>'
+        + '<th onclick="_raceToggleSort(\\x27realtime\\x27)" style="cursor:pointer;">实时涨幅' + _sortIcon('realtime') + '</th>'
+        + '<th onclick="_raceToggleSort(\\x27change\\x27)" style="cursor:pointer;">累计涨跌' + _sortIcon('change') + '</th>'
+        + '<th onclick="_raceToggleSort(\\x27evcount\\x27)" style="cursor:pointer;">涨停次数' + _sortIcon('evcount') + '</th>'
+        + '</tr></thead><tbody>';
+    var _horseIdxMap = {};
+    for (var mi = 0; mi < horses.length; mi++) {
+        _horseIdxMap[horses[mi].stock_code] = mi;
+    }
+    for (var i = 0; i < sortedHorses.length; i++) {
+        var h = sortedHorses[i];
+        var origIdx = _horseIdxMap[h.stock_code] || 0;
+        var fc = h.final_change || 0;
+        var fcClass = fc > 0 ? 'race-stat-up' : (fc < 0 ? 'race-stat-down' : 'race-stat-zero');
+        var fcSign = fc >= 0 ? '+' : '';
+        var evCount = (h.events || []).length;
+        var code = h.stock_code || '';
+        var bClass = _raceGetBoardClass(code);
+        var realtime = '';
+        if (_raceData.today_realtime && _raceData.today_realtime[code] !== undefined) {
+            var rt = _raceData.today_realtime[code];
+            var rtClass = rt > 0 ? 'race-stat-up' : (rt < 0 ? 'race-stat-down' : 'race-stat-zero');
+            var rtSign = rt >= 0 ? '+' : '';
+            realtime = '<span class="' + rtClass + '">' + rtSign + rt.toFixed(2) + '%</span>';
+        } else if (_raceData.today_zt_codes && _raceData.today_zt_codes.indexOf(code) >= 0) {
+            realtime = '<span class="race-stat-up">涨停</span>';
+        }
+        // 今日涨停徽标（内联于实时涨幅列）
+        var lianbanN = 0;
+        if (_raceData.today_lianban && _raceData.today_lianban[code]) {
+            lianbanN = _raceData.today_lianban[code];
+        }
+        if (_raceData.today_zt_codes && _raceData.today_zt_codes.indexOf(code) >= 0) {
+            var raceLb = Math.min(lianbanN || 1, 4);
+            realtime += '<span class="today-zt-badge today-zt-badge-lb' + raceLb + '">🔥今日涨停' + (lianbanN > 1 ? lianbanN : '') + '</span>';
+        }
+        var rb = h.reason_brief || '';
+        if (rb.length > 30) rb = rb.slice(0, 30) + '...';
+        // 累计涨跌幅标签（含涨幅Top8排名徽标）
+        var fcLabel = fcSign + fc.toFixed(1) + '%';
+        if (fcTop8Set[origIdx]) {
+            var top8Rank = 0;
+            for (var ti2 = 0; ti2 < fcRanking.length; ti2++) {
+                if (fcRanking[ti2].idx === origIdx) { top8Rank = ti2 + 1; break; }
+            }
+            fcLabel += '<span class="race-badge-rank">Top' + top8Rank + '</span>';
+        }
+        // 行级样式：今日涨停复用强榜渐变背景
+        var rowCls = '';
+        if (_raceHiddenHorses[code]) {
+            rowCls = 'race-stat-row-hidden';
+        } else if (_raceData.today_zt_codes && _raceData.today_zt_codes.indexOf(code) >= 0) {
+            rowCls = 'sniper-strong-stock-today';
+        }
+        html += rowCls ? '<tr class="' + rowCls + '">' : '<tr>';
+        html += '<td>' + (i+1) + '</td>'
+            + '<td><span class="race-name-toggle" onclick="_raceToggleHorse(\\x27' + code + '\\x27)">' + (h.stock_name || code) + '</span> <span class="stock-board-' + bClass + '">' + code + '</span>'
+            + (lianbanN > 1 ? ' <span class="lianban-badge">连' + lianbanN + '板</span>' : '') + '</td>'
+            + '<td style="color:#90caf9;font-size:0.85em;">' + (h.tag || '-') + '</td>'
+            + '<td style="color:#ffcc80;font-size:0.78em;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + (h.reason_brief || '') + '">' + (h.plate_name || '-') + ' · ' + (rb || '-') + '</td>'
+            + '<td>' + realtime + '</td>'
+            + '<td class="' + fcClass + '">' + fcLabel + '</td>'
+            + '<td>' + evCount + '</td>'
+            + '</tr>';
+    }
+    html += '</tbody></table>';
+    // 全选/全取消 + 表格
+    var visibleCount = 0;
+    for (var vi = 0; vi < horses.length; vi++) {
+        if (!_raceHiddenHorses[horses[vi].stock_code]) visibleCount++;
+    }
+    html = '<div class="race-toggle-all">'
+        + '<span style="color:#aaa;font-size:0.78em;">显示 <b>' + visibleCount + '</b>/' + horses.length + '</span>'
+        + '<button onclick="_raceSelectAll(true)">全选</button>'
+        + '<button onclick="_raceSelectAll(false)">全取消</button>'
+        + '</div>'
+        + html;
+    statsEl.innerHTML = html;
+
+    // 自动高潮日检测
+    function _isZtLimit(code, dailyPct) {
+        if (!dailyPct) return false;
+        if (code.startsWith('8')) return dailyPct >= 29.5;
+        if (code.startsWith('30') || code.startsWith('300') || code.startsWith('301')) return dailyPct >= 19.5;
+        if (code.startsWith('68') || code.startsWith('688') || code.startsWith('689')) return dailyPct >= 19.5;
+        return dailyPct >= 9.5;
+    }
+    function _isDaZhang(code, dailyPct) {
+        if (!dailyPct) return false;
+        return dailyPct >= 5 && !_isZtLimit(code, dailyPct);
+    }
+    function _detectClimaxDays(horses) {
+        var dateMap = {};
+        for (var i = 0; i < horses.length; i++) {
+            if (_raceHiddenHorses[horses[i].stock_code]) continue;
+            var curve = horses[i].curve || [];
+            for (var j = 0; j < curve.length; j++) {
+                var dt = curve[j].trade_date;
+                if (!dateMap[dt]) dateMap[dt] = [];
+                dateMap[dt].push({ horse: horses[i], point: curve[j] });
+            }
+        }
+        var climaxDays = [];
+        var dateKeys = Object.keys(dateMap).sort();
+        for (var di = 0; di < dateKeys.length; di++) {
+            var dt = dateKeys[di];
+            var items = dateMap[dt];
+            var ztCount = 0, dzCount = 0;
+            for (var ii = 0; ii < items.length; ii++) {
+                var h = items[ii].horse;
+                var pt = items[ii].point;
+                var dp = pt.daily_change_pct;
+                if (_isZtLimit(h.stock_code, dp)) ztCount++;
+                else if (_isDaZhang(h.stock_code, dp)) dzCount++;
+            }
+            var total = ztCount + dzCount;
+            if (total >= 5) {
+                climaxDays.push({ date: dt, ztCount: ztCount, dzCount: dzCount, total: total });
+            }
+        }
+        return climaxDays;
+    }
+    var climaxDays = _detectClimaxDays(horses);
+    if (climaxDays.length > 0) {
+        statsEl.innerHTML += '<div class="race-climax-sep"></div>';
+        for (var cdi = 0; cdi < climaxDays.length; cdi++) {
+            var day = climaxDays[cdi];
+            var shortDate = day.date.slice(5).replace(/^0/, '').replace('-0', '-').replace('-', '/');
+            statsEl.innerHTML += '<div class="race-climax-info">🔥 高潮日 ' + shortDate + ': 涨停 ' + day.ztCount + ', 大涨 ' + day.dzCount + '</div>';
+        }
+    }
+}
+
+function _raceToggleSort(key) {
+    if (_raceSortKey === key) {
+        _raceSortDir = _raceSortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+        _raceSortKey = key;
+        _raceSortDir = 'desc';  // 默认降序
+    }
+    _renderRaceStats();
+}
+
+
+// 窗口缩放时重绘canvas
+var _raceResizeTimer = null;
+var _raceZoomTimer = null;
+window.addEventListener('resize', function(){
+    if (_raceData) {
+        if (_raceResizeTimer) clearTimeout(_raceResizeTimer);
+        _raceResizeTimer = setTimeout(function(){ _raceRedraw(); }, 300);
+    }
+});
+
+// 赛马图表缩放滑块（防抖）
+document.addEventListener('input', function(e){
+    if (e.target && e.target.id === 'kplRaceZoom') {
+        _raceZoomValue = parseInt(e.target.value);
+        var lbl = document.getElementById('kplRaceZoomLabel');
+        if (lbl) lbl.textContent = _raceZoomValue + '%';
+        if (_raceData) {
+            if (_raceZoomTimer) clearTimeout(_raceZoomTimer);
+            _raceZoomTimer = setTimeout(function(){ _raceRedraw(); }, 80);
+        }
+    }
+    if (e.target && e.target.id === 'kplRaceYZoom') {
+        _raceYZoomValue = parseInt(e.target.value);
+        var yzl = document.getElementById('kplRaceYZoomLabel');
+        if (yzl) yzl.textContent = _raceYZoomValue + '%';
+        if (_raceData) {
+            if (_raceZoomTimer) clearTimeout(_raceZoomTimer);
+            _raceZoomTimer = setTimeout(function(){ _raceRedraw(); }, 80);
+        }
+    }
+});
 
 function doKplUpdate(btn) {
     if (btn) {
@@ -18075,7 +19574,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._respond_json(result, cors_headers)
                 return
             try:
-                import sqlite3
                 db_path = 'data/stocks_kline.db'
                 conn = sqlite3.connect(db_path)
                 cur = conn.cursor()
@@ -18640,58 +20138,36 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/kpl_reason_search':
             try:
                 q = query.get('q', [''])[0].strip()
+                if not q:
+                    self._respond_json({'results': [], 'total_hits': 0, 'error': 'empty_query'}, cors_headers)
+                    return
                 date_start = query.get('date_start', [None])[0]
                 date_end = query.get('date_end', [None])[0]
                 no_st = query.get('no_st', [None])[0]
                 strict = query.get('strict', [None])[0]
                 gem_extra = query.get('gem_extra', ['0'])[0] == '1'
-                result = _kpl_analyze_rows(q, date_start, date_end, no_st, strict)
-                if gem_extra:
-                    # 获取搜索结果中的股票代码
-                    result_codes = list(set(r.get('stock_code', '') for r in result.get('results', []) if r.get('stock_code')))
-                    # 额外从reason_index全量数据中查找该关键词关联的所有股票
-                    # 用于创业板/科创板：即使记录超出日期范围，只要有强涨(>10%)就展示
-                    all_linked = _kpl_get_all_stock_codes_for_keyword(q)
-                    all_codes = list(set(result_codes + all_linked))
-                    strong_rise = _kpl_get_gem_strong_rise(all_codes) if all_codes else {}
-                    # 对有强涨但不在主搜索结果中的创业板/科创板股票，创建合成条目
-                    if strong_rise:
-                        new_entries = []
-                        for code, sr_entries in strong_rise.items():
-                            latest = _kpl_stock_latest_tag.get(code, {})
-                            stock_name = latest.get('stock_name', '') or _kpl_stock_index.get(code, {}).get('stock_name', '')
-                            if not stock_name:
-                                continue
-                            latest_tag = latest.get('tag', '')
-                            if latest_tag in SNIPER_EXCLUDE_TAGS:
-                                continue
-                            for sr in sr_entries:
-                                # 检查该股票在此强涨日期是否已有记录（避免重复）
-                                already_exists = any(
-                                    r.get('stock_code') == code and r.get('date') == sr['date']
-                                    for r in result.get('results', [])
-                                )
-                                if already_exists:
-                                    continue
-                                new_entries.append({
-                                    'stock_code': code,
-                                    'stock_name': stock_name,
-                                    'reason_tag': latest.get('tag', q),
-                                    'reason_brief': latest.get('reason_brief', ''),
-                                    'plate_name': latest.get('plate_name', ''),
-                                    'concepts': latest.get('concepts', ''),
-                                    'date': sr['date'],
-                                    'lianban_desc': '',
-                                    'lianban_computed': 0,
-                                    'is_strong_rise': True,
-                                    'change_pct': sr['change_pct'],
-                                    'reason_detail': latest.get('reason_detail', ''),
-                                })
-                        if new_entries:
-                            result['results'].extend(new_entries)
-                            result['results'].sort(key=lambda x: x.get('date', ''), reverse=True)
-                            result['total_hits'] = len(result['results'])
-                    result['gem_strong_rise'] = strong_rise
+
+                # 缓存键
+                cache_key = _kpl_search_cache_key(q, date_start, date_end, no_st, strict)
+                mem_key = f"kpl_search:{cache_key}"
+
+                # ① 内存缓存（同一进程内秒回）
+                mem_data = _get_cached(mem_key, ttl=_KPL_SEARCH_CACHE_TTL)
+                if mem_data is not None:
+                    self._respond_json(mem_data, cors_headers)
+                    return
+
+                # ② 文件缓存（跨进程/重启有效，warm 内存）
+                file_data = _kpl_search_cache_load(cache_key)
+                if file_data is not None:
+                    _set_cache(mem_key, file_data)
+                    self._respond_json(file_data, cors_headers)
+                    return
+
+                # ③ 全量计算
+                result = _kpl_full_search(q, date_start, date_end, no_st, strict, gem_extra)
+                _kpl_search_cache_save(cache_key, result)
+                _set_cache(mem_key, result)
                 self._respond_json(result, cors_headers)
             except Exception as e:
                 import traceback
@@ -18700,12 +20176,34 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/kpl_top_tags':
             n = int(query.get('n', ['40'])[0])
             try:
-                # 复用精准狙击中实时强榜的Top N（最近20交易日KPL数据，保持一致）
+                # 1. 优先读文件缓存 -> 瞬间返回
+                cached = _kpl_top_tags_cache_load(n)
+                if cached:
+                    # 检查缓存是否过期，过期则后台异步刷新
+                    now = int(time.time())
+                    if now - _kpl_top_tags_cache_timestamp > _KPL_TOP_TAGS_CACHE_TTL:
+                        threading.Thread(target=_kpl_top_tags_cache_refresh, daemon=True).start()
+                    self._respond_json(cached, cors_headers)
+                    return
+
+                # 2. 轻量内存路径 -> 瞬间返回 + 后台写文件
+                top_tags = _kpl_get_top_tags(n)
+                if top_tags:
+                    threading.Thread(target=_kpl_top_tags_cache_refresh, daemon=True).start()
+                    self._respond_json(top_tags, cors_headers)
+                    return
+
+                # 3. 降级到_get_sniper_data()（原有最慢路径）
                 sniper = _get_sniper_data()
-                rank_sorted = sorted(sniper['rank_tag_totals'].keys(), key=lambda t: -sniper['rank_tag_totals'][t])
-                top_tags = [{'tag': t, 'count': sniper['rank_tag_totals'].get(t, 0)} for t in rank_sorted[:n]]
+                rank_tag_totals = sniper.get('rank_tag_totals', {})
+                if not rank_tag_totals:
+                    top_tags = _kpl_get_top_tags(n)
+                else:
+                    rank_sorted = sorted(rank_tag_totals.keys(), key=lambda t: -rank_tag_totals[t])
+                    top_tags = [{'tag': t, 'count': rank_tag_totals.get(t, 0)} for t in rank_sorted[:n]]
                 self._respond_json(top_tags, cors_headers)
-            except Exception:
+            except Exception as e:
+                print(f"[KPL标签] 获取失败: {e}")
                 self._respond_json(_kpl_get_top_tags(n), cors_headers)
 
         elif path == '/api/kpl_update_data':
@@ -18775,6 +20273,7 @@ class Handler(BaseHTTPRequestHandler):
                                 _kpl_rows_by_date = {}
                                 _kpl_rows_by_stock = {}
                                 print(f'  [KPL更新] 完成: 拉取 {fetched}/{len(missing_to_fetch)} 天, 共缺{total_missing}天')
+                                _kpl_search_cache_clear()
                         except Exception as e:
                             import traceback
                             print(f'  [KPL更新] 失败: {e}')
@@ -18787,9 +20286,358 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback
                 self._respond_json({'error': str(e), 'traceback': traceback.format_exc()}, cors_headers)
 
+        elif path == '/api/kpl_reload_index':
+            _kpl_rescan()
+            _invalidate_cache(prefix='ladder_trajectory')
+            _kpl_search_cache_clear()
+            self._respond_json({'ok': True, 'files_count': len(_kpl_day_files)}, cors_headers)
+
+        elif path == '/api/kpl_race_data':
+            mode = query.get('mode', ['init'])[0].strip()
+            date_start = query.get('date_start', [''])[0].strip()
+            date_end = query.get('date_end', [''])[0].strip()
+            horses_str = query.get('horses', [''])[0].strip()
+            climax_date = query.get('climax_date', [''])[0].strip()
+            keyword = query.get('keyword', [''])[0].strip()
+            strict = query.get('strict', ['0'])[0].strip() == '1'
+            try:
+                if mode == 'init':
+                    _kpl_ensure_loaded()
+                    if not date_start:
+                        date_start = (datetime.now() - timedelta(days=30)).strftime('%Y%m%d')
+                    if not date_end:
+                        date_end = datetime.now().strftime('%Y%m%d')
+                    ds_ymd = date_start.replace('-', '')
+                    de_ymd = date_end.replace('-', '')
+                    # 1. 在_kpl_rows中按关键词搜索匹配股票（与搜索API/_kpl_search_rows保持一致的搜索逻辑）
+                    # 搜索字段：stock_name + stock_code + plate_name + reason_tag + reason_brief + concepts
+                    q_lower = keyword.lower() if keyword else ''
+                    matched_codes = set()
+                    events_by_stock = {}
+                    all_stock_codes = set()
+                    for d, records in sorted(_kpl_rows_by_date.items()):
+                        d_stripped = d.replace('-', '')
+                        if d_stripped < ds_ymd or d_stripped >= de_ymd:
+                            continue
+                        for r in records:
+                            sc = r.get('stock_code', '')
+                            if not sc or _kpl_is_st(r):
+                                continue
+                            tag = (r.get('reason_tag', '') or '').strip()
+                            if tag in SNIPER_EXCLUDE_TAGS:
+                                continue
+                            # 与_kpl_get_search_text一致的字段匹配（strict模式仅匹配tag）
+                            if strict:
+                                search_text = tag  # 仅标签搜索
+                            else:
+                                search_text = (r.get('stock_name', '') + sc + r.get('plate_name', '')
+                                               + tag + (r.get('reason_brief', '') or '') + (r.get('concepts', '') or ''))
+                            if q_lower and q_lower not in search_text.lower():
+                                continue
+                            matched_codes.add(sc)
+                            events_by_stock.setdefault(sc, []).append({
+                                'date': d,
+                                'type': 'zt',
+                                'tag': tag,
+                                'plate_name': r.get('plate_name', '') or '',
+                                'stock_name': r.get('stock_name', '') or '',
+                                'reason_brief': r.get('reason_brief', '') or '',
+                            })
+                            if sc not in all_stock_codes:
+                                all_stock_codes.add(sc)
+                    if not matched_codes:
+                        self._respond_json({'error': 'no_data', 'message': f'题材"{keyword}"在所选范围内无涨停数据'}, cors_headers)
+                        return
+                    # 2. 批量查kline数据
+                    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
+                    kline_data = {}  # stock_code -> [{trade_date, high, low, close}]
+                    try:
+                        conn = sqlite3.connect(db_path)
+                        cursor = conn.cursor()
+                        codes_list = list(all_stock_codes)
+                        ds_fmt = f"{ds_ymd[:4]}-{ds_ymd[4:6]}-{ds_ymd[6:]}"
+                        de_fmt = f"{de_ymd[:4]}-{de_ymd[4:6]}-{de_ymd[6:]}"
+                        for i in range(0, len(codes_list), 200):
+                            batch = codes_list[i:i+200]
+                            placeholders = ','.join(['?'] * len(batch))
+                            cursor.execute(f"""
+                                SELECT stock_code, trade_date, high, low, close, change_pct
+                                FROM kline_daily
+                                WHERE stock_code IN ({placeholders})
+                                AND trade_date >= ? AND trade_date <= ?
+                                ORDER BY stock_code, trade_date
+                            """, batch + [ds_fmt, de_fmt])
+                            for row in cursor.fetchall():
+                                sc, td, hi, lo, cl, cp = row
+                                if sc not in kline_data:
+                                    kline_data[sc] = []
+                                kline_data[sc].append({
+                                    'trade_date': str(td)[:10],
+                                    'high': float(hi) if hi else None,
+                                    'low': float(lo) if lo else None,
+                                    'close': float(cl) if cl else None,
+                                    'change_pct': float(cp) if cp else 0,
+                                })
+                        conn.close()
+                    except Exception as e:
+                        self._respond_json({'error': 'db_error', 'message': str(e)}, cors_headers)
+                        return
+                    # 3. 构建每只马的曲线数据
+                    horses = []
+                    for sc in sorted(all_stock_codes):
+                        klines = kline_data.get(sc, [])
+                        if not klines:
+                            continue
+                        events = sorted(events_by_stock[sc], key=lambda x: x['date'])
+                        # 计算累计涨跌幅，以入选日实际涨幅为起点
+                        first_zt_date = events[0]['date']
+                        first_zt_idx = None
+                        entry_change_pct = 0
+                        for i, k in enumerate(klines):
+                            if k['trade_date'] == first_zt_date:
+                                first_zt_idx = i
+                                entry_change_pct = k.get('change_pct', 0) or 0
+                                break
+                        if first_zt_idx is None:
+                            continue
+                        # 基线价格 = 入选日前一交易日收盘价（归一化为100）
+                        entry_close = klines[first_zt_idx]['close']
+                        if entry_close is None or entry_close == 0:
+                            continue
+                        baseline_price = entry_close / (1 + entry_change_pct / 100)
+                        # 从入选日开始构建曲线
+                        curve = []
+                        for j in range(first_zt_idx, len(klines)):
+                            k = klines[j]
+                            if k['close'] is not None:
+                                cum = round((k['close'] / baseline_price - 1) * 100, 2)
+                                cum_high = round((k['high'] / baseline_price - 1) * 100, 2) if k['high'] else cum
+                                cum_low = round((k['low'] / baseline_price - 1) * 100, 2) if k['low'] else cum
+                                curve.append({
+                                    'trade_date': k['trade_date'],
+                                    'cum_close': cum,
+                                    'cum_high': cum_high,
+                                    'cum_low': cum_low,
+                                    'daily_change_pct': k.get('change_pct', 0) or 0,
+                                })
+                        if not curve:
+                            continue
+                        # 最终累计涨跌幅
+                        final_change = curve[-1]['cum_close'] if curve else 0
+                        name = events[0].get('stock_name', '') or ''
+                        tag = events[0].get('tag', '') or ''
+                        plate_name = events[0].get('plate_name', '') or ''
+                        # 取最新事件的reason_brief
+                        last_reason_brief = events[-1].get('reason_brief', '') if events else ''
+                        horses.append({
+                            'stock_code': sc,
+                            'stock_name': name,
+                            'tag': tag,
+                            'plate_name': plate_name,
+                            'reason_brief': last_reason_brief,
+                            'events': [{'date': e['date'], 'type': e['type'], 'tag': e['tag'], 'reason_brief': e.get('reason_brief', '') or ''} for e in events],
+                            'curve': curve,
+                            'final_change': final_change,
+                        })
+                    # 按最终涨幅排序
+                    horses.sort(key=lambda x: abs(x['final_change']), reverse=True)
+                    # 限制最多120只
+                    horses = horses[:120]
+                    # 4. 今日实时
+                    today_ymd = datetime.now().strftime('%Y%m%d')
+                    today_fmt = datetime.now().strftime('%Y-%m-%d')
+                    today_zt_codes = []
+                    today_realtime = {}
+                    today_lianban = {}
+                    try:
+                        import akshare as ak
+                        import pandas as pd
+                        df = ak.stock_zt_pool_em(date=today_ymd)
+                        if df is not None and not df.empty:
+                            for _, row in df.iterrows():
+                                code = str(int(row['代码'])).zfill(6)
+                                lianban = int(row['连板数']) if pd.notna(row.get('连板数')) else 0
+                                if lianban < 1:
+                                    continue
+                                today_zt_codes.append(code)
+                                today_lianban[code] = lianban
+                        # 今日涨停 + 池中无该题材 → 查标签决定是否加入
+                        horse_codes = set(h['stock_code'] for h in horses)
+                        new_horse_candidates = []
+                        today_in_range = (today_ymd >= ds_ymd and today_ymd <= de_ymd)
+                        for zt_code in today_zt_codes:
+                            if zt_code in horse_codes:
+                                continue
+                            if not q_lower or not today_in_range:
+                                continue
+                            if _kpl_race_match_stock(zt_code, q_lower, strict):
+                                new_horse_candidates.append(zt_code)
+                        # 实时涨跌
+                        horse_all = [h['stock_code'] for h in horses] + new_horse_candidates
+                        import levistock as lk
+                        for i in range(0, len(horse_all), 100):
+                            batch = horse_all[i:i+100]
+                            try:
+                                chunk = lk.stocks_em(batch) or []
+                                for row in chunk:
+                                    code = str(row.get('stock_code', '')).zfill(6)
+                                    try:
+                                        today_realtime[code] = float(row.get('change_pct', 0))
+                                    except (ValueError, TypeError):
+                                        continue
+                            except Exception:
+                                continue
+                    except Exception as e:
+                        print(f"[KPL赛马] 今日数据获取失败: {e}")
+                    self._respond_json({
+                        'horses': horses,
+                        'today_zt_codes': today_zt_codes,
+                        'today_realtime': today_realtime,
+                        'today_lianban': today_lianban,
+                        'horses_count': len(horses),
+                    }, cors_headers)
+                elif mode == 'refresh':
+                    # 增量刷新
+                    _kpl_ensure_loaded()
+                    horse_codes = set(c.strip() for c in horses_str.split(',') if c.strip())
+                    strict_rf = query.get('strict', ['0'])[0].strip() == '1'
+                    ds_rf_ymd = date_start.replace('-', '') if date_start else ''
+                    de_rf_ymd = date_end.replace('-', '') if date_end else ''
+                    kline_ds_rf = date_start if date_start else (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+                    today_ymd = datetime.now().strftime('%Y%m%d')
+                    today_fmt = datetime.now().strftime('%Y-%m-%d')
+                    new_horses = []
+                    today_zt_codes = []
+                    today_realtime = {}
+                    today_lianban = {}
+                    try:
+                        # 1. 查今日涨停
+                        import akshare as ak
+                        import pandas as pd
+                        df = ak.stock_zt_pool_em(date=today_ymd)
+                        if df is not None and not df.empty:
+                            for _, row in df.iterrows():
+                                code = str(int(row['代码'])).zfill(6)
+                                lianban = int(row['连板数']) if pd.notna(row.get('连板数')) else 0
+                                if lianban < 1:
+                                    continue
+                                today_zt_codes.append(code)
+                                today_lianban[code] = lianban
+                        # 2. 按关键词匹配新涨停
+                        kw_lower = keyword.lower() if keyword else ''
+                        today_in_rf_range = not ds_rf_ymd or (today_ymd >= ds_rf_ymd and today_ymd <= de_rf_ymd)
+                        for zt_code in today_zt_codes:
+                            if zt_code in horse_codes:
+                                continue
+                            if not kw_lower or not today_in_rf_range:
+                                continue
+                            if not _kpl_race_match_stock(zt_code, kw_lower, strict_rf):
+                                continue
+                            # 计算zt_tag用于构建新马
+                            zt_tag = ''
+                            for r in sorted(_kpl_rows_by_stock.get(zt_code, []), key=lambda x: x.get('date', ''), reverse=True):
+                                zt_tag = (r.get('reason_tag', '') or '').strip()
+                                if zt_tag:
+                                    break
+                            if not zt_tag and zt_code in _kpl_stock_latest_tag:
+                                zt_tag = _kpl_stock_latest_tag[zt_code].get('tag', '') or ''
+                            # 新马→拉取全量kline数据
+                                db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
+                                try:
+                                    conn = sqlite3.connect(db_path)
+                                    cursor = conn.cursor()
+                                    cursor.execute("""
+                                        SELECT trade_date, high, low, close, change_pct
+                                        FROM kline_daily
+                                        WHERE stock_code = ? AND trade_date >= ? AND trade_date <= ? ORDER BY trade_date
+                                    """, [zt_code, kline_ds_rf, today_fmt])
+                                    klines_raw = cursor.fetchall()
+                                    conn.close()
+                                    events = []
+                                    for r in sorted(_kpl_rows_by_stock.get(zt_code, []), key=lambda x: x.get('date', '')):
+                                        rd = r.get('date', '')
+                                        rt = (r.get('reason_tag', '') or '').strip()
+                                        rb = (r.get('reason_brief', '') or '')
+                                        if rd:
+                                            events.append({'date': rd, 'type': 'zt', 'tag': rt, 'reason_brief': rb})
+                                    # 构建曲线，以入选日实际涨幅为起点
+                                    curve = []
+                                    if events and klines_raw:
+                                        first_zt_date = events[0]['date']
+                                        first_zt_idx = None
+                                        entry_change_pct = 0
+                                        for i, k in enumerate(klines_raw):
+                                            td_str = str(k[0])[:10]
+                                            if td_str == first_zt_date:
+                                                first_zt_idx = i
+                                                entry_change_pct = float(k[4]) if k[4] else 0
+                                                break
+                                        if first_zt_idx is not None:
+                                            entry_close = float(klines_raw[first_zt_idx][3])
+                                            if entry_close:
+                                                baseline_price = entry_close / (1 + entry_change_pct / 100)
+                                                for j in range(first_zt_idx, len(klines_raw)):
+                                                    td, hi, lo, cl, cp = klines_raw[j]
+                                                    if cl:
+                                                        td_str = str(td)[:10]
+                                                        cum = round((float(cl) / baseline_price - 1) * 100, 2)
+                                                        cum_high = round((float(hi) / baseline_price - 1) * 100, 2) if hi else cum
+                                                        cum_low = round((float(lo) / baseline_price - 1) * 100, 2) if lo else cum
+                                                        curve.append({'trade_date': td_str, 'cum_close': cum, 'cum_high': cum_high, 'cum_low': cum_low, 'daily_change_pct': float(cp) if cp else 0})
+                                    name = ''
+                                    plate_name = ''
+                                    last_rb = ''
+                                    if _kpl_rows_by_stock.get(zt_code):
+                                        name = _kpl_rows_by_stock[zt_code][0].get('stock_name', '') or ''
+                                        plate_name = _kpl_rows_by_stock[zt_code][0].get('plate_name', '') or ''
+                                        last_rb = events[-1].get('reason_brief', '') if events else ''
+                                    new_horses.append({
+                                        'stock_code': zt_code,
+                                        'stock_name': name,
+                                        'tag': zt_tag,
+                                        'plate_name': plate_name,
+                                        'reason_brief': last_rb,
+                                        'events': events,
+                                        'curve': curve,
+                                        'final_change': curve[-1]['cum_close'] if curve else 0,
+                                    })
+                                except Exception:
+                                    pass
+                        # 3. 实时涨跌
+                        all_codes = list(horse_codes | set(nh['stock_code'] for nh in new_horses))
+                        import levistock as lk
+                        for i in range(0, len(all_codes), 100):
+                            batch = all_codes[i:i+100]
+                            try:
+                                chunk = lk.stocks_em(batch) or []
+                                for row in chunk:
+                                    code = str(row.get('stock_code', '')).zfill(6)
+                                    try:
+                                        today_realtime[code] = float(row.get('change_pct', 0))
+                                    except (ValueError, TypeError):
+                                        continue
+                            except Exception:
+                                continue
+                    except Exception as e:
+                        print(f"[KPL赛马] 刷新失败: {e}")
+                    self._respond_json({
+                        'new_horses': new_horses,
+                        'price_updates': today_realtime,
+                        'today_zt_codes': today_zt_codes,
+                        'today_lianban': today_lianban,
+                    }, cors_headers)
+                else:
+                    self._respond_json({'error': 'unknown_mode'}, cors_headers)
+            except Exception as e:
+                import traceback
+                self._respond_json({'error': str(e), 'traceback': traceback.format_exc()}, cors_headers)
+
         elif path == '/api/kpl_reason_suggest':
             q = query.get('q', [''])[0].strip()
             result = _kpl_suggest_rows(q) if q else {'stocks': [], 'reason_tags': [], 'plates': [], 'concepts': []}
+            total = len(result.get('stocks', [])) + len(result.get('reason_tags', [])) + len(result.get('plates', [])) + len(result.get('concepts', []))
+            if total == 0:
+                print(f"[KPL建议] 搜索q='{q}'返回空结果 (reason_index={len(_kpl_reason_index)}个标签, stock_index={len(_kpl_stock_index)}只股票)")
             self._respond_json(result, cors_headers)
 
         elif path == '/api/kpl_stock_detail':
@@ -19572,15 +21420,27 @@ def main():
         except Exception as e:
             print(f"[预热] data_status失败: {e}")
 
+    def _warm_kpl_top_tags():
+        try:
+            if os.path.exists(_KPL_TOP_TAGS_CACHE_PATH):
+                print("[预热] KPL顶部标签缓存已存在，后台启动刷新...")
+                threading.Thread(target=_kpl_top_tags_cache_refresh, daemon=True).start()
+            else:
+                print("[预热] KPL顶部标签缓存不存在，首次计算...")
+                _kpl_top_tags_cache_refresh()
+        except Exception as e:
+            print(f"[预热] kpl_top_tags失败: {e}")
+
     threads = [
         threading.Thread(target=_warm_lianban, daemon=True),
         threading.Thread(target=_warm_stats, daemon=True),
         threading.Thread(target=_warm_hot, daemon=True),
         threading.Thread(target=_warm_data_status, daemon=True),
+        threading.Thread(target=_warm_kpl_top_tags, daemon=True),
     ]
     for t in threads:
         t.start()
-    print("[缓存预热] 4线程并行启动...")
+    print("[缓存预热] 5线程并行启动...")
 
     server.serve_forever()
 
