@@ -20348,6 +20348,40 @@ class Handler(BaseHTTPRequestHandler):
                     if not matched_codes:
                         self._respond_json({'error': 'no_data', 'message': f'题材"{keyword}"在所选范围内无涨停数据'}, cors_headers)
                         return
+                    # 1b. 补充创业板/科创板强涨股票（与KPL搜索API gem_extra逻辑一致）
+                    if q_lower:
+                        try:
+                            all_linked = _kpl_get_all_stock_codes_for_keyword(keyword)
+                            if all_linked:
+                                strong_rise = _kpl_get_gem_strong_rise(all_linked)
+                                if strong_rise:
+                                    for code, sr_entries in strong_rise.items():
+                                        if code in matched_codes:
+                                            continue
+                                        latest = _kpl_stock_latest_tag.get(code, {})
+                                        if not latest.get('stock_name', '') and not _kpl_stock_index.get(code, {}).get('stock_name', ''):
+                                            continue
+                                        latest_tag = latest.get('tag', '')
+                                        if latest_tag in SNIPER_EXCLUDE_TAGS:
+                                            continue
+                                        name = latest.get('stock_name', '') or _kpl_stock_index.get(code, {}).get('stock_name', '')
+                                        tag = latest_tag or q_lower
+                                        plate_name = latest.get('plate_name', '') or ''
+                                        reason_brief = latest.get('reason_brief', '') or ''
+                                        sr_date = sr_entries[0]['date'] if sr_entries else ''
+                                        if sr_date:
+                                            events_by_stock.setdefault(code, []).append({
+                                                'date': sr_date,
+                                                'type': 'strong_rise',
+                                                'tag': tag,
+                                                'plate_name': plate_name,
+                                                'stock_name': name,
+                                                'reason_brief': reason_brief,
+                                            })
+                                            all_stock_codes.add(code)
+                                            matched_codes.add(code)
+                        except Exception:
+                            pass
                     # 2. 批量查kline数据
                     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
                     kline_data = {}  # stock_code -> [{trade_date, high, low, close}]
