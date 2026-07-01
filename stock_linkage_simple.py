@@ -945,6 +945,72 @@ def _kpl_compute_lianban(stock_code, date_str):
     return lb
 
 
+def _kpl_is_shouban(stock_code, date_str, lookback=15):
+    """判断股票在指定日期是否为'首板'（前N个交易日无涨停记录）。
+    date_str: YYYY-MM-DD 格式
+    lookback: 向前追溯的交易天数（默认15）
+    返回值: True=首板（前lookback天无涨停），False=非首板"""
+    records = _kpl_rows_by_stock.get(stock_code, [])
+    if not records:
+        return True  # 无历史记录 => 首板
+    date_ymd = date_str.replace('-', '')
+    # 计算目标日期之前的 N 个交易日
+    td = sorted(_trading_days)
+    try:
+        idx = td.index(date_ymd)
+    except ValueError:
+        # date_str 不在交易日列表中，直接查是否有早于该日期的记录
+        for r in records:
+            rd = r.get('date', '').replace('-', '')
+            if rd and rd < date_ymd:
+                return False
+        return True
+    start_idx = max(0, idx - lookback)
+    lookback_dates = set(td[start_idx:idx])  # 不含 date_ymd 自身
+    for r in records:
+        rd = r.get('date', '').replace('-', '')
+        if rd and rd in lookback_dates:
+            # 该股票在回溯期内有涨停记录
+            return False
+    return True
+
+
+def _kpl_filter_lianban(results, lianban_filter):
+    """按连板数过滤KPL搜索结果（多选OR逻辑）。
+    lianban_filter: 'all' | 'shouban' | '2ban' | '3ban' | '3ban_plus'
+    也可用逗号分隔多选，如 'shouban,2ban' 表示首板或2连板
+    返回值: 过滤后的结果列表"""
+    if not lianban_filter or lianban_filter in (None, 'all', ''):
+        return results
+    filters = lianban_filter.split(',') if isinstance(lianban_filter, str) else [lianban_filter]
+    filtered = []
+    for r in results:
+        lb = r.get('lianban_computed', 1)
+        if isinstance(lb, str):
+            try:
+                lb = int(lb)
+            except (ValueError, TypeError):
+                lb = 1
+        keep = False
+        for f in filters:
+            f = f.strip()
+            if f == 'shouban' and lb == 1:
+                keep = True
+                break
+            elif f == '2ban' and lb == 2:
+                keep = True
+                break
+            elif f == '3ban' and lb == 3:
+                keep = True
+                break
+            elif f == '3ban_plus' and lb >= 3:
+                keep = True
+                break
+        if keep:
+            filtered.append(r)
+    return filtered
+
+
 def _inject_today_zt_to_trajectory(recent_fmt, freq_by_tag, min_lianban=0):
     """
     盘中实时补充今日涨停原因标签到轨迹表。
@@ -997,8 +1063,8 @@ def _inject_today_zt_to_trajectory(recent_fmt, freq_by_tag, min_lianban=0):
     return today_stock_tags
 
 
-def _kpl_analyze_rows(q, date_start=None, date_end=None, no_st=None, strict=None):
-    """KPL搜索+日期+ST+严格模式过滤"""
+def _kpl_analyze_rows(q, date_start=None, date_end=None, no_st=None, strict=None, lianban_filter=None):
+    """KPL搜索+日期+ST+严格模式+连板过滤"""
     # 先确保数据已加载
     ds = date_start.replace('-', '') if date_start else None
     de = date_end.replace('-', '') if date_end else None
@@ -1020,15 +1086,18 @@ def _kpl_analyze_rows(q, date_start=None, date_end=None, no_st=None, strict=None
             r['lianban_computed'] = _kpl_compute_lianban(sc, rd)
         else:
             r['lianban_computed'] = 1
+    # 连板过滤
+    if lianban_filter and lianban_filter != 'all':
+        results = _kpl_filter_lianban(results, lianban_filter)
     results.sort(key=lambda x: x.get('date', ''), reverse=True)
     result['results'] = results[:200]
     result['total_hits'] = len(results)
     return result
 
 
-def _kpl_search_cache_key(q, date_start, date_end, no_st, strict):
+def _kpl_search_cache_key(q, date_start, date_end, no_st, strict, lianban_filter=None):
     import hashlib
-    raw = f"kpl_search|{q}|{date_start or ''}|{date_end or ''}|{no_st or ''}|{strict or ''}"
+    raw = f"kpl_search|{q}|{date_start or ''}|{date_end or ''}|{no_st or ''}|{strict or ''}|{lianban_filter or 'all'}"
     return hashlib.md5(raw.encode('utf-8')).hexdigest()[:16]
 
 def _kpl_search_cache_load(cache_key):
@@ -1056,9 +1125,9 @@ def _kpl_search_cache_clear():
             try: os.remove(f)
             except: pass
 
-def _kpl_full_search(q, date_start, date_end, no_st, strict, gem_extra=True):
+def _kpl_full_search(q, date_start, date_end, no_st, strict, gem_extra=True, lianban_filter=None):
     """全量计算KPL搜索，返回完整结果"""
-    result = _kpl_analyze_rows(q, date_start, date_end, no_st, strict)
+    result = _kpl_analyze_rows(q, date_start, date_end, no_st, strict, lianban_filter)
     if gem_extra:
         result_codes = list(set(r.get('stock_code', '') for r in result.get('results', []) if r.get('stock_code')))
         all_linked = _kpl_get_all_stock_codes_for_keyword(q)
@@ -2390,6 +2459,171 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
     background: #1a4a7a;
     color: #00d4ff;
     border-color: #00d4ff;
+}
+
+/* ===== KPL搜索面板分组 ===== */
+.kpl-search-group {
+    background: rgba(15,52,96,0.3);
+    border: 1px solid rgba(0,212,255,0.08);
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin-bottom: 6px;
+}
+.kpl-search-group .group-label {
+    color: #90caf9;
+    font-size: 0.75em;
+    font-weight: 600;
+    margin-bottom: 6px;
+    letter-spacing: 0.3px;
+}
+.kpl-topic-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    max-height: 160px;
+    overflow-y: auto;
+    padding: 2px 0;
+}
+.kpl-topic-list::-webkit-scrollbar { width: 4px; }
+.kpl-topic-list::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 2px; }
+.kpl-topic-checkbox-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 10px;
+    font-size: 0.74em;
+    cursor: pointer;
+    white-space: nowrap;
+    background: #0f3460;
+    color: #bbb;
+    transition: all 0.15s;
+    border: 1px solid transparent;
+    user-select: none;
+}
+.kpl-topic-checkbox-item input[type=checkbox] {
+    accent-color: #00d4ff;
+    width: 12px;
+    height: 12px;
+    cursor: pointer;
+    margin: 0;
+}
+.kpl-topic-checkbox-item:hover {
+    background: #1a4a7a;
+    color: #fff;
+    border-color: rgba(0,212,255,0.3);
+}
+.kpl-topic-checkbox-item.checked {
+    background: rgba(0,212,255,0.12);
+    border-color: #00d4ff;
+    color: #00d4ff;
+}
+/* 连板 checkbox */
+.lianban-group {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+.lianban-chk {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    cursor: pointer;
+    font-size: 0.76em;
+    color: #aaa;
+    user-select: none;
+    white-space: nowrap;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: color 0.15s;
+}
+.lianban-chk:hover { color: #fff; }
+.lianban-chk input[type="checkbox"] {
+    accent-color: #00d4ff;
+    width: 13px;
+    height: 13px;
+    cursor: pointer;
+}
+/* OR/AND 逻辑切换 */
+.kpl-logic-group {
+    display: flex;
+    gap: 4px;
+}
+.kpl-logic-btn {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 12px;
+    border-radius: 6px;
+    font-size: 0.76em;
+    font-weight: 600;
+    cursor: pointer;
+    background: #0f3460;
+    color: #888;
+    border: 1px solid transparent;
+    transition: all 0.15s;
+    user-select: none;
+}
+.kpl-logic-btn:hover {
+    background: #1a4a7a;
+    color: #ccc;
+}
+.kpl-logic-btn.active {
+    background: rgba(0,212,255,0.12);
+    border-color: #00d4ff;
+    color: #00d4ff;
+}
+/* 赛马开关 */
+.kpl-race-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border-radius: 6px;
+    font-size: 0.76em;
+    cursor: pointer;
+    background: #0f3460;
+    color: #888;
+    border: 1px solid transparent;
+    transition: all 0.15s;
+    user-select: none;
+}
+.kpl-race-toggle:hover {
+    background: #1a4a7a;
+    color: #ccc;
+}
+.kpl-race-toggle.active {
+    background: rgba(76,175,80,0.12);
+    border-color: #4caf50;
+    color: #4caf50;
+}
+.kpl-race-toggle input[type=checkbox] {
+    accent-color: #4caf50;
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+    margin: 0;
+}
+/* 多赛马图容器 */
+.kpl-multi-race-container {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+.kpl-single-race-wrap {
+    background: rgba(0,0,0,0.15);
+    border: 1px solid rgba(255,215,0,0.1);
+    border-radius: 8px;
+    padding: 6px 8px;
+}
+.kpl-race-tag-title {
+    color: #ffd700;
+    font-weight: bold;
+    font-size: 0.85em;
+    padding: 4px 0 6px 4px;
+}
+.kpl-race-canvas-wrap {
+    position: relative;
+    width: 100%;
 }
 .concept-section h4 { color: #ff9800; margin-bottom: 6px; font-size: 1em; display: inline; }
 .section-header { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
@@ -3911,8 +4145,8 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 /* 涨停原因标签轨迹矩阵 */
 .lt-trajectory-section { margin-top: 12px; }
 .lt-trajectory-section h3 { margin: 8px 0; font-size: 0.9em; color: #4fc3f7; }
-.lt-trajectory-wrapper { overflow: visible; }
-.lt-trajectory-matrix { border-collapse: collapse; font-size: 0.75em; width: 100%; }
+.lt-trajectory-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.lt-trajectory-matrix { border-collapse: collapse; font-size: 0.75em; width: 100%; min-width: 900px; }
 .lt-trajectory-matrix th, .lt-trajectory-matrix td {
     padding: 3px 5px; border: 1px solid #0f3460; white-space: nowrap;
 }
@@ -4771,41 +5005,86 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
         <div id="kplLevelTreeContainer"><div class="loading">加载KPL-LEVEL结构...</div></div>
     </div>
     <div class="tab-content" id="tab-kplsearch">
-        <div class="search-box">
-            <div class="input-row">
-                <div class="input-item" style="position:relative;">
-                    <label>搜索股票/板块/涨停标签/概念</label>
-                    <input type="text" id="kplSearchInput2" placeholder="支持单关键词、OR(|)、AND(&)。如: 机器人、算力|金属、芯片&军工" autocomplete="off">
-                    <div class="suggestions" id="kplSearchSuggestions"></div>
-                </div>
+        <!-- Group 1: 题材选择 -->
+        <div class="kpl-search-group">
+            <div class="group-label">题材选择</div>
+            <div id="kplTopTags" style="margin:0 0 6px;"></div>
+            <div class="input-item" style="position:relative;margin-top:6px;">
+                <input type="text" id="kplSearchInput2" placeholder="支持单关键词、OR(|)、AND(&)。如: 机器人、算力|金属、芯片&军工" autocomplete="off" style="width:100%;">
+                <div class="suggestions" id="kplSearchSuggestions"></div>
             </div>
-            <div class="filter-bar">
-                <label class="checkbox-label">
+        </div>
+
+        <!-- Group 2: 搜索选项 + 连板过滤 -->
+        <div class="kpl-search-group">
+            <div class="group-label">搜索选项</div>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;">
+                <label class="checkbox-label" style="padding:2px 0;">
                     <input type="checkbox" id="kplNoStCheck" checked>不含ST
                 </label>
-                <label class="checkbox-label" style="margin-left:0;">
+                <label class="checkbox-label" style="padding:2px 0;">
                     <input type="checkbox" id="kplStrictCheck">仅标签搜索
                 </label>
-                <div class="date-group">
+                <span style="color:#666;font-size:0.75em;">|</span>
+                <span style="color:#888;font-size:0.75em;">连板:</span>
+                <div class="lianban-group" id="kplLianbanGroup">
+                    <label class="lianban-chk"><input type="checkbox" data-filter="all" checked> 全部</label>
+                    <label class="lianban-chk"><input type="checkbox" data-filter="shouban"> 首板</label>
+                    <label class="lianban-chk"><input type="checkbox" data-filter="2ban"> 2连板</label>
+                    <label class="lianban-chk"><input type="checkbox" data-filter="3ban"> 3连板</label>
+                    <label class="lianban-chk"><input type="checkbox" data-filter="3ban_plus"> 3连板+</label>
+                </div>
+            </div>
+        </div>
+
+        <!-- Group 3A: 多题材逻辑 -->
+        <div class="kpl-search-group">
+            <div class="group-label">多题材逻辑</div>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;">
+                <div class="kpl-logic-group">
+                    <span class="kpl-logic-btn active" data-logic="or" onclick="setKplLogic(this)">OR (任一)</span>
+                    <span class="kpl-logic-btn" data-logic="and" onclick="setKplLogic(this)">AND (全部)</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Group 3B: 赛马功能 -->
+        <div class="kpl-search-group">
+            <div class="group-label">赛马功能</div>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;">
+                <label class="kpl-race-toggle" id="kplRaceToggleLabel">
+                    <input type="checkbox" id="kplUseRaceCheck" onchange="toggleKplRaceUse()">使用赛马
+                </label>
+                <span style="color:#666;font-size:0.72em;">开启后在搜索时自动加载赛马图</span>
+            </div>
+        </div>
+
+        <!-- Group 4: 时间 + 操作 -->
+        <div class="kpl-search-group">
+            <div class="group-label">时间范围</div>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;">
+                <div class="date-group" style="margin:0;">
                     <label>开始</label>
                     <input type="date" id="kplSearchDateStart">
                     <label>结束</label>
                     <input type="date" id="kplSearchDateEnd">
                 </div>
-                <div class="btn-group">
-                    <button onclick="doKplSearch()">搜索</button>
-                    <button onclick="resetKplSearch()" class="btn-con">重置</button>
+                <div class="btn-group" style="margin-left:auto;">
+                    <button onclick="doKplSearch()" style="padding:4px 16px;">搜索</button>
+                    <button onclick="resetKplSearch()" class="btn-con" style="padding:4px 12px;">重置</button>
                 </div>
             </div>
         </div>
+
         <div class="kpl-status-bar">
             <span class="status-text" id="kplDataStatus">涨停原因数据</span>
             <span style="display:flex;align-items:center;gap:4px;">
                 <button class="update-btn" onclick="doKplUpdate(this)" title="检查并补全缺失交易日的涨停原因">&#x21bb; 检查更新</button>
             </span>
         </div>
-        <div id="kplTopTags" style="margin:6px 0 8px;"></div>
-        <div id="kplRaceSection" style="margin:0 0 6px;">
+
+        <!-- 赛马区域（默认隐藏，赛马开关打开后才显示） -->
+        <div id="kplRaceSection" style="display:none;margin:0 0 8px;">
             <div class="kpl-race-header" onclick="toggleKplRace()">
                 <span>🏇</span><span id="kplRaceTitle">题材赛马</span>
                 <span style="margin-left:auto;color:#888;font-size:0.75em;" id="kplRaceToggleBtn">收起 &#x25B2;</span>
@@ -4814,7 +5093,10 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
             <div id="kplRaceBody" style="display:block;">
                 <div class="kpl-race-toolbar">
                 </div>
-                <div id="kplRaceCanvasContainer" style="position:relative;width:100%;">
+                <!-- 多赛马图容器 -->
+                <div id="kplMultiRaceContainer" class="kpl-multi-race-container"></div>
+                <!-- 保留原始单图容器作为后备 -->
+                <div id="kplRaceCanvasContainer" style="position:relative;width:100%;display:none;">
                     <canvas id="kplRaceCanvas" width="600" height="1000"></canvas>
                     <div id="kplRaceTooltip" style="display:none;position:absolute;pointer-events:none;background:rgba(10,22,40,0.92);border:1px solid #ffd700;border-radius:6px;padding:6px 10px;font-size:0.78em;color:#eee;z-index:1000;"></div>
                 </div>
@@ -7158,7 +7440,7 @@ function loadSniper(mode) {
                 var ztVal = item.rt_stats.zt || 0;
                 var cls = ztVal >= 10 ? 'wf-tag-high' : (ztVal >= 5 ? 'wf-tag-mid' : 'wf-tag-low');
                 html2 += '<div class="sr-stats-row"><span class="sr-stats-rank' + (ii < 3 ? ' top3' : '') + '">' + (ii+1) + '</span>';
-                html2 += '<span class="wf-tag ' + cls + '" style="cursor:pointer;" onclick="switchTab(\\x27kplsearch\\x27);document.getElementById(\\x27kplSearchInput2\\x27).value=\\x27' + (item.tag||'').replace(/'/g, '') + '\\x27;doKplSearch();">' + _kplEsc(item.tag) + '</span>';
+                html2 += '<span class="wf-tag ' + cls + '" style="cursor:pointer;" onclick="switchTab(\\x27kplsearch\\x27);doKplSearch(\\x27' + (item.tag||'').replace(/'/g, '') + '\\x27)">' + _kplEsc(item.tag) + '</span>';
                 html2 += '<span class="sr-stats-val zt">' + ztVal + '</span></div>';
             });
             html2 += '</div>';
@@ -7167,7 +7449,7 @@ function loadSniper(mode) {
                 var avgVal = item.rt_stats.avg;
                 var cls = avgVal >= 3 ? 'wf-tag-high' : (avgVal >= 1 ? 'wf-tag-mid' : 'wf-tag-low');
                 html2 += '<div class="sr-stats-row"><span class="sr-stats-rank' + (ii < 3 ? ' top3' : '') + '">' + (ii+1) + '</span>';
-                html2 += '<span class="wf-tag ' + cls + '" style="cursor:pointer;" onclick="switchTab(\\x27kplsearch\\x27);document.getElementById(\\x27kplSearchInput2\\x27).value=\\x27' + (item.tag||'').replace(/'/g, '') + '\\x27;doKplSearch();">' + _kplEsc(item.tag) + '</span>';
+                html2 += '<span class="wf-tag ' + cls + '" style="cursor:pointer;" onclick="switchTab(\\x27kplsearch\\x27);doKplSearch(\\x27' + (item.tag||'').replace(/'/g, '') + '\\x27)">' + _kplEsc(item.tag) + '</span>';
                 html2 += '<span class="sr-stats-val ' + (avgVal >= 0 ? 'up' : 'down') + '">' + (avgVal >= 0 ? '+' : '') + avgVal.toFixed(2) + '%</span></div>';
             });
             html2 += '</div></div>';
@@ -7722,7 +8004,7 @@ function renderSniperHotConceptTable(concepts) {
         var tagLabel = c.hot_tag ? '<span class="badge" style="background:#0f3460;color:#88c0ff;font-size:0.75em;">' + _kplEsc(c.hot_tag) + '</span>' : '';
         html += '<tr>';
         html += '<td style="color:#888;width:32px;white-space:nowrap;">' + rank + '</td>';
-        html += '<td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><span class="concept-chip" style="color:#00d4ff;font-weight:bold;cursor:pointer;" onclick="switchTab(\\x27kplsearch\\x27);document.getElementById(\\x27kplSearchInput2\\x27).value=\\x27' + (c.concept_name||'').replace(/'/g, '') + '\\x27;doKplSearch();">' + _kplEsc(c.concept_name || '') + '</span></td>';
+        html += '<td style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><span class="concept-chip" style="color:#00d4ff;font-weight:bold;cursor:pointer;" onclick="switchTab(\\x27kplsearch\\x27);doKplSearch(\\x27' + (c.concept_name||'').replace(/'/g, '') + '\\x27)">' + _kplEsc(c.concept_name || '') + '</span></td>';
         html += '<td style="color:' + pctColor + ';font-weight:bold;white-space:nowrap;">' + pctStr + '</td>';
         html += '<td style="color:#ffc107;font-weight:bold;white-space:nowrap;">' + (c.hot_value || 0) + '</td>';
         html += '<td>' + tagLabel + '</td></tr>';
@@ -12964,6 +13246,16 @@ function selectKplSuggestConcept(concept) {
     doKplSearch();
 }
 
+// 多题材复选 + 连板过滤 + 赛马开关 全局变量
+var _kplLogicMode = 'or';           // 'or' | 'and'
+var _kplLianbanFilter = {'all': true, 'shouban': false, '2ban': false, '3ban': false, '3ban_plus': false};
+var _kplCheckedTopics = {};         // tag -> true (勾选的题材复选框)
+var _kplTopTagsData = [];           // 缓存顶部标签数据
+var _kplUseRace = false;            // 是否使用赛马
+var _multiRaceInstances = {};       // tag -> 多赛马实例
+// KPL搜索前端缓存（同页面session内避免重复请求）
+var _kplSearchCache = {};
+
 function loadKplTopTags(retries) {
     if (retries === undefined) retries = 3;
     fetch('/api/kpl_top_tags?n=40')
@@ -12975,16 +13267,19 @@ function loadKplTopTags(retries) {
                 }
                 return;
             }
-            var html = '<div style="display:flex;flex-wrap:wrap;gap:6px;">';
+            // 缓存数据
+            _kplTopTagsData = tags;
+            // 渲染复选框列表
+            var html = '<div class="kpl-topic-list" id="kplTopicList">';
             for (var i = 0; i < tags.length; i++) {
                 var t = tags[i];
-                var color;
-                if (t.count >= 20) color = '#ff6b6b';
-                else if (t.count >= 10) color = '#ffc107';
-                else color = '#4caf50';
-                html += '<span class="kpl-top-tag" onclick="document.getElementById(\\x27kplSearchInput2\\x27).value=\\x27' + (t.tag||'').replace(/'/g, '') + '\\x27;doKplSearch();" title="' + t.count + '次涨停">';
-                html += (t.tag||'') + ' <span style="color:' + color + ';font-weight:700;">' + t.count + '</span>';
-                html += '</span>';
+                var tagId = 'kpl-chk-' + i;
+                var checked = _kplCheckedTopics[t.tag] ? ' checked' : '';
+                var cls = _kplCheckedTopics[t.tag] ? ' checked' : '';
+                html += '<label class="kpl-topic-checkbox-item' + cls + '" title="' + t.count + '次涨停">';
+                html += '<input type="checkbox" id="' + tagId + '" data-tag="' + (t.tag||'').replace(/'/g, '') + '"' + checked + ' onchange="onKplTopicCheck(this)">';
+                html += (t.tag||'') + ' <span style="color:#888;font-size:0.85em;">' + t.count + '</span>';
+                html += '</label>';
             }
             html += '</div>';
             var topEl = document.getElementById('kplTopTags');
@@ -12998,44 +13293,166 @@ function loadKplTopTags(retries) {
         });
 }
 
-// KPL搜索前端缓存（同页面session内避免重复请求）
-var _kplSearchCache = {};
+// 题材复选框状态变更
+function onKplTopicCheck(el) {
+    var tag = el.getAttribute('data-tag');
+    if (el.checked) {
+        _kplCheckedTopics[tag] = true;
+        el.parentNode.classList.add('checked');
+    } else {
+        delete _kplCheckedTopics[tag];
+        el.parentNode.classList.remove('checked');
+    }
+}
+
+// 连板过滤：checkbox change → 更新状态 → 自动搜索
+document.getElementById('kplLianbanGroup').addEventListener('change', function(e) {
+    if (e.target.tagName === 'INPUT' && e.target.type === 'checkbox') {
+        var filter = e.target.getAttribute('data-filter');
+        if (filter === 'all') {
+            var allChk = e.target;
+            for (var k in _kplLianbanFilter) {
+                _kplLianbanFilter[k] = (k === 'all') ? allChk.checked : !allChk.checked;
+            }
+            // 同步其他 checkbox 的状态
+            var cbs = this.querySelectorAll('input[type="checkbox"]');
+            for (var i = 0; i < cbs.length; i++) {
+                var f = cbs[i].getAttribute('data-filter');
+                cbs[i].checked = _kplLianbanFilter[f];
+            }
+        } else {
+            _kplLianbanFilter[filter] = e.target.checked;
+            if (e.target.checked) {
+                _kplLianbanFilter['all'] = false;
+                var allCb = this.querySelector('input[data-filter="all"]');
+                if (allCb) allCb.checked = false;
+            }
+            // 所有非all都取消 → 恢复全部
+            var anySelected = Object.keys(_kplLianbanFilter).some(function(k) {
+                return k !== 'all' && _kplLianbanFilter[k];
+            });
+            if (!anySelected) {
+                _kplLianbanFilter['all'] = true;
+                var cbs2 = this.querySelectorAll('input[type="checkbox"]');
+                for (var j = 0; j < cbs2.length; j++) {
+                    cbs2[j].checked = (cbs2[j].getAttribute('data-filter') === 'all');
+                }
+            }
+        }
+        doKplSearch(); // 自动搜索
+    }
+});
+
+// OR/AND逻辑切换
+function setKplLogic(el) {
+    var mode = el.getAttribute('data-logic');
+    // 更新UI状态
+    var group = el.parentNode;
+    var btns = group.querySelectorAll('.kpl-logic-btn');
+    for (var i = 0; i < btns.length; i++) {
+        btns[i].classList.remove('active');
+    }
+    el.classList.add('active');
+    _kplLogicMode = mode;
+}
+
+// 赛马开关切换
+function toggleKplRaceUse() {
+    var chk = document.getElementById('kplUseRaceCheck');
+    _kplUseRace = chk && chk.checked;
+    // 如果关闭赛马，隐藏赛马区域
+    if (!_kplUseRace) {
+        var raceSection = document.getElementById('kplRaceSection');
+        if (raceSection) raceSection.style.display = 'none';
+    }
+}
 
 function doKplSearch(q) {
-    if (!q) q = document.getElementById('kplSearchInput2').value.trim();
-    if (q) document.getElementById('kplSearchInput2').value = q;
-    if (!q) { document.getElementById('kplSearchResult').innerHTML = '<div class="empty">输入关键词搜索KPL涨停数据</div>'; return; }
+    // 从复选框构建查询
+    var checkedTags = [];
+    for (var tag in _kplCheckedTopics) {
+        if (_kplCheckedTopics[tag]) checkedTags.push(tag);
+    }
+    // 搜索按钮点击（无参）：只从复选框读取，不读取输入框
+    // 标签/股票点击（有参）：直接使用传入的关键词
+    if (arguments.length === 0) {
+        q = '';
+    }
+
+    // 合并复选框和传入参数：复选框 + 传入的tag
+    var queryParts = [];
+    for (var ci = 0; ci < checkedTags.length; ci++) {
+        queryParts.push(checkedTags[ci]);
+    }
+    if (q) queryParts.push(q);
+
+    // 兜底：既没勾选题材也没传参时从输入框读取
+    if (queryParts.length === 0) {
+        q = document.getElementById('kplSearchInput2').value.trim();
+        if (q) queryParts.push(q);
+    }
+
+    if (queryParts.length === 0) {
+        document.getElementById('kplSearchResult').innerHTML = '<div class="empty">请勾选题材或在输入框中输入关键词</div>';
+        return;
+    }
+
+    // 根据逻辑模式构建查询
+    var finalQuery;
+    if (_kplLogicMode === 'and') {
+        // AND模式：使用 & 连接（后端已支持）
+        finalQuery = queryParts.join('&');
+    } else {
+        // OR模式（默认）：使用 | 连接（后端已支持）
+        finalQuery = queryParts.join('|');
+    }
+
+    // 更新输入框显示当前查询（含选中的题材和逻辑组合），便于用户感知搜索条件
+    document.getElementById('kplSearchInput2').value = finalQuery;
+
     var dateStart = document.getElementById('kplSearchDateStart').value;
     var dateEnd = document.getElementById('kplSearchDateEnd').value;
     var noSt = document.getElementById('kplNoStCheck');
     var strict = document.getElementById('kplStrictCheck');
     var el = document.getElementById('kplSearchResult');
     el.innerHTML = '<div class="loading">搜索中...</div>';
-    var url = '/api/kpl_reason_search?q=' + encodeURIComponent(q);
+    var url = '/api/kpl_reason_search?q=' + encodeURIComponent(finalQuery);
     if (dateStart) url += '&date_start=' + encodeURIComponent(dateStart);
     if (dateEnd) url += '&date_end=' + encodeURIComponent(dateEnd);
     url += '&no_st=' + (noSt && noSt.checked ? '1' : '0');
     url += '&strict=' + (strict && strict.checked ? '1' : '0');
     url += '&gem_extra=1';
+    var filterStr = Object.keys(_kplLianbanFilter).filter(function(k){ return _kplLianbanFilter[k]; }).join(',') || 'all';
+    url += '&lianban_filter=' + encodeURIComponent(filterStr);
 
     var _strictMode = document.getElementById('kplStrictCheck') && document.getElementById('kplStrictCheck').checked;
 
+    function _loadRaceAfterSearch() {
+        if (_kplUseRace) {
+            // 根据逻辑模式决定多赛马行为
+            if (_kplLogicMode === 'and' || checkedTags.length <= 1) {
+                // AND模式或单题材：单赛马
+                if (_raceTimer) { clearInterval(_raceTimer); _raceTimer = null; }
+                _loadRaceForTag(finalQuery, dateStart, dateEnd, _strictMode);
+            } else {
+                // OR模式 + 多题材：分图赛马
+                if (_raceTimer) { clearInterval(_raceTimer); _raceTimer = null; }
+                _loadMultiRace(checkedTags, dateStart, dateEnd, _strictMode);
+            }
+        }
+    }
+
     // 前端缓存命中 → 直接渲染，后台异步刷新
     if (_kplSearchCache[url]) {
-        renderFullKplSearch(_kplSearchCache[url], q);
-        if (_raceTimer) {
-            clearInterval(_raceTimer);
-            _raceTimer = null;
-        }
-        _loadRaceForTag(q, dateStart, dateEnd, _strictMode);
-        // 后台异步刷新（silent update，不阻塞）
+        renderFullKplSearch(_kplSearchCache[url], finalQuery);
+        _loadRaceAfterSearch();
+        // 后台异步刷新
         fetch(url)
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 _kplSearchCache[url] = data;
-                // 如果用户仍在当前关键词，更新显示
                 var curQ = document.getElementById('kplSearchInput2').value.trim();
-                if (curQ === q) renderFullKplSearch(data, q);
+                if (curQ === finalQuery) renderFullKplSearch(data, finalQuery);
             })
             .catch(function() {});
         return;
@@ -13045,13 +13462,8 @@ function doKplSearch(q) {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             _kplSearchCache[url] = data;
-            renderFullKplSearch(data, q);
-            // 自动加载赛马数据
-            if (_raceTimer) {
-                clearInterval(_raceTimer);
-                _raceTimer = null;
-            }
-            _loadRaceForTag(q, dateStart, dateEnd, _strictMode);
+            renderFullKplSearch(data, finalQuery);
+            _loadRaceAfterSearch();
         })
         .catch(function(e) {
             el.innerHTML = '<div class="error">搜索失败: ' + e.message + '</div>';
@@ -13277,14 +13689,44 @@ function resetKplSearch() {
     _kplSearchHits = [];
     _kplSectionHits = {};
     _kplSearchCache = {};
+
+    // 重置复选框
+    _kplCheckedTopics = {};
+    var topicList = document.getElementById('kplTopicList');
+    if (topicList) {
+        var chks = topicList.querySelectorAll('input[type=checkbox]');
+        for (var ci = 0; ci < chks.length; ci++) {
+            chks[ci].checked = false;
+        }
+        var labels = topicList.querySelectorAll('.kpl-topic-checkbox-item');
+        for (var li = 0; li < labels.length; li++) {
+            labels[li].classList.remove('checked');
+        }
+    }
+
+    // 重置逻辑模式
+    _kplLogicMode = 'or';
+    var logicBtns = document.querySelectorAll('.kpl-logic-btn');
+    for (var lbi = 0; lbi < logicBtns.length; lbi++) {
+        logicBtns[lbi].classList.toggle('active', logicBtns[lbi].getAttribute('data-logic') === 'or');
+    }
+
+    // 重置赛马开关
+    _kplUseRace = false;
+    var raceChk = document.getElementById('kplUseRaceCheck');
+    if (raceChk) raceChk.checked = false;
+    var raceSection = document.getElementById('kplRaceSection');
+    if (raceSection) raceSection.style.display = 'none';
+
     // 清空赛马数据
     if (_raceTimer) {
         clearInterval(_raceTimer);
         _raceTimer = null;
     }
-    _raceData = null;
-    _raceKeyword = '';
-    _raceHiddenHorses = {};
+    _raceCtx.data = null;
+    _raceCtx.keyword = '';
+    _raceCtx.hiddenHorses = {};
+    _multiRaceInstances = {};
     document.getElementById('kplRaceTitle').textContent = '题材赛马';
     document.getElementById('kplRaceBadge').style.display = 'none';
     document.getElementById('kplRaceStatus').innerHTML = '请先搜索题材';
@@ -13294,6 +13736,9 @@ function resetKplSearch() {
     if (legend) legend.innerHTML = '';
     var stats = document.getElementById('kplRaceStats');
     if (stats) stats.innerHTML = '';
+    // 清除多赛马容器
+    var multiContainer = document.getElementById('kplMultiRaceContainer');
+    if (multiContainer) multiContainer.innerHTML = '';
     var canvas = document.getElementById('kplRaceCanvas');
     if (canvas) {
         var ctx = canvas.getContext('2d');
@@ -13302,26 +13747,36 @@ function resetKplSearch() {
 }
 
 // ===== 题材赛马相关变量 =====
-var _raceData = null;
-var _raceColors = ['#ff6b6b','#ffd93d','#6bcb77','#4d96ff','#ff8fab','#845ec2','#00c9a7','#ff9671','#0081cf','#ffc75f',
-  '#f9666b','#78dec7','#b39ddb','#ef9a9a','#81d4fa','#aed581','#fff176','#ffab91','#ce93d8','#80cbc4'];
-var _raceTimer = null;
-var _raceHiddenHorses = {};  // code -> true (legend click to hide)
-var _raceKeyword = '';        // 当前赛马题材关键词
-var _raceHitPoints = [];      // [{x, y, label, date, changePct}]
-var _raceLabelPositions = []; // [{x, y, label, stock_code}] 点击标签用
-var _raceClimaxDayLines = []; // [{x, date, stocks: [{stock_name, stock_code, daily_change_pct, cum_close, type}]}] 高潮日竖线hover用
-var _raceZoomValue = 100;     // 水平缩放百分比（时间窗口）
-var _raceYZoomValue = 100;    // 垂直缩放百分比（Y轴涨跌幅范围）
-var _racePanX = 0;            // 水平平移 0~1，0=最右侧(默认最新)，1=最左侧(最早)
-var _racePanY = 0;            // 垂直平移 -1~1，0=居中(默认)
-var _raceDragging = false;
-var _raceDragStart = null;    // {mx, my, panX, panY}
-var _raceSortKey = '';        // 表格排序key
-var _raceSortDir = '';        // 排序方向 asc/desc
-var _raceStrict = false;
-var _raceDateStart = '';
-var _raceDateEnd = '';
+var _raceCtx = {
+    data: null,
+    colors: ['#ff6b6b','#ffd93d','#6bcb77','#4d96ff','#ff8fab','#845ec2','#00c9a7','#ff9671','#0081cf','#ffc75f',
+      '#f9666b','#78dec7','#b39ddb','#ef9a9a','#81d4fa','#aed581','#fff176','#ffab91','#ce93d8','#80cbc4'],
+    timer: null,
+    hiddenHorses: {},  // code -> true (legend click to hide)
+    keyword: '',        // 当前赛马题材关键词
+    hitPoints: [],      // [{x, y, label, date, changePct}]
+    labelPositions: [], // [{x, y, label, stock_code}] 点击标签用
+    climaxDayLines: [], // [{x, date, stocks: [{stock_name, stock_code, daily_change_pct, cum_close, type}]}] 高潮日竖线hover用
+    zoomValue: 100,     // 水平缩放百分比（时间窗口）
+    yZoomValue: 100,    // 垂直缩放百分比（Y轴涨跌幅范围）
+    panX: 0,            // 水平平移 0~1，0=最右侧(默认最新)，1=最左侧(最早)
+    panY: 0,            // 垂直平移 -1~1，0=居中(默认)
+    dragging: false,
+    dragStart: null,    // {mx, my, panX, panY}
+    sortKey: '',        // 表格排序key
+    sortDir: '',        // 排序方向 asc/desc
+    strict: false,
+    dateStart: '',
+    dateEnd: '',
+    // DOM元素ID引用（单赛马默认ID）
+    canvasId: 'kplRaceCanvas',
+    tooltipId: 'kplRaceTooltip',
+    legendId: 'kplRaceLegend',
+    statsId: 'kplRaceStats',
+    containerId: 'kplRaceCanvasContainer'
+};
+var _raceTimer = null;  // 定时器ID
+var _lastActiveRaceCtx = null;  // zoom/resize事件最新激活的ctx
 
 function toggleKplRace() {
     var body = document.getElementById('kplRaceBody');
@@ -13331,7 +13786,7 @@ function toggleKplRace() {
         body.style.display = 'block';
         btn.innerHTML = '收起 \\u25B2';
         // Redraw canvas if data exists (fix size after display shows)
-        if (_raceData) setTimeout(function(){ _raceRedraw(); }, 100);
+        if (_raceCtx.data) setTimeout(function(){ _raceRedraw(); }, 100);
     } else {
         body.style.display = 'none';
         btn.innerHTML = '展开 \\u25BC';
@@ -13339,10 +13794,20 @@ function toggleKplRace() {
 }
 
 function _loadRaceForTag(keyword, ds, de, strictMode) {
-    _raceKeyword = keyword;
-    _raceStrict = (strictMode === undefined ? (document.getElementById('kplStrictCheck') && document.getElementById('kplStrictCheck').checked) : strictMode);
-    _raceDateStart = ds;
-    _raceDateEnd = de;
+    // 隐藏多赛马容器，显示单图
+    var singleWrap = document.getElementById('kplRaceCanvasContainer');
+    if (singleWrap) singleWrap.style.display = 'block';
+    var raceSection = document.getElementById('kplRaceSection');
+    if (raceSection) raceSection.style.display = 'block';
+    var multiContainer = document.getElementById('kplMultiRaceContainer');
+    if (multiContainer) multiContainer.innerHTML = '';
+    _multiRaceInstances = {};
+    _lastActiveRaceCtx = _raceCtx;
+
+    _raceCtx.keyword = keyword;
+    _raceCtx.strict = (strictMode === undefined ? (document.getElementById('kplStrictCheck') && document.getElementById('kplStrictCheck').checked) : strictMode);
+    _raceCtx.dateStart = ds;
+    _raceCtx.dateEnd = de;
     var statusEl = document.getElementById('kplRaceStatus');
     statusEl.innerHTML = '加载中...';
     if (!ds) {
@@ -13353,19 +13818,21 @@ function _loadRaceForTag(keyword, ds, de, strictMode) {
         de = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
     }
     // 立即清除旧数据，防止异步期间工具提示显示缓存
-    _raceData = null;
-    _raceHitPoints = [];
-    _raceLabelPositions = [];
-    _raceClimaxDayLines = [];
+    _raceCtx.data = null;
+    _raceCtx.hitPoints = [];
+    _raceCtx.labelPositions = [];
+    _raceCtx.climaxDayLines = [];
     var raceCanvas = document.getElementById('kplRaceCanvas');
     if (raceCanvas) {
-        var raceCtx = raceCanvas.getContext('2d');
-        raceCtx.clearRect(0, 0, raceCanvas.width, raceCanvas.height);
+        var rCtx = raceCanvas.getContext('2d');
+        rCtx.clearRect(0, 0, raceCanvas.width, raceCanvas.height);
     }
     _raceHideTooltip();
 
-    var strictChecked = _raceStrict ? '1' : '0';
+    var strictChecked = _raceCtx.strict ? '1' : '0';
     var url = '/api/kpl_race_data?mode=init&keyword=' + encodeURIComponent(keyword) + '&date_start=' + ds + '&date_end=' + de + '&strict=' + strictChecked;
+    var filterStr = Object.keys(_kplLianbanFilter).filter(function(k){ return _kplLianbanFilter[k]; }).join(',') || 'all';
+    url += '&lianban_filter=' + encodeURIComponent(filterStr);
     fetch(url)
         .then(function(r){ return r.json(); })
         .then(function(data){
@@ -13377,12 +13844,12 @@ function _loadRaceForTag(keyword, ds, de, strictMode) {
                 if (climaxGroup) climaxGroup.style.display = 'none';
                 return;
             }
-            _raceData = data;
-            _raceHiddenHorses = {};
-            _raceSortKey = '';
-            _raceSortDir = '';
-            _raceZoomValue = 100;
-            _raceYZoomValue = 100;
+            _raceCtx.data = data;
+            _raceCtx.hiddenHorses = {};
+            _raceCtx.sortKey = '';
+            _raceCtx.sortDir = '';
+            _raceCtx.zoomValue = 100;
+            _raceCtx.yZoomValue = 100;
             var zs = document.getElementById('kplRaceZoom');
             if (zs) zs.value = '100';
             var zl = document.getElementById('kplRaceZoomLabel');
@@ -13400,7 +13867,7 @@ function _loadRaceForTag(keyword, ds, de, strictMode) {
             var body = document.getElementById('kplRaceBody');
             if (body) body.style.display = 'block';
             var btn = document.getElementById('kplRaceToggleBtn');
-            if (btn) btn.innerHTML = '收起 \\u25B2';
+            if (btn) btn.innerHTML = '收起 \u25B2';
             // 启动3分钟定时器（交易时段）
             _startRaceTimer();
         })
@@ -13426,13 +13893,13 @@ function _startRaceTimer() {
 }
 
 function _refreshRace() {
-    if (!_raceData || !_raceData.horses || !_raceKeyword) return;
-    var codes = _raceData.horses.map(function(h){ return h.stock_code; }).join(',');
-    var url = '/api/kpl_race_data?mode=refresh&keyword=' + encodeURIComponent(_raceKeyword)
+    if (!_raceCtx.data || !_raceCtx.data.horses || !_raceCtx.keyword) return;
+    var codes = _raceCtx.data.horses.map(function(h){ return h.stock_code; }).join(',');
+    var url = '/api/kpl_race_data?mode=refresh&keyword=' + encodeURIComponent(_raceCtx.keyword)
         + '&horses=' + encodeURIComponent(codes)
-        + '&strict=' + (_raceStrict ? '1' : '0')
-        + '&date_start=' + encodeURIComponent(_raceDateStart || '')
-        + '&date_end=' + encodeURIComponent(_raceDateEnd || '');
+        + '&strict=' + (_raceCtx.strict ? '1' : '0')
+        + '&date_start=' + encodeURIComponent(_raceCtx.dateStart || '')
+        + '&date_end=' + encodeURIComponent(_raceCtx.dateEnd || '');
     fetch(url)
         .then(function(r){ return r.json(); })
         .then(function(data){
@@ -13440,61 +13907,264 @@ function _refreshRace() {
             // 合并新马
             if (data.new_horses && data.new_horses.length > 0) {
                 for (var i = 0; i < data.new_horses.length; i++) {
-                    _raceData.horses.push(data.new_horses[i]);
+                    _raceCtx.data.horses.push(data.new_horses[i]);
                 }
-                _raceData.horses.sort(function(a,b){ return Math.abs(b.final_change) - Math.abs(a.final_change); });
-                _raceData.horses = _raceData.horses.slice(0, 120);
-                document.getElementById('kplRaceBadge').textContent = _raceData.horses.length + '匹';
+                _raceCtx.data.horses.sort(function(a,b){ return Math.abs(b.final_change) - Math.abs(a.final_change); });
+                _raceCtx.data.horses = _raceCtx.data.horses.slice(0, 120);
+                document.getElementById('kplRaceBadge').textContent = _raceCtx.data.horses.length + '匹';
             }
             // 更新实时涨跌幅
             if (data.price_updates) {
                 for (var code in data.price_updates) {
-                    if (_raceData.today_realtime) {
-                        _raceData.today_realtime[code] = data.price_updates[code];
+                    if (_raceCtx.data.today_realtime) {
+                        _raceCtx.data.today_realtime[code] = data.price_updates[code];
                     }
                 }
             }
             if (data.today_zt_codes) {
-                _raceData.today_zt_codes = data.today_zt_codes;
+                _raceCtx.data.today_zt_codes = data.today_zt_codes;
             }
             if (data.today_lianban) {
-                if (!_raceData.today_lianban) _raceData.today_lianban = {};
+                if (!_raceCtx.data.today_lianban) _raceCtx.data.today_lianban = {};
                 for (var code2 in data.today_lianban) {
-                    _raceData.today_lianban[code2] = data.today_lianban[code2];
+                    _raceCtx.data.today_lianban[code2] = data.today_lianban[code2];
                 }
             }
             _raceRedraw();
             var statusEl = document.getElementById('kplRaceStatus');
-            if (statusEl) statusEl.innerHTML = '已刷新 ' + new Date().toLocaleTimeString() + ' | ' + _raceData.horses.length + '匹 | 约3分钟自动刷新';
+            if (statusEl) statusEl.innerHTML = '已刷新 ' + new Date().toLocaleTimeString() + ' | ' + _raceCtx.data.horses.length + '匹 | 约3分钟自动刷新';
         })
         .catch(function(){});
 }
 
-function _raceRedraw() {
-    if (!_raceData) return;
-    _raceHitPoints = [];
-    _raceLabelPositions = [];
-    _raceClimaxDayLines = [];
-    _renderRaceChart();
-    _renderRaceStats();
-    // 绑定事件：tooltip + click + 拖动平移
-    var canvas = document.getElementById('kplRaceCanvas');
-    if (canvas) {
-        canvas.style.cursor = _raceDragging ? 'grabbing' : 'grab';
-        canvas.onmousemove = _raceOnCanvasMouseMove;
-        canvas.onmouseleave = _raceHideTooltip;
-        canvas.onclick = _raceOnCanvasClick;
-        canvas.onmousedown = _raceOnCanvasMouseDown;
+// ===== 多赛马功能 =====
+function _loadMultiRace(tags, ds, de, strictMode) {
+    if (!tags || tags.length === 0) return;
+    var raceSection = document.getElementById('kplRaceSection');
+    if (raceSection) raceSection.style.display = 'block';
+
+    var container = document.getElementById('kplMultiRaceContainer');
+    if (!container) return;
+    container.innerHTML = '<div class="loading" style="padding:20px;text-align:center;color:#888;">赛马数据加载中...</div>';
+
+    // 隐藏旧的单图canvas
+    var oldCanvasWrap = document.getElementById('kplRaceCanvasContainer');
+    if (oldCanvasWrap) oldCanvasWrap.style.display = 'none';
+
+    // 清除旧的多赛马实例
+    _multiRaceInstances = {};
+
+    // 显示赛马标题
+    document.getElementById('kplRaceTitle').textContent = '多题材赛马 (' + tags.length + '图)';
+    document.getElementById('kplRaceBadge').style.display = 'inline-flex';
+    document.getElementById('kplRaceBadge').textContent = tags.length + '图';
+
+    // 多赛马加载计数器
+    var _multiRaceTotal = tags.length;
+    var _multiRaceLoaded = 0;
+
+    for (var ti = 0; ti < tags.length; ti++) {
+        var tag = tags[ti];
+        // 为每个题材创建独立包装（包含legend和stats容器）
+        var wrapDiv = document.createElement('div');
+        wrapDiv.className = 'kpl-single-race-wrap';
+        wrapDiv.id = 'kpl-single-race-' + (ti);
+        wrapDiv.innerHTML = '<div class="kpl-race-tag-title">🏇 ' + tag + '</div>'
+            + '<div class="kpl-race-canvas-wrap" id="kpl-race-canvas-wrap-' + ti + '">'
+            + '<canvas id="kpl-race-canvas-' + ti + '" width="600" height="200"></canvas>'
+            + '<div class="kpl-race-multi-tooltip" id="kpl-race-tooltip-' + ti + '" style="display:none;position:absolute;pointer-events:none;background:rgba(10,22,40,0.92);border:1px solid #ffd700;border-radius:6px;padding:6px 10px;font-size:0.78em;color:#eee;z-index:1000;"></div>'
+            + '</div>'
+            + '<div class="kpl-race-legend" id="kpl-race-legend-' + ti + '"></div>'
+            + '<div class="kpl-race-stats" id="kpl-race-stats-' + ti + '"></div>'
+            + '<div class="kpl-race-multi-status" id="kpl-race-status-' + ti + '" style="text-align:center;color:#666;font-size:0.72em;padding:2px;">加载中...</div>';
+        container.appendChild(wrapDiv);
+
+        // 存储实例状态 — 现在所有ctx属性直接从实例读取
+        _multiRaceInstances['_race_' + ti] = {
+            tag: tag,
+            data: null,
+            keyword: tag,
+            hiddenHorses: {},
+            hitPoints: [],
+            labelPositions: [],
+            climaxDayLines: [],
+            zoomValue: 100,
+            yZoomValue: 100,
+            panX: 0,
+            panY: 0,
+            dragging: false,
+            dragStart: null,
+            strict: strictMode,
+            dateStart: ds,
+            dateEnd: de,
+            idx: ti,
+            colors: _raceCtx.colors,
+            // DOM ID引用
+            canvasId: 'kpl-race-canvas-' + ti,
+            tooltipId: 'kpl-race-tooltip-' + ti,
+            legendId: 'kpl-race-legend-' + ti,
+            statsId: 'kpl-race-stats-' + ti,
+            containerId: 'kpl-race-canvas-wrap-' + ti
+        };
+
+        // 异步加载每个题材的赛马数据
+        _loadSingleRace(ti, tag, ds, de, strictMode);
     }
-    // 全局mouseup确保拖拽释放
-    document.onmouseup = _raceOnCanvasMouseUp;
+    // 更新赛马状态
+    var statusEl = document.getElementById('kplRaceStatus');
+    if (statusEl) statusEl.innerHTML = tags.length + '个赛马图加载中...';
+
+    // 展开赛马body
+    var body = document.getElementById('kplRaceBody');
+    if (body) body.style.display = 'block';
+    var btn = document.getElementById('kplRaceToggleBtn');
+    if (btn) btn.innerHTML = '收起 \u25B2';
+    // 启动3分钟定时器
+    _startMultiRaceTimer();
 }
 
-function _renderRaceChart() {
-    var canvas = document.getElementById('kplRaceCanvas');
+function _loadSingleRace(idx, tag, ds, de, strictMode) {
+    if (!ds) {
+        var now2 = new Date();
+        var start2 = new Date(now2);
+        start2.setDate(start2.getDate() - 30);
+        ds = start2.getFullYear() + '-' + String(start2.getMonth()+1).padStart(2,'0') + '-' + String(start2.getDate()).padStart(2,'0');
+        de = now2.getFullYear() + '-' + String(now2.getMonth()+1).padStart(2,'0') + '-' + String(now2.getDate()).padStart(2,'0');
+    }
+    var strictChecked = (strictMode === undefined ? (document.getElementById('kplStrictCheck') && document.getElementById('kplStrictCheck').checked) : strictMode) ? '1' : '0';
+    var url = '/api/kpl_race_data?mode=init&keyword=' + encodeURIComponent(tag) + '&date_start=' + ds + '&date_end=' + de + '&strict=' + strictChecked;
+    var filterStr = Object.keys(_kplLianbanFilter).filter(function(k){ return _kplLianbanFilter[k]; }).join(',') || 'all';
+    url += '&lianban_filter=' + encodeURIComponent(filterStr);
+    fetch(url)
+        .then(function(r){ return r.json(); })
+        .then(function(data){
+            var instKey = '_race_' + idx;
+            var inst = _multiRaceInstances[instKey];
+            if (!inst) return;
+            if (data.error) {
+                var st = document.getElementById('kpl-race-status-' + idx);
+                if (st) st.innerHTML = data.message || data.error;
+                return;
+            }
+            inst.data = data;
+            inst.hiddenHorses = {};
+            // 渲染
+            _renderSingleRace(idx);
+            var st = document.getElementById('kpl-race-status-' + idx);
+            if (st) st.innerHTML = (data.horses_count || (data.horses ? data.horses.length : 0)) + '匹';
+
+            // 多赛马完成计数器
+            if (typeof _multiRaceLoaded !== 'undefined') {
+                _multiRaceLoaded++;
+                if (_multiRaceLoaded >= _multiRaceTotal) {
+                    // 移除加载中提示
+                    var container = document.getElementById('kplMultiRaceContainer');
+                    if (container) {
+                        var ld = container.querySelector('.loading');
+                        if (ld) ld.remove();
+                    }
+                    // 更新状态栏
+                    var stBar = document.getElementById('kplRaceStatus');
+                    if (stBar) stBar.innerHTML = _multiRaceTotal + '个赛马图加载完成';
+                }
+            }
+        })
+        .catch(function(err){
+            var st = document.getElementById('kpl-race-status-' + idx);
+            if (st) st.innerHTML = '加载失败';
+        });
+}
+
+function _renderSingleRace(idx) {
+    var instKey = '_race_' + idx;
+    var inst = _multiRaceInstances[instKey];
+    if (!inst || !inst.data) return;
+
+    _lastActiveRaceCtx = inst;
+
+    // 计算canvas高度（基于马匹数量，由_renderRaceChart内部包含1000px固定高度）
+    // 使用全功能赛马渲染
+    _raceRedraw(inst);
+}
+
+function _startMultiRaceTimer() {
+    if (_raceTimer) clearInterval(_raceTimer);
+    _raceTimer = setInterval(function(){
+        var nowH = new Date().getHours();
+        var nowM = new Date().getMinutes();
+        var tradeTime = (nowH > 9 || (nowH === 9 && nowM >= 25)) && (nowH < 15 || (nowH === 15 && nowM === 0));
+        if (!tradeTime) return;
+        _refreshMultiRace();
+    }, 180000);
+}
+
+function _refreshMultiRace() {
+    // 刷新所有多赛马实例
+    for (var key in _multiRaceInstances) {
+        var inst = _multiRaceInstances[key];
+        if (!inst || !inst.data || !inst.data.horses) continue;
+        var codes = inst.data.horses.map(function(h){ return h.stock_code; }).join(',');
+        var url = '/api/kpl_race_data?mode=refresh&keyword=' + encodeURIComponent(inst.keyword)
+            + '&horses=' + encodeURIComponent(codes)
+            + '&strict=' + (inst.strict ? '1' : '0')
+            + '&date_start=' + encodeURIComponent(inst.dateStart || '')
+            + '&date_end=' + encodeURIComponent(inst.dateEnd || '');
+        (function(instRef, idxRef){
+            fetch(url)
+                .then(function(r){ return r.json(); })
+                .then(function(data){
+                    if (data.error) return;
+                    if (data.new_horses && data.new_horses.length > 0) {
+                        for (var i2 = 0; i2 < data.new_horses.length; i2++) {
+                            instRef.data.horses.push(data.new_horses[i2]);
+                        }
+                        instRef.data.horses.sort(function(a,b){ return Math.abs(b.final_change) - Math.abs(a.final_change); });
+                        instRef.data.horses = instRef.data.horses.slice(0, 120);
+                    }
+                    if (data.price_updates) {
+                        for (var code2 in data.price_updates) {
+                            if (instRef.data.today_realtime) {
+                                instRef.data.today_realtime[code2] = data.price_updates[code2];
+                            }
+                        }
+                    }
+                    if (data.today_zt_codes) {
+                        instRef.data.today_zt_codes = data.today_zt_codes;
+                    }
+                    _raceRedraw(instRef);
+                })
+                .catch(function(){});
+        })(inst, inst.idx);
+    }
+}
+
+function _raceRedraw(ctx) {
+    if (!ctx) ctx = _raceCtx;
+    if (!ctx.data) return;
+    ctx.hitPoints = [];
+    ctx.labelPositions = [];
+    ctx.climaxDayLines = [];
+    _renderRaceChart(ctx);
+    _renderRaceStats(ctx);
+    // 绑定事件：tooltip + click + 拖动平移
+    var canvas = document.getElementById(ctx.canvasId);
+    if (canvas) {
+        canvas.style.cursor = ctx.dragging ? 'grabbing' : 'grab';
+        canvas.onmousemove = function(e) { _raceOnCanvasMouseMove(e, ctx); };
+        canvas.onmouseleave = function() { _raceHideTooltip(ctx); };
+        canvas.onclick = function(e) { _raceOnCanvasClick(e, ctx); };
+        canvas.onmousedown = function(e) { _raceOnCanvasMouseDown(e, ctx); };
+    }
+    // 全局mouseup确保拖拽释放
+    document.onmouseup = function(e) { _raceOnCanvasMouseUp(e, ctx); };
+}
+
+function _renderRaceChart(ctxInst) {
+    if (!ctxInst) ctxInst = _raceCtx;
+    var canvas = document.getElementById(ctxInst.canvasId);
     if (!canvas) return;
-    var ctx = canvas.getContext('2d');
-    var container = document.getElementById('kplRaceCanvasContainer');
+    var c2d = canvas.getContext('2d');
+    var container = document.getElementById(ctxInst.containerId);
     if (!container) return;
     // 高DPI适配
     var dpr = window.devicePixelRatio || 1;
@@ -13505,22 +14175,23 @@ function _renderRaceChart() {
     canvas.height = h * dpr;
     canvas.style.width = w + 'px';
     canvas.style.height = h + 'px';
-    ctx.scale(dpr, dpr);
+    c2d.scale(dpr, dpr);
 
-    var horses = _raceData.horses || [];
+    var data = ctxInst.data;
+    var horses = data.horses || [];
     if (horses.length === 0) {
-        ctx.fillStyle = '#666';
-        ctx.font = '14px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText('无数据', w/2, h/2);
+        c2d.fillStyle = '#666';
+        c2d.font = '14px sans-serif';
+        c2d.textAlign = 'center';
+        c2d.fillText('无数据', w/2, h/2);
         return;
     }
 
     // 检测是否有实时数据
     var _raceNoRealtime = true;
-    var _raceRealtimeData = _raceData.today_realtime || {};
+    var _raceRealtimeData = data.today_realtime || {};
     for (var _rrk in _raceRealtimeData) { _raceNoRealtime = false; break; }
-    if (_raceNoRealtime && _raceData.today_zt_codes && _raceData.today_zt_codes.length > 0) {
+    if (_raceNoRealtime && data.today_zt_codes && data.today_zt_codes.length > 0) {
         _raceNoRealtime = false;
     }
 
@@ -13532,7 +14203,7 @@ function _renderRaceChart() {
     var minDate = Infinity, maxDate = -Infinity;
     var minVal = 0, maxVal = 10;
     for (var i = 0; i < horses.length; i++) {
-        if (_raceHiddenHorses[horses[i].stock_code]) continue;
+        if (ctxInst.hiddenHorses[horses[i].stock_code]) continue;
         var curve = horses[i].curve || [];
         for (var j = 0; j < curve.length; j++) {
             var ts = new Date(curve[j].trade_date).getTime();
@@ -13543,35 +14214,33 @@ function _renderRaceChart() {
             if (v > maxVal) maxVal = v;
         }
     }
-    // 缩放+平移：保留 _raceZoomValue% 的时间窗口，_racePanX 控制偏移
-    if (_raceZoomValue < 100) {
+    // 缩放+平移
+    if (ctxInst.zoomValue < 100) {
         var totalSpan = maxDate - minDate;
-        var visibleSpan = totalSpan * _raceZoomValue / 100;
+        var visibleSpan = totalSpan * ctxInst.zoomValue / 100;
         var panRange = totalSpan - visibleSpan;
-        minDate = minDate + panRange * (1 - _racePanX);
+        minDate = minDate + panRange * (1 - ctxInst.panX);
         maxDate = minDate + visibleSpan;
     }
     if (minDate === Infinity) {
-        ctx.fillStyle = '#666';
-        ctx.font = '14px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText('无数据', w/2, h/2);
+        c2d.fillStyle = '#666';
+        c2d.font = '14px sans-serif';
+        c2d.textAlign = 'center';
+        c2d.fillText('无数据', w/2, h/2);
         return;
     }
     // 扩展Y轴范围，留出10%余量
     var yRange = Math.max(maxVal - minVal, 10);
     maxVal = maxVal + yRange * 0.1;
     minVal = minVal - yRange * 0.1;
-    // 垂直缩放+平移（以中心为基准收缩/扩展，_racePanY 控制上下偏移）
-    if (_raceYZoomValue !== 100) {
-        var yFullMin = minVal;
-        var yFullMax = maxVal;
+    // 垂直缩放+平移
+    if (ctxInst.yZoomValue !== 100) {
         var yCenter = (minVal + maxVal) / 2;
         var yFullSpan = maxVal - minVal;
-        var yVisSpan = yFullSpan * (_raceYZoomValue / 100);
+        var yVisSpan = yFullSpan * (ctxInst.yZoomValue / 100);
         var yPanRange = yFullSpan - yVisSpan;
-        minVal = yCenter - yVisSpan / 2 + _racePanY * yPanRange / 2;
-        maxVal = yCenter + yVisSpan / 2 + _racePanY * yPanRange / 2;
+        minVal = yCenter - yVisSpan / 2 + ctxInst.panY * yPanRange / 2;
+        maxVal = yCenter + yVisSpan / 2 + ctxInst.panY * yPanRange / 2;
     }
     var ySpan = maxVal - minVal;
 
@@ -13591,7 +14260,7 @@ function _renderRaceChart() {
     function _detectClimaxDays(horses) {
         var dateMap = {};
         for (var i = 0; i < horses.length; i++) {
-            if (_raceHiddenHorses[horses[i].stock_code]) continue;
+            if (ctxInst.hiddenHorses[horses[i].stock_code]) continue;
             var curve = horses[i].curve || [];
             for (var j = 0; j < curve.length; j++) {
                 var dt = curve[j].trade_date;
@@ -13612,20 +14281,10 @@ function _renderRaceChart() {
                 var dp = pt.daily_change_pct;
                 var isZt = _isZtLimit(h.stock_code, dp);
                 var isDz = false;
-                if (isZt) {
-                    ztCount++;
-                } else if (_isDaZhang(h.stock_code, dp)) {
-                    dzCount++;
-                    isDz = true;
-                }
+                if (isZt) { ztCount++; }
+                else if (_isDaZhang(h.stock_code, dp)) { dzCount++; isDz = true; }
                 if (isZt || isDz) {
-                    stockDetails.push({
-                        stock_name: h.stock_name || h.stock_code,
-                        stock_code: h.stock_code,
-                        daily_change_pct: dp,
-                        cum_close: pt.cum_close,
-                        type: isZt ? 'zt' : 'strong_rise'
-                    });
+                    stockDetails.push({ stock_name: h.stock_name || h.stock_code, stock_code: h.stock_code, daily_change_pct: dp, cum_close: pt.cum_close, type: isZt ? 'zt' : 'strong_rise' });
                 }
             }
             var total = ztCount + dzCount;
@@ -13646,51 +14305,48 @@ function _renderRaceChart() {
     }
 
     // 清空背景
-    ctx.fillStyle = '#0a1628';
-    ctx.fillRect(0, 0, w, h);
+    c2d.fillStyle = '#0a1628';
+    c2d.fillRect(0, 0, w, h);
 
-    // 水平网格线：统一使用10%为步长，清晰显示涨跌幅
+    // 水平网格线
     var gridStep = 10;
     var gridStart = Math.ceil(minVal / gridStep) * gridStep;
-    ctx.font = '10px sans-serif';
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
+    c2d.font = '10px sans-serif';
+    c2d.textAlign = 'right';
+    c2d.textBaseline = 'middle';
     for (var gv = gridStart; gv <= maxVal; gv += gridStep) {
         var gy = yPos(gv);
         if (gy < padding.top - 5 || gy > h - padding.bottom + 5) continue;
-        // 10%整倍数网格线加粗
         var isTenLine = (gv % 10 === 0);
-        ctx.strokeStyle = isTenLine ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.06)';
-        ctx.lineWidth = isTenLine ? 1.0 : 0.5;
-        ctx.beginPath();
-        ctx.moveTo(padding.left, gy);
-        ctx.lineTo(w - padding.right, gy);
-        ctx.stroke();
-        // 标签
-        ctx.fillStyle = isTenLine ? '#aaa' : '#666';
-        ctx.fillText((gv > 0 ? '+' : '') + gv + '%', padding.left - 4, gy);
+        c2d.strokeStyle = isTenLine ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.06)';
+        c2d.lineWidth = isTenLine ? 1.0 : 0.5;
+        c2d.beginPath();
+        c2d.moveTo(padding.left, gy);
+        c2d.lineTo(w - padding.right, gy);
+        c2d.stroke();
+        c2d.fillStyle = isTenLine ? '#aaa' : '#666';
+        c2d.fillText((gv > 0 ? '+' : '') + gv + '%', padding.left - 4, gy);
     }
     // 0%基线
     if (minVal < 0 && maxVal > 0) {
         var zeroY = yPos(0);
-        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-        ctx.lineWidth = 1.2;
-        ctx.beginPath();
-        ctx.moveTo(padding.left, zeroY);
-        ctx.lineTo(w - padding.right, zeroY);
-        ctx.stroke();
+        c2d.strokeStyle = 'rgba(255,255,255,0.35)';
+        c2d.lineWidth = 1.2;
+        c2d.beginPath();
+        c2d.moveTo(padding.left, zeroY);
+        c2d.lineTo(w - padding.right, zeroY);
+        c2d.stroke();
     }
 
-    // X轴日期标签 (每5个交易日)
+    // X轴日期标签
     if (maxDate > minDate) {
-        ctx.fillStyle = '#888';
-        ctx.font = '9px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'top';
-        // 遍历所有曲线的日期来找到分布均匀的日期
+        c2d.fillStyle = '#888';
+        c2d.font = '9px sans-serif';
+        c2d.textAlign = 'center';
+        c2d.textBaseline = 'top';
         var allDates = {};
         for (var i = 0; i < horses.length; i++) {
-            if (_raceHiddenHorses[horses[i].stock_code]) continue;
+            if (ctxInst.hiddenHorses[horses[i].stock_code]) continue;
             var curve = horses[i].curve || [];
             for (var j = 0; j < curve.length; j++) {
                 allDates[curve[j].trade_date] = true;
@@ -13704,73 +14360,69 @@ function _renderRaceChart() {
             var lx = xPos(ts);
             if (lx >= padding.left && lx <= w - padding.right) {
                 var shortLabel = d.slice(5).replace(/^0/, '').replace('-0', '-').replace('-', '/');
-                ctx.fillText(shortLabel, lx, h - padding.bottom + 6);
+                c2d.fillText(shortLabel, lx, h - padding.bottom + 6);
             }
         }
     }
 
-    // 高潮日竖线（多条）
+    // 高潮日竖线
     for (var cdi = 0; cdi < climaxDays.length; cdi++) {
         var day = climaxDays[cdi];
         var cTs = new Date(day.date).getTime();
         var cx = xPos(cTs);
         if (cx >= padding.left && cx <= w - padding.right) {
-            // 记录高潮日竖线位置用于hover
-            _raceClimaxDayLines.push({x: cx, date: day.date, stocks: day.stocks || []});
-            ctx.save();
-            ctx.setLineDash([4, 4]);
-            ctx.strokeStyle = 'rgba(255,215,0,0.6)';
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.moveTo(cx, padding.top);
-            ctx.lineTo(cx, h - padding.bottom);
-            ctx.stroke();
-            ctx.restore();
-            ctx.fillStyle = '#ffd700';
-            ctx.font = '9px sans-serif';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'bottom';
+            ctxInst.climaxDayLines.push({x: cx, date: day.date, stocks: day.stocks || []});
+            c2d.save();
+            c2d.setLineDash([4, 4]);
+            c2d.strokeStyle = 'rgba(255,215,0,0.6)';
+            c2d.lineWidth = 1.5;
+            c2d.beginPath();
+            c2d.moveTo(cx, padding.top);
+            c2d.lineTo(cx, h - padding.bottom);
+            c2d.stroke();
+            c2d.restore();
+            c2d.fillStyle = '#ffd700';
+            c2d.font = '9px sans-serif';
+            c2d.textAlign = 'center';
+            c2d.textBaseline = 'bottom';
             var shortLabel = day.date.slice(5).replace(/^0/, '').replace('-0', '-').replace('-', '/');
-            ctx.fillText('高潮日' + shortLabel, cx, padding.top - 2);
+            c2d.fillText('高潮日' + shortLabel, cx, padding.top - 2);
         }
     }
 
     // 今日日期标注
     var todayStr = new Date().toISOString().slice(0, 10);
     var shortToday = todayStr.slice(5).replace(/^0/, '').replace('-0', '-').replace('-', '/');
-    ctx.fillStyle = '#90caf9';
-    ctx.font = '8px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    ctx.fillText('T ' + shortToday, w - padding.right / 2, h - padding.bottom + 2);
+    c2d.fillStyle = '#90caf9';
+    c2d.font = '8px sans-serif';
+    c2d.textAlign = 'center';
+    c2d.textBaseline = 'top';
+    c2d.fillText('T ' + shortToday, w - padding.right / 2, h - padding.bottom + 2);
 
-    // 今日实时涨跌列背景+分隔线
+    // 今日实时涨跌列
     var realtimeColX = w - padding.right;
-    ctx.fillStyle = 'rgba(0,212,255,0.03)';
-    ctx.fillRect(realtimeColX, padding.top, padding.right, plotH);
-    // 竖虚线分隔线
-    ctx.save();
-    ctx.setLineDash([3, 3]);
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(realtimeColX, padding.top);
-    ctx.lineTo(realtimeColX, h - padding.bottom);
-    ctx.stroke();
-    ctx.restore();
-    // 列头文字
-    ctx.fillStyle = '#90caf9';
-    ctx.font = '9px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('今日实时', w - padding.right / 2, padding.top + 8);
-    // 无实时数据时在列中显示提示
+    c2d.fillStyle = 'rgba(0,212,255,0.03)';
+    c2d.fillRect(realtimeColX, padding.top, padding.right, plotH);
+    c2d.save();
+    c2d.setLineDash([3, 3]);
+    c2d.strokeStyle = 'rgba(255,255,255,0.12)';
+    c2d.lineWidth = 1;
+    c2d.beginPath();
+    c2d.moveTo(realtimeColX, padding.top);
+    c2d.lineTo(realtimeColX, h - padding.bottom);
+    c2d.stroke();
+    c2d.restore();
+    c2d.fillStyle = '#90caf9';
+    c2d.font = '9px sans-serif';
+    c2d.textAlign = 'center';
+    c2d.textBaseline = 'middle';
+    c2d.fillText('今日实时', w - padding.right / 2, padding.top + 8);
     if (_raceNoRealtime) {
-        ctx.fillStyle = '#546e7a';
-        ctx.font = '9px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('暂无实时', w - padding.right / 2, h / 2);
+        c2d.fillStyle = '#546e7a';
+        c2d.font = '9px sans-serif';
+        c2d.textAlign = 'center';
+        c2d.textBaseline = 'middle';
+        c2d.fillText('暂无实时', w - padding.right / 2, h / 2);
     }
 
     // 折线标记防挤
@@ -13779,15 +14431,15 @@ function _renderRaceChart() {
     // 绘制每匹马
     for (var i = 0; i < horses.length; i++) {
         var hData = horses[i];
-        if (_raceHiddenHorses[hData.stock_code]) continue;
+        if (ctxInst.hiddenHorses[hData.stock_code]) continue;
         var curve = hData.curve || [];
         if (curve.length < 2) continue;
-        var color = _raceColors[i % _raceColors.length];
+        var color = ctxInst.colors[i % ctxInst.colors.length];
 
         // 收盘线
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1.8;
-        ctx.beginPath();
+        c2d.strokeStyle = color;
+        c2d.lineWidth = 1.8;
+        c2d.beginPath();
         var first = true;
         for (var j = 0; j < curve.length; j++) {
             var pt = curve[j];
@@ -13795,26 +14447,22 @@ function _renderRaceChart() {
             var py = yPos(pt.cum_close);
             if (px < padding.left - 10) continue;
             if (px > w - padding.right + 10) break;
-            if (first) {
-                ctx.moveTo(px, py);
-                first = false;
-            } else {
-                ctx.lineTo(px, py);
-            }
+            if (first) { c2d.moveTo(px, py); first = false; }
+            else { c2d.lineTo(px, py); }
         }
-        ctx.stroke();
+        c2d.stroke();
 
-        // 每日小点（半透明） + 填充 _raceHitPoints
+        // 每日小点
         for (var j = 0; j < curve.length; j++) {
             var pt2 = curve[j];
             var dpx = xPos(new Date(pt2.trade_date).getTime());
             var dpy = yPos(pt2.cum_close);
             if (dpx < padding.left || dpx > w - padding.right) continue;
-            ctx.beginPath();
-            ctx.arc(dpx, dpy, 2.2, 0, Math.PI * 2);
-            ctx.fillStyle = color + '99';
-            ctx.fill();
-            _raceHitPoints.push({x: dpx, y: dpy, label: hData.stock_name || hData.stock_code, date: pt2.trade_date, changePct: pt2.cum_close, dailyChangePct: pt2.daily_change_pct, isEvent: false});
+            c2d.beginPath();
+            c2d.arc(dpx, dpy, 2.2, 0, Math.PI * 2);
+            c2d.fillStyle = color + '99';
+            c2d.fill();
+            ctxInst.hitPoints.push({x: dpx, y: dpy, label: hData.stock_name || hData.stock_code, date: pt2.trade_date, changePct: pt2.cum_close, dailyChangePct: pt2.daily_change_pct, isEvent: false});
         }
 
         // 事件圆点
@@ -13822,35 +14470,26 @@ function _renderRaceChart() {
         for (var ei = 0; ei < events.length; ei++) {
             var ev = events[ei];
             var ets = new Date(ev.date).getTime();
-            // 在曲线中找到对应日期点的位置
             var evIdx = -1;
             for (var j = 0; j < curve.length; j++) {
-                if (curve[j].trade_date === ev.date) {
-                    evIdx = j;
-                    break;
-                }
+                if (curve[j].trade_date === ev.date) { evIdx = j; break; }
             }
             if (evIdx < 0) continue;
             var ex2 = xPos(ets);
             var ey = yPos(curve[evIdx].cum_close);
             if (ex2 < padding.left - 5 || ex2 > w - padding.right + 5) continue;
-            // 涨停红点，大涨紫点
-            var dotColor = '#ff1744';  // 涨停红
-            if (ev.type === 'strong_rise') {
-                dotColor = '#ce93d8';  // 大涨紫
-            }
-            ctx.beginPath();
-            ctx.arc(ex2, ey, 3.5, 0, Math.PI * 2);
-            ctx.fillStyle = dotColor;
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 0.8;
-            ctx.stroke();
-            // 标记为事件点用于tooltip
-            _raceHitPoints.push({x: ex2, y: ey, label: hData.stock_name || hData.stock_code, date: ev.date, changePct: curve[evIdx].cum_close, dailyChangePct: curve[evIdx].daily_change_pct, isEvent: true, eventType: ev.type});
+            var dotColor = ev.type === 'strong_rise' ? '#ce93d8' : '#ff1744';
+            c2d.beginPath();
+            c2d.arc(ex2, ey, 3.5, 0, Math.PI * 2);
+            c2d.fillStyle = dotColor;
+            c2d.fill();
+            c2d.strokeStyle = '#fff';
+            c2d.lineWidth = 0.8;
+            c2d.stroke();
+            ctxInst.hitPoints.push({x: ex2, y: ey, label: hData.stock_name || hData.stock_code, date: ev.date, changePct: curve[evIdx].cum_close, dailyChangePct: curve[evIdx].daily_change_pct, isEvent: true, eventType: ev.type});
         }
 
-        // 创业板/科创板 >10% 青色空心菱形标记
+        // 创业板/科创板 >10% 青色空心菱形
         var sc = hData.stock_code || '';
         var isGem = sc.startsWith('30') || sc.startsWith('300') || sc.startsWith('301');
         var isStar = sc.startsWith('68') || sc.startsWith('688') || sc.startsWith('689');
@@ -13859,33 +14498,27 @@ function _renderRaceChart() {
                 var pt3 = curve[j];
                 var dp = pt3.daily_change_pct;
                 if (!dp || dp <= 10) continue;
-                // 检查该日期是否已有事件点（zt/strong_rise）
                 var hasEvent = false;
                 for (var ei2 = 0; ei2 < events.length; ei2++) {
-                    if (events[ei2].date === pt3.trade_date) {
-                        hasEvent = true;
-                        break;
-                    }
+                    if (events[ei2].date === pt3.trade_date) { hasEvent = true; break; }
                 }
                 if (hasEvent) continue;
                 var dx = xPos(new Date(pt3.trade_date).getTime());
                 var dy = yPos(pt3.cum_close);
                 if (dx < padding.left || dx > w - padding.right) continue;
-                var ds = 4;
-                ctx.save();
-                ctx.translate(dx, dy);
-                ctx.rotate(Math.PI / 4);
-                ctx.strokeStyle = '#00bcd4';
-                ctx.lineWidth = 1.5;
-                ctx.strokeRect(-ds, -ds, ds * 2, ds * 2);
-                ctx.restore();
+                c2d.save();
+                c2d.translate(dx, dy);
+                c2d.rotate(Math.PI / 4);
+                c2d.strokeStyle = '#00bcd4';
+                c2d.lineWidth = 1.5;
+                c2d.strokeRect(-4, -4, 8, 8);
+                c2d.restore();
             }
         }
 
-        // ===== 折线标记股票名（防碰撞） =====
+        // 股票名标签（防碰撞）
         var stockLabel = hData.stock_name || hData.stock_code;
         var candidates = [];
-        // 第一条数据点右上
         var firstP = curve[0];
         if (firstP) {
             var fpx = xPos(new Date(firstP.trade_date).getTime());
@@ -13894,7 +14527,6 @@ function _renderRaceChart() {
                 candidates.push({x: fpx, y: fpy, label: stockLabel, priority: 1, align: 'left', dx: 4});
             }
         }
-        // 最后一条数据点左上
         if (curve.length > 1) {
             var lastPt = curve[curve.length - 1];
             var lpx = xPos(new Date(lastPt.trade_date).getTime());
@@ -13903,7 +14535,6 @@ function _renderRaceChart() {
                 candidates.push({x: lpx, y: lpy, label: stockLabel, priority: 2, align: 'right', dx: -4});
             }
         }
-        // 事件圆点正上方
         for (var ei3 = 0; ei3 < events.length; ei3++) {
             var ev3 = events[ei3];
             var evx = xPos(new Date(ev3.date).getTime());
@@ -13917,18 +14548,14 @@ function _renderRaceChart() {
                 candidates.push({x: evx, y: evy, label: stockLabel, priority: 3, align: 'center', dx: 0});
             }
         }
-        // 按优先级降序
         candidates.sort(function(a, b) { return b.priority - a.priority; });
-        // 防碰撞绘制
         var labelDrawn = false;
         for (var ci = 0; ci < candidates.length && !labelDrawn; ci++) {
             var cand = candidates[ci];
             var lbx = cand.x + cand.dx;
-            var lby = cand.y - 4; // 点上方4px
-            // 估算label尺寸
+            var lby = cand.y - 4;
             var lblHalfW = stockLabel.length * 4 + 4;
             var region = {x1: lbx - lblHalfW, x2: lbx + lblHalfW, y1: lby - 16, y2: lby};
-            // 碰撞检测
             var overlaps = false;
             for (var ri = 0; ri < _usedLabelRegions.length; ri++) {
                 var r = _usedLabelRegions[ri];
@@ -13937,25 +14564,23 @@ function _renderRaceChart() {
                 }
             }
             if (overlaps) continue;
-            // 绘制label
-            ctx.save();
-            ctx.font = 'bold 11px sans-serif';
-            ctx.textBaseline = 'bottom';
-            ctx.textAlign = cand.align;
-            // 半透明背景
-            var tw = ctx.measureText(stockLabel).width;
+            c2d.save();
+            c2d.font = 'bold 11px sans-serif';
+            c2d.textBaseline = 'bottom';
+            c2d.textAlign = cand.align;
+            var tw = c2d.measureText(stockLabel).width;
             var bgL, bgT, bgW, bgH;
             if (cand.align === 'center') { bgL = lbx - tw/2 - 3; }
             else if (cand.align === 'left') { bgL = lbx; }
             else { bgL = lbx - tw; }
             bgT = lby - 14; bgW = tw + 6; bgH = 14;
-            ctx.fillStyle = 'rgba(10,22,40,0.80)';
-            ctx.fillRect(bgL - 1, bgT - 1, bgW + 2, bgH + 2);
-            ctx.fillStyle = color;
-            ctx.fillText(stockLabel, lbx, lby);
-            ctx.restore();
+            c2d.fillStyle = 'rgba(10,22,40,0.80)';
+            c2d.fillRect(bgL - 1, bgT - 1, bgW + 2, bgH + 2);
+            c2d.fillStyle = color;
+            c2d.fillText(stockLabel, lbx, lby);
+            c2d.restore();
             _usedLabelRegions.push(region);
-            _raceLabelPositions.push({x: lbx, y: lby, label: stockLabel, stock_code: hData.stock_code});
+            ctxInst.labelPositions.push({x: lbx, y: lby, label: stockLabel, stock_code: hData.stock_code});
             labelDrawn = true;
         }
     }
@@ -13964,98 +14589,85 @@ function _renderRaceChart() {
     if (!_raceNoRealtime) {
         for (var rhi = 0; rhi < horses.length; rhi++) {
             var rhData = horses[rhi];
-            if (_raceHiddenHorses[rhData.stock_code]) continue;
+            if (ctxInst.hiddenHorses[rhData.stock_code]) continue;
             var rCode = rhData.stock_code;
             var rTodayPct = _raceRealtimeData[rCode];
-            var rIsTodayZt = _raceData.today_zt_codes && _raceData.today_zt_codes.indexOf(rCode) >= 0;
+            var rIsTodayZt = data.today_zt_codes && data.today_zt_codes.indexOf(rCode) >= 0;
             if (rTodayPct === undefined && !rIsTodayZt) continue;
             if (rTodayPct === undefined && rIsTodayZt) rTodayPct = 10;
             var rDotX = w - padding.right + 26;
             var rDotY = yPos((rhData.final_change || 0) + rTodayPct);
             if (rDotY < padding.top - 10 || rDotY > h - padding.bottom + 10) continue;
-            // 颜色规则
             var rColor;
-            if (rIsTodayZt) {
-                rColor = '#ff1744';  // 涨停亮红
-            } else if (rTodayPct > 0) {
-                rColor = '#ff6b6b';  // 上涨红
-            } else if (rTodayPct < 0) {
-                rColor = '#4caf50';  // 下跌绿
-            } else {
-                rColor = '#78909c';  // 平盘灰
-            }
-            // 从折线末端连线到实时圆点（虚线延续）
+            if (rIsTodayZt) { rColor = '#ff1744'; }
+            else if (rTodayPct > 0) { rColor = '#ff6b6b'; }
+            else if (rTodayPct < 0) { rColor = '#4caf50'; }
+            else { rColor = '#78909c'; }
             var rCurve = rhData.curve || [];
             if (rCurve.length > 0) {
                 var rLastPt = rCurve[rCurve.length - 1];
                 var rLastX = xPos(new Date(rLastPt.trade_date).getTime());
                 var rLastY = yPos(rLastPt.cum_close);
                 if (rLastX >= padding.left && rLastX <= w - padding.right) {
-                    ctx.save();
-                    ctx.setLineDash([4, 4]);
-                    ctx.strokeStyle = _raceColors[rhi % _raceColors.length] + '60';
-                    ctx.lineWidth = 1.2;
-                    ctx.beginPath();
-                    ctx.moveTo(rLastX, rLastY);
-                    ctx.lineTo(rDotX, rDotY);
-                    ctx.stroke();
-                    ctx.restore();
+                    c2d.save();
+                    c2d.setLineDash([4, 4]);
+                    c2d.strokeStyle = ctxInst.colors[rhi % ctxInst.colors.length] + '60';
+                    c2d.lineWidth = 1.2;
+                    c2d.beginPath();
+                    c2d.moveTo(rLastX, rLastY);
+                    c2d.lineTo(rDotX, rDotY);
+                    c2d.stroke();
+                    c2d.restore();
                 }
             }
-            // 闪光效果
-            ctx.save();
-            ctx.shadowBlur = 8;
-            ctx.shadowColor = rColor;
-            // 圆点
-            ctx.beginPath();
-            ctx.arc(rDotX, rDotY, 4, 0, Math.PI * 2);
-            ctx.fillStyle = rColor;
-            ctx.fill();
-            ctx.shadowBlur = 0;
-            // 涨停特殊标记：金色描边 + "板"字
+            c2d.save();
+            c2d.shadowBlur = 8;
+            c2d.shadowColor = rColor;
+            c2d.beginPath();
+            c2d.arc(rDotX, rDotY, 4, 0, Math.PI * 2);
+            c2d.fillStyle = rColor;
+            c2d.fill();
+            c2d.shadowBlur = 0;
             if (rIsTodayZt) {
-                ctx.strokeStyle = '#ffd700';
-                ctx.lineWidth = 2;
-                ctx.stroke();
-                ctx.fillStyle = '#ffd700';
-                ctx.font = 'bold 6px sans-serif';
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText('板', rDotX, rDotY + 0.5);
+                c2d.strokeStyle = '#ffd700';
+                c2d.lineWidth = 2;
+                c2d.stroke();
+                c2d.fillStyle = '#ffd700';
+                c2d.font = 'bold 6px sans-serif';
+                c2d.textAlign = 'center';
+                c2d.textBaseline = 'middle';
+                c2d.fillText('板', rDotX, rDotY + 0.5);
             }
-            ctx.restore();
-            // 涨跌幅标签（右侧显示）
+            c2d.restore();
             var rName = rhData.stock_name || rhData.stock_code;
             var rPctStr = (rTodayPct >= 0 ? '+' : '') + rTodayPct.toFixed(2) + '%';
             var rLabel = rName + ' ' + rPctStr;
-            ctx.save();
-            ctx.font = '9px sans-serif';
-            ctx.textBaseline = 'middle';
-            ctx.textAlign = 'left';
+            c2d.save();
+            c2d.font = '9px sans-serif';
+            c2d.textBaseline = 'middle';
+            c2d.textAlign = 'left';
             var rLx = rDotX + 8;
             var rLy = rDotY;
-            var rLw = ctx.measureText(rLabel).width;
-            // 圆角半透明背景
-            ctx.fillStyle = 'rgba(10,22,40,0.75)';
+            var rLw = c2d.measureText(rLabel).width;
+            c2d.fillStyle = 'rgba(10,22,40,0.75)';
             (function(rx, ry, rw, rh, rr) {
-                ctx.beginPath();
-                ctx.moveTo(rx + rr, ry);
-                ctx.lineTo(rx + rw - rr, ry);
-                ctx.quadraticCurveTo(rx + rw, ry, rx + rw, ry + rr);
-                ctx.lineTo(rx + rw, ry + rh - rr);
-                ctx.quadraticCurveTo(rx + rw, ry + rh, rx + rw - rr, ry + rh);
-                ctx.lineTo(rx + rr, ry + rh);
-                ctx.quadraticCurveTo(rx, ry + rh, rx, ry + rh - rr);
-                ctx.lineTo(rx, ry + rr);
-                ctx.quadraticCurveTo(rx, ry, rx + rr, ry);
-                ctx.closePath();
-                ctx.fill();
+                c2d.beginPath();
+                c2d.moveTo(rx + rr, ry);
+                c2d.lineTo(rx + rw - rr, ry);
+                c2d.quadraticCurveTo(rx + rw, ry, rx + rw, ry + rr);
+                c2d.lineTo(rx + rw, ry + rh - rr);
+                c2d.quadraticCurveTo(rx + rw, ry + rh, rx + rw - rr, ry + rh);
+                c2d.lineTo(rx + rr, ry + rh);
+                c2d.quadraticCurveTo(rx, ry + rh, rx, ry + rh - rr);
+                c2d.lineTo(rx, ry + rr);
+                c2d.quadraticCurveTo(rx, ry, rx + rr, ry);
+                c2d.closePath();
+                c2d.fill();
             })(rLx - 2, rLy - 7, rLw + 4, 14, 3);
-            ctx.fillStyle = rColor;
-            ctx.fillText(rLabel, rLx, rLy);
-            ctx.restore();
-            // HitPoint注册
-            _raceHitPoints.push({
+            c2d.fillStyle = rColor;
+            c2d.fillText(rLabel, rLx, rLy);
+            c2d.restore();
+            ctxInst.hitPoints.push({
                 x: rDotX, y: rDotY,
                 label: rhData.stock_name || rhData.stock_code,
                 date: '今日实时',
@@ -14068,12 +14680,13 @@ function _renderRaceChart() {
     }
 
     // 图例
-    _renderRaceLegend();
+    _renderRaceLegend(ctxInst);
 }
 
 // ===== 赛马图表tooltip =====
-function _raceShowTooltip(label, date, changePct, dailyChangePct) {
-    var el = document.getElementById('kplRaceTooltip');
+function _raceShowTooltip(label, date, changePct, dailyChangePct, ctxInst) {
+    if (!ctxInst) ctxInst = _raceCtx;
+    var el = document.getElementById(ctxInst.tooltipId);
     if (!el) return;
     // 解析事件标签
     var showLabel = label;
@@ -14088,12 +14701,14 @@ function _raceShowTooltip(label, date, changePct, dailyChangePct) {
     el.innerHTML = '<b>' + showLabel + '</b>' + evTag + '<br>' + date + '｜累计:' + changePct.toFixed(1) + '%' + dcp;
     el.style.display = 'block';
 }
-function _raceHideTooltip() {
-    var el = document.getElementById('kplRaceTooltip');
+function _raceHideTooltip(ctxInst) {
+    if (!ctxInst) ctxInst = _raceCtx;
+    var el = document.getElementById(ctxInst.tooltipId);
     if (el) el.style.display = 'none';
 }
-function _raceShowClimaxTooltip(date, stocks, mx, my, tooltip) {
-    if (!tooltip) tooltip = document.getElementById('kplRaceTooltip');
+function _raceShowClimaxTooltip(date, stocks, mx, my, tooltip, ctxInst) {
+    if (!ctxInst) ctxInst = _raceCtx;
+    if (!tooltip) tooltip = document.getElementById(ctxInst.tooltipId);
     if (!tooltip) return;
     tooltip.style.left = '-999px';
     var html = '<div style="font-weight:bold;color:#ffd700;border-bottom:1px solid rgba(255,215,0,0.3);margin-bottom:4px;padding-bottom:3px;">📊 高潮日 ' + date + '</div>';
@@ -14113,8 +14728,8 @@ function _raceShowClimaxTooltip(date, stocks, mx, my, tooltip) {
     tooltip.innerHTML = html;
     tooltip.style.display = 'block';
     // 智能位置
-    var canvas = document.getElementById('kplRaceCanvas');
-    var cw = canvas ? canvas.offsetWidth : 600;
+    var canvas2 = document.getElementById(ctxInst.canvasId);
+    var cw = canvas2 ? canvas2.offsetWidth : 600;
     var tooltipWidth = tooltip.offsetWidth;
     var leftPos = mx + 12;
     if (leftPos + tooltipWidth > cw) {
@@ -14125,71 +14740,75 @@ function _raceShowClimaxTooltip(date, stocks, mx, my, tooltip) {
     tooltip.style.top = Math.max(my - 30, 0) + 'px';
 }
 
-function _raceOnCanvasClick(e) {
-    var canvas = document.getElementById('kplRaceCanvas');
+function _raceOnCanvasClick(e, ctxInst) {
+    if (!ctxInst) ctxInst = _raceCtx;
+    var canvas = document.getElementById(ctxInst.canvasId);
     if (!canvas) return;
-    if (_raceLabelPositions.length === 0) return;
+    if (ctxInst.labelPositions.length === 0) return;
     var rect = canvas.getBoundingClientRect();
     var mx = e.clientX - rect.left;
     var my = e.clientY - rect.top;
-    for (var i = 0; i < _raceLabelPositions.length; i++) {
-        var lp = _raceLabelPositions[i];
+    for (var i = 0; i < ctxInst.labelPositions.length; i++) {
+        var lp = ctxInst.labelPositions[i];
         var dx = mx - lp.x;
         var dy = my - lp.y;
         if (Math.abs(dx) < 40 && Math.abs(dy) < 16) {
-            _raceToggleHorse(lp.stock_code);
+            _raceToggleHorse(lp.stock_code, ctxInst);
             return;
         }
     }
 }
 
 // ===== 赛马图拖拽平移 =====
-function _raceOnCanvasMouseDown(e) {
-    var canvas = document.getElementById('kplRaceCanvas');
+function _raceOnCanvasMouseDown(e, ctxInst) {
+    if (!ctxInst) ctxInst = _raceCtx;
+    var canvas = document.getElementById(ctxInst.canvasId);
     if (!canvas) return;
     var rect = canvas.getBoundingClientRect();
-    _raceDragging = true;
-    _raceDragStart = {
+    ctxInst.dragging = true;
+    ctxInst.dragStart = {
         mx: e.clientX,
         my: e.clientY,
-        panX: _racePanX,
-        panY: _racePanY
+        panX: ctxInst.panX,
+        panY: ctxInst.panY
     };
     canvas.style.cursor = 'grabbing';
 }
 
-function _raceOnCanvasMouseUp(e) {
-    if (!_raceDragging) return;
-    _raceDragging = false;
-    _raceDragStart = null;
-    var canvas = document.getElementById('kplRaceCanvas');
+function _raceOnCanvasMouseUp(e, ctxInst) {
+    if (!ctxInst) ctxInst = _raceCtx;
+    if (!ctxInst.dragging) return;
+    ctxInst.dragging = false;
+    ctxInst.dragStart = null;
+    var canvas = document.getElementById(ctxInst.canvasId);
     if (canvas) canvas.style.cursor = 'grab';
 }
 
-function _raceOnCanvasMouseMove(e) {
-    var canvas = document.getElementById('kplRaceCanvas');
-    var tooltip = document.getElementById('kplRaceTooltip');
+function _raceOnCanvasMouseMove(e, ctxInst) {
+    if (!ctxInst) ctxInst = _raceCtx;
+    var canvas = document.getElementById(ctxInst.canvasId);
+    var tooltip = document.getElementById(ctxInst.tooltipId);
     if (!canvas || !tooltip) return;
     // 如果在拖拽中 → 平移
-    if (_raceDragging && _raceDragStart) {
+    if (ctxInst.dragging && ctxInst.dragStart) {
         var rect = canvas.getBoundingClientRect();
-        var plotW = rect.width - 208;  // padding.left(48) + padding.right(160)
-        var plotH = rect.height - 48; // padding.top(20) + padding.bottom(28)
-        var dxNorm = (e.clientX - _raceDragStart.mx) / plotW;
-        var dyNorm = -(e.clientY - _raceDragStart.my) / plotH;
-        _racePanX = Math.max(0, Math.min(1, _raceDragStart.panX + dxNorm));
-        _racePanY = Math.max(-1, Math.min(1, _raceDragStart.panY + dyNorm));
-        _raceRedraw();
+        var plotW = rect.width - 208;
+        var plotH = rect.height - 48;
+        var dxNorm = (e.clientX - ctxInst.dragStart.mx) / plotW;
+        var dyNorm = -(e.clientY - ctxInst.dragStart.my) / plotH;
+        ctxInst.panX = Math.max(0, Math.min(1, ctxInst.dragStart.panX + dxNorm));
+        ctxInst.panY = Math.max(-1, Math.min(1, ctxInst.dragStart.panY + dyNorm));
+        _raceRedraw(ctxInst);
         return;
     }
     // 不在拖拽中 → 原有tooltip逻辑
-    if (_raceHitPoints.length === 0) { _raceHideTooltip(); return; }
+    if (ctxInst.hitPoints.length === 0) { _raceHideTooltip(ctxInst); return; }
     var rect = canvas.getBoundingClientRect();
     var mx = e.clientX - rect.left;
     var my = e.clientY - rect.top;
     var found = null;
-    for (var i = 0; i < _raceHitPoints.length; i++) {
-        var hp = _raceHitPoints[i];
+    for (var i = 0; i < ctxInst.hitPoints.length; i++) {
+        var hp = ctxInst.hitPoints[i];
         var dx = mx - hp.x;
         var dy = my - hp.y;
         if (dx * dx + dy * dy < 64) {
@@ -14200,7 +14819,7 @@ function _raceOnCanvasMouseMove(e) {
     if (found) {
         canvas.style.cursor = 'pointer';
         var evTag = found.isEvent ? (found.eventType === 'strong_rise' ? ' [大涨]' : found.eventType === 'realtime' ? ' [实时]' : ' [涨停]') : '';
-        _raceShowTooltip(found.label + evTag, found.date, found.changePct, found.dailyChangePct);
+        _raceShowTooltip(found.label + evTag, found.date, found.changePct, found.dailyChangePct, ctxInst);
         tooltip.style.left = '-999px';
         var tooltipWidth = tooltip.offsetWidth;
         var leftPos = mx + 12;
@@ -14212,8 +14831,8 @@ function _raceOnCanvasMouseMove(e) {
         tooltip.style.top = Math.max(my - 30, 0) + 'px';
     } else {
         var foundClimax = null;
-        for (var ci = 0; ci < _raceClimaxDayLines.length; ci++) {
-            var cl = _raceClimaxDayLines[ci];
+        for (var ci = 0; ci < ctxInst.climaxDayLines.length; ci++) {
+            var cl = ctxInst.climaxDayLines[ci];
             var ddx = mx - cl.x;
             if (Math.abs(ddx) < 8) {
                 foundClimax = cl;
@@ -14222,32 +14841,33 @@ function _raceOnCanvasMouseMove(e) {
         }
         if (foundClimax && foundClimax.stocks.length > 0) {
             canvas.style.cursor = 'pointer';
-            _raceShowClimaxTooltip(foundClimax.date, foundClimax.stocks, mx, my, tooltip);
+            _raceShowClimaxTooltip(foundClimax.date, foundClimax.stocks, mx, my, tooltip, ctxInst);
         } else {
             canvas.style.cursor = 'grab';
-            _raceHideTooltip();
+            _raceHideTooltip(ctxInst);
         }
     }
 }
 
-function _renderRaceLegend() {
-    var legendEl = document.getElementById('kplRaceLegend');
-    if (!legendEl || !_raceData) return;
-    var horses = _raceData.horses || [];
-    // 按累计涨幅从高到低排序
+function _renderRaceLegend(ctxInst) {
+    if (!ctxInst) ctxInst = _raceCtx;
+    var legendEl = document.getElementById(ctxInst.legendId);
+    if (!legendEl || !ctxInst.data) return;
+    var data = ctxInst.data;
+    var horses = data.horses || [];
     var sorted = horses.map(function(h, idx) { return {horse: h, idx: idx}; });
     sorted.sort(function(a, b) { return (b.horse.final_change || 0) - (a.horse.final_change || 0); });
     var html = '';
     for (var si = 0; si < sorted.length; si++) {
         var h = sorted[si].horse;
-        var color = _raceColors[sorted[si].idx % _raceColors.length];
+        var color = ctxInst.colors[sorted[si].idx % ctxInst.colors.length];
         var fc = h.final_change || 0;
-        if (_raceData.today_realtime && _raceData.today_realtime[h.stock_code] !== undefined) {
-            fc = fc + _raceData.today_realtime[h.stock_code];
+        if (data.today_realtime && data.today_realtime[h.stock_code] !== undefined) {
+            fc = fc + data.today_realtime[h.stock_code];
         }
         var pctClass = fc >= 0 ? 'up' : 'down';
         var pctSign = fc >= 0 ? '+' : '';
-        var hiddenClass = _raceHiddenHorses[h.stock_code] ? 'hidden' : '';
+        var hiddenClass = ctxInst.hiddenHorses[h.stock_code] ? 'hidden' : '';
         var name = h.stock_name || h.stock_code;
         html += '<span class="kpl-race-legend-item ' + hiddenClass + '" onclick="_raceToggleHorse(\\x27' + h.stock_code + '\\x27)" style="border-color:' + color + '40;">'
             + '<span class="legend-dot" style="background:' + color + ';"></span>'
@@ -14258,22 +14878,24 @@ function _renderRaceLegend() {
     legendEl.innerHTML = html;
 }
 
-function _raceToggleHorse(code) {
-    _raceHiddenHorses[code] = !_raceHiddenHorses[code];
-    _raceRedraw();
+function _raceToggleHorse(code, ctxInst) {
+    if (!ctxInst) ctxInst = _raceCtx;
+    ctxInst.hiddenHorses[code] = !ctxInst.hiddenHorses[code];
+    _raceRedraw(ctxInst);
 }
 
-function _raceSelectAll(show) {
-    if (!_raceData) return;
-    var horses = _raceData.horses || [];
+function _raceSelectAll(show, ctxInst) {
+    if (!ctxInst) ctxInst = _raceCtx;
+    if (!ctxInst.data) return;
+    var horses = ctxInst.data.horses || [];
     for (var i = 0; i < horses.length; i++) {
         if (show) {
-            delete _raceHiddenHorses[horses[i].stock_code];
+            delete ctxInst.hiddenHorses[horses[i].stock_code];
         } else {
-            _raceHiddenHorses[horses[i].stock_code] = true;
+            ctxInst.hiddenHorses[horses[i].stock_code] = true;
         }
     }
-    _raceRedraw();
+    _raceRedraw(ctxInst);
 }
 
 function _raceGetBoardClass(code) {
@@ -14283,10 +14905,12 @@ function _raceGetBoardClass(code) {
     return 'board-main';
 }
 
-function _renderRaceStats() {
-    var statsEl = document.getElementById('kplRaceStats');
-    if (!statsEl || !_raceData) return;
-    var horses = _raceData.horses || [];
+function _renderRaceStats(ctxInst) {
+    if (!ctxInst) ctxInst = _raceCtx;
+    var statsEl = document.getElementById(ctxInst.statsId);
+    if (!statsEl || !ctxInst.data) return;
+    var data = ctxInst.data;
+    var horses = data.horses || [];
     if (horses.length === 0) {
         statsEl.innerHTML = '';
         return;
@@ -14300,29 +14924,29 @@ function _renderRaceStats() {
     }
     // 排序
     var sortedHorses = horses.slice();
-    if (_raceSortKey) {
+    if (ctxInst.sortKey) {
         sortedHorses.sort(function(a, b) {
             var va, vb;
-            if (_raceSortKey === 'name') {
+            if (ctxInst.sortKey === 'name') {
                 va = (a.stock_name || a.stock_code || '').toLowerCase();
                 vb = (b.stock_name || b.stock_code || '').toLowerCase();
-                return _raceSortDir === 'asc' ? (va < vb ? -1 : va > vb ? 1 : 0) : (vb < va ? -1 : vb > va ? 1 : 0);
-            } else if (_raceSortKey === 'change') {
+                return ctxInst.sortDir === 'asc' ? (va < vb ? -1 : va > vb ? 1 : 0) : (vb < va ? -1 : vb > va ? 1 : 0);
+            } else if (ctxInst.sortKey === 'change') {
                 va = a.final_change || 0;
                 vb = b.final_change || 0;
-            } else if (_raceSortKey === 'evcount') {
+            } else if (ctxInst.sortKey === 'evcount') {
                 va = (a.events || []).length;
                 vb = (b.events || []).length;
-            } else if (_raceSortKey === 'realtime') {
-                va = (_raceData.today_realtime && _raceData.today_realtime[a.stock_code]) || 0;
-                vb = (_raceData.today_realtime && _raceData.today_realtime[b.stock_code]) || 0;
+            } else if (ctxInst.sortKey === 'realtime') {
+                va = (data.today_realtime && data.today_realtime[a.stock_code]) || 0;
+                vb = (data.today_realtime && data.today_realtime[b.stock_code]) || 0;
             }
-            return _raceSortDir === 'asc' ? va - vb : vb - va;
+            return ctxInst.sortDir === 'asc' ? va - vb : vb - va;
         });
     }
     function _sortIcon(key) {
-        if (_raceSortKey !== key) return '';
-        return _raceSortDir === 'asc' ? ' ▲' : ' ▼';
+        if (ctxInst.sortKey !== key) return '';
+        return ctxInst.sortDir === 'asc' ? ' ▲' : ' ▼';
     }
     var html = '<table><thead><tr>'
         + '<th>#</th>'
@@ -14347,26 +14971,24 @@ function _renderRaceStats() {
         var code = h.stock_code || '';
         var bClass = _raceGetBoardClass(code);
         var realtime = '';
-        if (_raceData.today_realtime && _raceData.today_realtime[code] !== undefined) {
-            var rt = _raceData.today_realtime[code];
+        if (data.today_realtime && data.today_realtime[code] !== undefined) {
+            var rt = data.today_realtime[code];
             var rtClass = rt > 0 ? 'race-stat-up' : (rt < 0 ? 'race-stat-down' : 'race-stat-zero');
             var rtSign = rt >= 0 ? '+' : '';
             realtime = '<span class="' + rtClass + '">' + rtSign + rt.toFixed(2) + '%</span>';
-        } else if (_raceData.today_zt_codes && _raceData.today_zt_codes.indexOf(code) >= 0) {
+        } else if (data.today_zt_codes && data.today_zt_codes.indexOf(code) >= 0) {
             realtime = '<span class="race-stat-up">涨停</span>';
         }
-        // 今日涨停徽标（内联于实时涨幅列）
         var lianbanN = 0;
-        if (_raceData.today_lianban && _raceData.today_lianban[code]) {
-            lianbanN = _raceData.today_lianban[code];
+        if (data.today_lianban && data.today_lianban[code]) {
+            lianbanN = data.today_lianban[code];
         }
-        if (_raceData.today_zt_codes && _raceData.today_zt_codes.indexOf(code) >= 0) {
+        if (data.today_zt_codes && data.today_zt_codes.indexOf(code) >= 0) {
             var raceLb = Math.min(lianbanN || 1, 4);
             realtime += '<span class="today-zt-badge today-zt-badge-lb' + raceLb + '">🔥今日涨停' + (lianbanN > 1 ? lianbanN : '') + '</span>';
         }
         var rb = h.reason_brief || '';
         if (rb.length > 30) rb = rb.slice(0, 30) + '...';
-        // 累计涨跌幅标签（含涨幅Top8排名徽标）
         var fcLabel = fcSign + fc.toFixed(1) + '%';
         if (fcTop8Set[origIdx]) {
             var top8Rank = 0;
@@ -14375,11 +14997,10 @@ function _renderRaceStats() {
             }
             fcLabel += '<span class="race-badge-rank">Top' + top8Rank + '</span>';
         }
-        // 行级样式：今日涨停复用强榜渐变背景
         var rowCls = '';
-        if (_raceHiddenHorses[code]) {
+        if (ctxInst.hiddenHorses[code]) {
             rowCls = 'race-stat-row-hidden';
-        } else if (_raceData.today_zt_codes && _raceData.today_zt_codes.indexOf(code) >= 0) {
+        } else if (data.today_zt_codes && data.today_zt_codes.indexOf(code) >= 0) {
             rowCls = 'sniper-strong-stock-today';
         }
         html += rowCls ? '<tr class="' + rowCls + '">' : '<tr>';
@@ -14394,10 +15015,9 @@ function _renderRaceStats() {
             + '</tr>';
     }
     html += '</tbody></table>';
-    // 全选/全取消 + 表格
     var visibleCount = 0;
     for (var vi = 0; vi < horses.length; vi++) {
-        if (!_raceHiddenHorses[horses[vi].stock_code]) visibleCount++;
+        if (!ctxInst.hiddenHorses[horses[vi].stock_code]) visibleCount++;
     }
     html = '<div class="race-toggle-all">'
         + '<span style="color:#aaa;font-size:0.78em;">显示 <b>' + visibleCount + '</b>/' + horses.length + '</span>'
@@ -14422,7 +15042,7 @@ function _renderRaceStats() {
     function _detectClimaxDays(horses) {
         var dateMap = {};
         for (var i = 0; i < horses.length; i++) {
-            if (_raceHiddenHorses[horses[i].stock_code]) continue;
+            if (ctxInst.hiddenHorses[horses[i].stock_code]) continue;
             var curve = horses[i].curve || [];
             for (var j = 0; j < curve.length; j++) {
                 var dt = curve[j].trade_date;
@@ -14461,45 +15081,46 @@ function _renderRaceStats() {
     }
 }
 
-function _raceToggleSort(key) {
-    if (_raceSortKey === key) {
-        _raceSortDir = _raceSortDir === 'asc' ? 'desc' : 'asc';
+function _raceToggleSort(key, ctxInst) {
+    if (!ctxInst) ctxInst = _raceCtx;
+    if (ctxInst.sortKey === key) {
+        ctxInst.sortDir = ctxInst.sortDir === 'asc' ? 'desc' : 'asc';
     } else {
-        _raceSortKey = key;
-        _raceSortDir = 'desc';  // 默认降序
+        ctxInst.sortKey = key;
+        ctxInst.sortDir = 'desc';
     }
-    _renderRaceStats();
+    _renderRaceStats(ctxInst);
 }
-
 
 // 窗口缩放时重绘canvas
 var _raceResizeTimer = null;
 var _raceZoomTimer = null;
 window.addEventListener('resize', function(){
-    if (_raceData) {
+    if (_raceCtx.data) {
         if (_raceResizeTimer) clearTimeout(_raceResizeTimer);
-        _raceResizeTimer = setTimeout(function(){ _raceRedraw(); }, 300);
+        _raceResizeTimer = setTimeout(function(){ _raceRedraw(_lastActiveRaceCtx || _raceCtx); }, 300);
     }
 });
 
 // 赛马图表缩放滑块（防抖）
 document.addEventListener('input', function(e){
+    var targetCtx = _lastActiveRaceCtx || _raceCtx;
     if (e.target && e.target.id === 'kplRaceZoom') {
-        _raceZoomValue = parseInt(e.target.value);
+        targetCtx.zoomValue = parseInt(e.target.value);
         var lbl = document.getElementById('kplRaceZoomLabel');
-        if (lbl) lbl.textContent = _raceZoomValue + '%';
-        if (_raceData) {
+        if (lbl) lbl.textContent = targetCtx.zoomValue + '%';
+        if (targetCtx.data) {
             if (_raceZoomTimer) clearTimeout(_raceZoomTimer);
-            _raceZoomTimer = setTimeout(function(){ _raceRedraw(); }, 80);
+            _raceZoomTimer = setTimeout(function(){ _raceRedraw(targetCtx); }, 80);
         }
     }
     if (e.target && e.target.id === 'kplRaceYZoom') {
-        _raceYZoomValue = parseInt(e.target.value);
+        targetCtx.yZoomValue = parseInt(e.target.value);
         var yzl = document.getElementById('kplRaceYZoomLabel');
-        if (yzl) yzl.textContent = _raceYZoomValue + '%';
-        if (_raceData) {
+        if (yzl) yzl.textContent = targetCtx.yZoomValue + '%';
+        if (targetCtx.data) {
             if (_raceZoomTimer) clearTimeout(_raceZoomTimer);
-            _raceZoomTimer = setTimeout(function(){ _raceRedraw(); }, 80);
+            _raceZoomTimer = setTimeout(function(){ _raceRedraw(targetCtx); }, 80);
         }
     }
 });
@@ -20304,9 +20925,10 @@ class Handler(BaseHTTPRequestHandler):
                 no_st = query.get('no_st', [None])[0]
                 strict = query.get('strict', [None])[0]
                 gem_extra = query.get('gem_extra', ['0'])[0] == '1'
+                lianban_filter = query.get('lianban_filter', [None])[0]
 
                 # 缓存键
-                cache_key = _kpl_search_cache_key(q, date_start, date_end, no_st, strict)
+                cache_key = _kpl_search_cache_key(q, date_start, date_end, no_st, strict, lianban_filter)
                 mem_key = f"kpl_search:{cache_key}"
 
                 # ① 内存缓存（同一进程内秒回）
@@ -20323,7 +20945,7 @@ class Handler(BaseHTTPRequestHandler):
                     return
 
                 # ③ 全量计算
-                result = _kpl_full_search(q, date_start, date_end, no_st, strict, gem_extra)
+                result = _kpl_full_search(q, date_start, date_end, no_st, strict, gem_extra, lianban_filter)
                 _kpl_search_cache_save(cache_key, result)
                 _set_cache(mem_key, result)
                 self._respond_json(result, cors_headers)
@@ -20458,6 +21080,7 @@ class Handler(BaseHTTPRequestHandler):
             climax_date = query.get('climax_date', [''])[0].strip()
             keyword = query.get('keyword', [''])[0].strip()
             strict = query.get('strict', ['0'])[0].strip() == '1'
+            lianban_filter = query.get('lianban_filter', [''])[0].strip()
             try:
                 if mode == 'init':
                     _kpl_ensure_loaded()
@@ -20540,6 +21163,42 @@ class Handler(BaseHTTPRequestHandler):
                                             matched_codes.add(code)
                         except Exception:
                             pass
+                    # 1c. 连板过滤（lianban_filter，多选OR逻辑）
+                    if lianban_filter and lianban_filter not in ('', 'all'):
+                        filters = lianban_filter.split(',') if isinstance(lianban_filter, str) else [lianban_filter]
+                        filtered_codes = set()
+                        filtered_events = {}
+                        for sc, events in events_by_stock.items():
+                            # 取该股票最新事件的日期计算连板数
+                            latest_event = max(events, key=lambda e: e.get('date', ''))
+                            ld = latest_event.get('date', '')
+                            if sc and ld:
+                                lb = _kpl_compute_lianban(sc, ld)
+                            else:
+                                lb = 1
+                            keep = False
+                            for f in filters:
+                                f = f.strip()
+                                if f == 'shouban' and lb == 1:
+                                    keep = True
+                                    break
+                                elif f == '2ban' and lb == 2:
+                                    keep = True
+                                    break
+                                elif f == '3ban' and lb == 3:
+                                    keep = True
+                                    break
+                                elif f == '3ban_plus' and lb >= 3:
+                                    keep = True
+                                    break
+                            if keep:
+                                filtered_codes.add(sc)
+                                filtered_events[sc] = events
+                        # 如果过滤后还有股票，使用过滤后的数据；否则保留原数据
+                        if filtered_codes:
+                            matched_codes = filtered_codes
+                            events_by_stock = filtered_events
+                            all_stock_codes = set(filtered_codes)
                     # 2. 批量查kline数据
                     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
                     kline_data = {}  # stock_code -> [{trade_date, high, low, close}]
