@@ -13391,8 +13391,7 @@ function _loadRaceForTag(keyword, ds, de, strictMode) {
             if (yzs) yzs.value = '100';
             var yzl = document.getElementById('kplRaceYZoomLabel');
             if (yzl) yzl.textContent = '100%';
-            _renderRaceChart();
-            _renderRaceStats();
+            _raceRedraw();
             document.getElementById('kplRaceTitle').textContent = '赛马：' + keyword;
             document.getElementById('kplRaceBadge').style.display = 'inline-flex';
             document.getElementById('kplRaceBadge').textContent = data.horses_count + '匹';
@@ -13517,7 +13516,15 @@ function _renderRaceChart() {
         return;
     }
 
-    var padding = {top: 20, right: 16, bottom: 28, left: 48};
+    // 检测是否有实时数据
+    var _raceNoRealtime = true;
+    var _raceRealtimeData = _raceData.today_realtime || {};
+    for (var _rrk in _raceRealtimeData) { _raceNoRealtime = false; break; }
+    if (_raceNoRealtime && _raceData.today_zt_codes && _raceData.today_zt_codes.length > 0) {
+        _raceNoRealtime = false;
+    }
+
+    var padding = {top: 20, right: 160, bottom: 28, left: 48};
     var plotW = w - padding.left - padding.right;
     var plotH = h - padding.top - padding.bottom;
 
@@ -13728,6 +13735,44 @@ function _renderRaceChart() {
         }
     }
 
+    // 今日日期标注
+    var todayStr = new Date().toISOString().slice(0, 10);
+    var shortToday = todayStr.slice(5).replace(/^0/, '').replace('-0', '-').replace('-', '/');
+    ctx.fillStyle = '#90caf9';
+    ctx.font = '8px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText('T ' + shortToday, w - padding.right / 2, h - padding.bottom + 2);
+
+    // 今日实时涨跌列背景+分隔线
+    var realtimeColX = w - padding.right;
+    ctx.fillStyle = 'rgba(0,212,255,0.03)';
+    ctx.fillRect(realtimeColX, padding.top, padding.right, plotH);
+    // 竖虚线分隔线
+    ctx.save();
+    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(realtimeColX, padding.top);
+    ctx.lineTo(realtimeColX, h - padding.bottom);
+    ctx.stroke();
+    ctx.restore();
+    // 列头文字
+    ctx.fillStyle = '#90caf9';
+    ctx.font = '9px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('今日实时', w - padding.right / 2, padding.top + 8);
+    // 无实时数据时在列中显示提示
+    if (_raceNoRealtime) {
+        ctx.fillStyle = '#546e7a';
+        ctx.font = '9px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('暂无实时', w - padding.right / 2, h / 2);
+    }
+
     // 折线标记防挤
     var _usedLabelRegions = [];
 
@@ -13915,6 +13960,113 @@ function _renderRaceChart() {
         }
     }
 
+    // ===== 今日实时涨跌圆点 =====
+    if (!_raceNoRealtime) {
+        for (var rhi = 0; rhi < horses.length; rhi++) {
+            var rhData = horses[rhi];
+            if (_raceHiddenHorses[rhData.stock_code]) continue;
+            var rCode = rhData.stock_code;
+            var rTodayPct = _raceRealtimeData[rCode];
+            var rIsTodayZt = _raceData.today_zt_codes && _raceData.today_zt_codes.indexOf(rCode) >= 0;
+            if (rTodayPct === undefined && !rIsTodayZt) continue;
+            if (rTodayPct === undefined && rIsTodayZt) rTodayPct = 10;
+            var rDotX = w - padding.right + 26;
+            var rDotY = yPos((rhData.final_change || 0) + rTodayPct);
+            if (rDotY < padding.top - 10 || rDotY > h - padding.bottom + 10) continue;
+            // 颜色规则
+            var rColor;
+            if (rIsTodayZt) {
+                rColor = '#ff1744';  // 涨停亮红
+            } else if (rTodayPct > 0) {
+                rColor = '#ff6b6b';  // 上涨红
+            } else if (rTodayPct < 0) {
+                rColor = '#4caf50';  // 下跌绿
+            } else {
+                rColor = '#78909c';  // 平盘灰
+            }
+            // 从折线末端连线到实时圆点（虚线延续）
+            var rCurve = rhData.curve || [];
+            if (rCurve.length > 0) {
+                var rLastPt = rCurve[rCurve.length - 1];
+                var rLastX = xPos(new Date(rLastPt.trade_date).getTime());
+                var rLastY = yPos(rLastPt.cum_close);
+                if (rLastX >= padding.left && rLastX <= w - padding.right) {
+                    ctx.save();
+                    ctx.setLineDash([4, 4]);
+                    ctx.strokeStyle = _raceColors[rhi % _raceColors.length] + '60';
+                    ctx.lineWidth = 1.2;
+                    ctx.beginPath();
+                    ctx.moveTo(rLastX, rLastY);
+                    ctx.lineTo(rDotX, rDotY);
+                    ctx.stroke();
+                    ctx.restore();
+                }
+            }
+            // 闪光效果
+            ctx.save();
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = rColor;
+            // 圆点
+            ctx.beginPath();
+            ctx.arc(rDotX, rDotY, 4, 0, Math.PI * 2);
+            ctx.fillStyle = rColor;
+            ctx.fill();
+            ctx.shadowBlur = 0;
+            // 涨停特殊标记：金色描边 + "板"字
+            if (rIsTodayZt) {
+                ctx.strokeStyle = '#ffd700';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                ctx.fillStyle = '#ffd700';
+                ctx.font = 'bold 6px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('板', rDotX, rDotY + 0.5);
+            }
+            ctx.restore();
+            // 涨跌幅标签（右侧显示）
+            var rName = rhData.stock_name || rhData.stock_code;
+            var rPctStr = (rTodayPct >= 0 ? '+' : '') + rTodayPct.toFixed(2) + '%';
+            var rLabel = rName + ' ' + rPctStr;
+            ctx.save();
+            ctx.font = '9px sans-serif';
+            ctx.textBaseline = 'middle';
+            ctx.textAlign = 'left';
+            var rLx = rDotX + 8;
+            var rLy = rDotY;
+            var rLw = ctx.measureText(rLabel).width;
+            // 圆角半透明背景
+            ctx.fillStyle = 'rgba(10,22,40,0.75)';
+            (function(rx, ry, rw, rh, rr) {
+                ctx.beginPath();
+                ctx.moveTo(rx + rr, ry);
+                ctx.lineTo(rx + rw - rr, ry);
+                ctx.quadraticCurveTo(rx + rw, ry, rx + rw, ry + rr);
+                ctx.lineTo(rx + rw, ry + rh - rr);
+                ctx.quadraticCurveTo(rx + rw, ry + rh, rx + rw - rr, ry + rh);
+                ctx.lineTo(rx + rr, ry + rh);
+                ctx.quadraticCurveTo(rx, ry + rh, rx, ry + rh - rr);
+                ctx.lineTo(rx, ry + rr);
+                ctx.quadraticCurveTo(rx, ry, rx + rr, ry);
+                ctx.closePath();
+                ctx.fill();
+            })(rLx - 2, rLy - 7, rLw + 4, 14, 3);
+            ctx.fillStyle = rColor;
+            ctx.fillText(rLabel, rLx, rLy);
+            ctx.restore();
+            // HitPoint注册
+            _raceHitPoints.push({
+                x: rDotX, y: rDotY,
+                label: rhData.stock_name || rhData.stock_code,
+                date: '今日实时',
+                changePct: (rhData.final_change || 0) + rTodayPct,
+                dailyChangePct: rTodayPct,
+                isEvent: true,
+                eventType: 'realtime'
+            });
+        }
+    }
+
     // 图例
     _renderRaceLegend();
 }
@@ -14021,7 +14173,7 @@ function _raceOnCanvasMouseMove(e) {
     // 如果在拖拽中 → 平移
     if (_raceDragging && _raceDragStart) {
         var rect = canvas.getBoundingClientRect();
-        var plotW = rect.width - 64;  // padding.left(48) + padding.right(16)
+        var plotW = rect.width - 208;  // padding.left(48) + padding.right(160)
         var plotH = rect.height - 48; // padding.top(20) + padding.bottom(28)
         var dxNorm = (e.clientX - _raceDragStart.mx) / plotW;
         var dyNorm = -(e.clientY - _raceDragStart.my) / plotH;
@@ -14046,7 +14198,8 @@ function _raceOnCanvasMouseMove(e) {
         }
     }
     if (found) {
-        var evTag = found.isEvent ? (found.eventType === 'strong_rise' ? ' [大涨]' : ' [涨停]') : '';
+        canvas.style.cursor = 'pointer';
+        var evTag = found.isEvent ? (found.eventType === 'strong_rise' ? ' [大涨]' : found.eventType === 'realtime' ? ' [实时]' : ' [涨停]') : '';
         _raceShowTooltip(found.label + evTag, found.date, found.changePct, found.dailyChangePct);
         tooltip.style.left = '-999px';
         var tooltipWidth = tooltip.offsetWidth;
@@ -14068,8 +14221,10 @@ function _raceOnCanvasMouseMove(e) {
             }
         }
         if (foundClimax && foundClimax.stocks.length > 0) {
+            canvas.style.cursor = 'pointer';
             _raceShowClimaxTooltip(foundClimax.date, foundClimax.stocks, mx, my, tooltip);
         } else {
+            canvas.style.cursor = 'grab';
             _raceHideTooltip();
         }
     }
@@ -14087,6 +14242,9 @@ function _renderRaceLegend() {
         var h = sorted[si].horse;
         var color = _raceColors[sorted[si].idx % _raceColors.length];
         var fc = h.final_change || 0;
+        if (_raceData.today_realtime && _raceData.today_realtime[h.stock_code] !== undefined) {
+            fc = fc + _raceData.today_realtime[h.stock_code];
+        }
         var pctClass = fc >= 0 ? 'up' : 'down';
         var pctSign = fc >= 0 ? '+' : '';
         var hiddenClass = _raceHiddenHorses[h.stock_code] ? 'hidden' : '';
