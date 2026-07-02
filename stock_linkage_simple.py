@@ -1068,16 +1068,25 @@ def _kpl_analyze_rows(q, date_start=None, date_end=None, no_st=None, strict=None
     # 先确保数据已加载
     ds = date_start.replace('-', '') if date_start else None
     de = date_end.replace('-', '') if date_end else None
+    print(f"[kpl_analyze_rows] q={q} date_start={date_start} date_end={date_end} ds={ds} de={de} no_st={no_st} strict={strict}")
     _kpl_ensure_loaded(ds, de)
     result = _kpl_search_rows(q, strict=(strict == '1'))
     results = result.get('results', [])
     if no_st == '1':
         results = [r for r in results if not _kpl_is_st(r)]
     results = [r for r in results if r.get('reason_tag', '') not in SNIPER_EXCLUDE_TAGS]
+    # DEBUG: 过滤前日期范围
+    _dates_before = [r.get('date', '') for r in results if r.get('date', '')]
+    if _dates_before:
+        print(f"[kpl_analyze_rows] BEFORE date_filter: count={len(results)} date_min={min(_dates_before)} date_max={max(_dates_before)}")
     if date_start:
         results = [r for r in results if ((r.get('date', '') or '').replace('-', '')) >= ds]
     if date_end:
         results = [r for r in results if ((r.get('date', '') or '').replace('-', '')) <= de]
+    # DEBUG: 过滤后日期范围
+    _dates_after = [r.get('date', '') for r in results if r.get('date', '')]
+    if _dates_after:
+        print(f"[kpl_analyze_rows] AFTER date_filter: count={len(results)} date_min={min(_dates_after)} date_max={max(_dates_after)}")
     # 为每条结果补充正确的连板数（从实际ZT历史计算）
     for r in results:
         sc = r.get('stock_code', '')
@@ -1090,6 +1099,32 @@ def _kpl_analyze_rows(q, date_start=None, date_end=None, no_st=None, strict=None
     if lianban_filter and lianban_filter != 'all':
         results = _kpl_filter_lianban(results, lianban_filter)
     results.sort(key=lambda x: x.get('date', ''), reverse=True)
+    # 同步过滤 kw_results（OR模式多关键词场景）
+    _kw = result.get('kw_results', {})
+    if _kw:
+        _filtered_kw = {}
+        for k, v in _kw.items():
+            vv = list(v)  # copy
+            if no_st == '1':
+                vv = [r for r in vv if not _kpl_is_st(r)]
+            vv = [r for r in vv if r.get('reason_tag', '') not in SNIPER_EXCLUDE_TAGS]
+            if date_start:
+                vv = [r for r in vv if ((r.get('date', '') or '').replace('-', '')) >= ds]
+            if date_end:
+                vv = [r for r in vv if ((r.get('date', '') or '').replace('-', '')) <= de]
+            # 连板计算+过滤
+            for r in vv:
+                sc = r.get('stock_code', '')
+                rd = r.get('date', '')
+                if sc and rd:
+                    r['lianban_computed'] = _kpl_compute_lianban(sc, rd)
+                else:
+                    r['lianban_computed'] = 1
+            if lianban_filter and lianban_filter != 'all':
+                vv = _kpl_filter_lianban(vv, lianban_filter)
+            vv.sort(key=lambda x: x.get('date', ''), reverse=True)
+            _filtered_kw[k] = vv
+        result['kw_results'] = _filtered_kw
     result['results'] = results[:200]
     result['total_hits'] = len(results)
     return result
@@ -1105,6 +1140,8 @@ def _kpl_search_cache_load(cache_key):
     if not os.path.exists(path): return None
     try:
         entry = json.load(open(path, 'r', encoding='utf-8'))
+        if entry.get('version', 0) < 3:
+            return None
         return entry.get('data')
     except:
         return None
@@ -1113,7 +1150,7 @@ def _kpl_search_cache_save(cache_key, data):
     os.makedirs(_KPL_SEARCH_CACHE_DIR, exist_ok=True)
     path = os.path.join(_KPL_SEARCH_CACHE_DIR, f"{cache_key}.json")
     try:
-        json.dump({'data': data, 'timestamp': time.time(), 'version': 2},
+        json.dump({'data': data, 'timestamp': time.time(), 'version': 3},
                   open(path, 'w', encoding='utf-8'), ensure_ascii=False)
     except Exception as e:
         print(f"[KPL搜索缓存] 写入失败: {e}")
@@ -4878,6 +4915,19 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 .stock-board-board-gem { color:#ff6b6b; font-size:0.78em; }
 .stock-board-board-star { color:#4d96ff; font-size:0.78em; }
 .stock-board-board-main { color:#ccc; font-size:0.78em; }
+/* 涨停次数徽标 */
+.race-ev-badge {
+    display: inline-flex; align-items: center;
+    font-size: 0.68em; font-weight: bold;
+    padding: 1px 5px; border-radius: 3px; white-space: nowrap;
+    margin-left: 3px; vertical-align: middle;
+}
+.race-ev-badge-0  { background: #333; color: #666; }
+.race-ev-badge-1  { background: linear-gradient(90deg, #2a6f97, #4d9fc7); color: #fff; }
+.race-ev-badge-2  { background: linear-gradient(90deg, #2d7d46, #4caf50); color: #fff; }
+.race-ev-badge-3  { background: linear-gradient(90deg, #c77d1f, #ffb300); color: #000; }
+.race-ev-badge-4  { background: linear-gradient(90deg, #d84315, #ff6d00); color: #fff; }
+.race-ev-badge-5p { background: linear-gradient(90deg, #b71c1c, #ff1744); color: #fff; }
 /* 连板徽标 */
 .lianban-badge { display:inline-block; padding:0 5px; height:18px; line-height:18px; border-radius:3px; background:#ff6b6b; color:#fff; font-size:0.72em; font-weight:700; margin-left:3px; }
 </style>
@@ -13176,6 +13226,16 @@ document.addEventListener('DOMContentLoaded', function() {
     var kplInput = document.getElementById('kplSearchInput2');
     if (kplInput) {
         kplInput.addEventListener('input', function() {
+            // 值比较：如果当前输入与已勾选标签不一致，说明是用户手动输入 → 清除复选框
+            var checkedTags = Object.keys(_kplCheckedTopics);
+            if (checkedTags.length > 0) {
+                var sep = (_kplLogicMode === 'and') ? '&' : '|';
+                if (this.value.trim() !== checkedTags.join(sep)) {
+                    _kplCheckedTopics = {};
+                    var chks = document.querySelectorAll('#kplTopicList input[type="checkbox"]');
+                    chks.forEach(function(c) { c.checked = false; c.parentNode.classList.remove('checked'); });
+                }
+            }
             clearTimeout(_kplSuggestTimer);
             var q = this.value.trim();
             var sugEl = document.getElementById('kplSearchSuggestions');
@@ -13293,7 +13353,7 @@ function loadKplTopTags(retries) {
         });
 }
 
-// 题材复选框状态变更
+// 题材复选框状态变更 → 同步写入输入框
 function onKplTopicCheck(el) {
     var tag = el.getAttribute('data-tag');
     if (el.checked) {
@@ -13303,6 +13363,10 @@ function onKplTopicCheck(el) {
         delete _kplCheckedTopics[tag];
         el.parentNode.classList.remove('checked');
     }
+    // 将已勾选标签写回输入框，输入框是唯一数据源
+    var tags = Object.keys(_kplCheckedTopics);
+    var sep = (_kplLogicMode === 'and') ? '&' : '|';
+    document.getElementById('kplSearchInput2').value = tags.join(sep);
 }
 
 // 连板过滤：checkbox change → 更新状态 → 自动搜索
@@ -13368,47 +13432,25 @@ function toggleKplRaceUse() {
 }
 
 function doKplSearch(q) {
-    // 从复选框构建查询
-    var checkedTags = [];
-    for (var tag in _kplCheckedTopics) {
-        if (_kplCheckedTopics[tag]) checkedTags.push(tag);
-    }
-    // 搜索按钮点击（无参）：只从复选框读取，不读取输入框
-    // 标签/股票点击（有参）：直接使用传入的关键词
-    if (arguments.length === 0) {
-        q = '';
+    var inputEl = document.getElementById('kplSearchInput2');
+    var finalQuery;
+
+    if (arguments.length > 0 && q) {
+        // 从其他标签/股票点击进入：写入输入框，清除复选框，以此查询为准
+        inputEl.value = q;
+        _kplCheckedTopics = {};
+        var chks = document.querySelectorAll('#kplTopicList input[type="checkbox"]');
+        chks.forEach(function(c) { c.checked = false; c.parentNode.classList.remove('checked'); });
+        finalQuery = q;
+    } else {
+        // 直接读取输入框 — 输入框是唯一数据源
+        finalQuery = inputEl.value.trim();
     }
 
-    // 合并复选框和传入参数：复选框 + 传入的tag
-    var queryParts = [];
-    for (var ci = 0; ci < checkedTags.length; ci++) {
-        queryParts.push(checkedTags[ci]);
-    }
-    if (q) queryParts.push(q);
-
-    // 兜底：既没勾选题材也没传参时从输入框读取
-    if (queryParts.length === 0) {
-        q = document.getElementById('kplSearchInput2').value.trim();
-        if (q) queryParts.push(q);
-    }
-
-    if (queryParts.length === 0) {
+    if (!finalQuery) {
         document.getElementById('kplSearchResult').innerHTML = '<div class="empty">请勾选题材或在输入框中输入关键词</div>';
         return;
     }
-
-    // 根据逻辑模式构建查询
-    var finalQuery;
-    if (_kplLogicMode === 'and') {
-        // AND模式：使用 & 连接（后端已支持）
-        finalQuery = queryParts.join('&');
-    } else {
-        // OR模式（默认）：使用 | 连接（后端已支持）
-        finalQuery = queryParts.join('|');
-    }
-
-    // 更新输入框显示当前查询（含选中的题材和逻辑组合），便于用户感知搜索条件
-    document.getElementById('kplSearchInput2').value = finalQuery;
 
     var dateStart = document.getElementById('kplSearchDateStart').value;
     var dateEnd = document.getElementById('kplSearchDateEnd').value;
@@ -13429,15 +13471,15 @@ function doKplSearch(q) {
 
     function _loadRaceAfterSearch() {
         if (_kplUseRace) {
-            // 根据逻辑模式决定多赛马行为
-            if (_kplLogicMode === 'and' || checkedTags.length <= 1) {
+            var raceTags = finalQuery.split('|').filter(function(t){ return t.trim(); });
+            if (_kplLogicMode === 'and' || raceTags.length <= 1) {
                 // AND模式或单题材：单赛马
                 if (_raceTimer) { clearInterval(_raceTimer); _raceTimer = null; }
                 _loadRaceForTag(finalQuery, dateStart, dateEnd, _strictMode);
             } else {
                 // OR模式 + 多题材：分图赛马
                 if (_raceTimer) { clearInterval(_raceTimer); _raceTimer = null; }
-                _loadMultiRace(checkedTags, dateStart, dateEnd, _strictMode);
+                _loadMultiRace(raceTags, dateStart, dateEnd, _strictMode);
             }
         }
     }
@@ -13830,7 +13872,8 @@ function _loadRaceForTag(keyword, ds, de, strictMode) {
     _raceHideTooltip();
 
     var strictChecked = _raceCtx.strict ? '1' : '0';
-    var url = '/api/kpl_race_data?mode=init&keyword=' + encodeURIComponent(keyword) + '&date_start=' + ds + '&date_end=' + de + '&strict=' + strictChecked;
+    var noSt = document.getElementById('kplNoStCheck') && document.getElementById('kplNoStCheck').checked ? '1' : '0';
+    var url = '/api/kpl_race_data?mode=init&keyword=' + encodeURIComponent(keyword) + '&date_start=' + ds + '&date_end=' + de + '&strict=' + strictChecked + '&no_st=' + noSt;
     var filterStr = Object.keys(_kplLianbanFilter).filter(function(k){ return _kplLianbanFilter[k]; }).join(',') || 'all';
     url += '&lianban_filter=' + encodeURIComponent(filterStr);
     fetch(url)
@@ -14032,7 +14075,8 @@ function _loadSingleRace(idx, tag, ds, de, strictMode) {
         de = now2.getFullYear() + '-' + String(now2.getMonth()+1).padStart(2,'0') + '-' + String(now2.getDate()).padStart(2,'0');
     }
     var strictChecked = (strictMode === undefined ? (document.getElementById('kplStrictCheck') && document.getElementById('kplStrictCheck').checked) : strictMode) ? '1' : '0';
-    var url = '/api/kpl_race_data?mode=init&keyword=' + encodeURIComponent(tag) + '&date_start=' + ds + '&date_end=' + de + '&strict=' + strictChecked;
+    var noSt = document.getElementById('kplNoStCheck') && document.getElementById('kplNoStCheck').checked ? '1' : '0';
+    var url = '/api/kpl_race_data?mode=init&keyword=' + encodeURIComponent(tag) + '&date_start=' + ds + '&date_end=' + de + '&strict=' + strictChecked + '&no_st=' + noSt;
     var filterStr = Object.keys(_kplLianbanFilter).filter(function(k){ return _kplLianbanFilter[k]; }).join(',') || 'all';
     url += '&lianban_filter=' + encodeURIComponent(filterStr);
     fetch(url)
@@ -14851,6 +14895,8 @@ function _raceOnCanvasMouseMove(e, ctxInst) {
 
 function _renderRaceLegend(ctxInst) {
     if (!ctxInst) ctxInst = _raceCtx;
+    var instRef = (ctxInst && ctxInst.idx !== undefined)
+        ? ", _multiRaceInstances['_race_" + ctxInst.idx + "']" : "";
     var legendEl = document.getElementById(ctxInst.legendId);
     if (!legendEl || !ctxInst.data) return;
     var data = ctxInst.data;
@@ -14869,7 +14915,7 @@ function _renderRaceLegend(ctxInst) {
         var pctSign = fc >= 0 ? '+' : '';
         var hiddenClass = ctxInst.hiddenHorses[h.stock_code] ? 'hidden' : '';
         var name = h.stock_name || h.stock_code;
-        html += '<span class="kpl-race-legend-item ' + hiddenClass + '" onclick="_raceToggleHorse(\\x27' + h.stock_code + '\\x27)" style="border-color:' + color + '40;">'
+        html += '<span class="kpl-race-legend-item ' + hiddenClass + '" onclick="_raceToggleHorse(\\x27' + h.stock_code + '\\x27' + instRef + ')" style="border-color:' + color + '40;">'
             + '<span class="legend-dot" style="background:' + color + ';"></span>'
             + '<span class="legend-name">' + name + '</span>'
             + '<span class="legend-pct ' + pctClass + '">' + pctSign + fc.toFixed(1) + '%</span>'
@@ -14907,6 +14953,8 @@ function _raceGetBoardClass(code) {
 
 function _renderRaceStats(ctxInst) {
     if (!ctxInst) ctxInst = _raceCtx;
+    var instRef = (ctxInst && ctxInst.idx !== undefined)
+        ? ", _multiRaceInstances['_race_" + ctxInst.idx + "']" : "";
     var statsEl = document.getElementById(ctxInst.statsId);
     if (!statsEl || !ctxInst.data) return;
     var data = ctxInst.data;
@@ -14915,13 +14963,19 @@ function _renderRaceStats(ctxInst) {
         statsEl.innerHTML = '';
         return;
     }
-    // 计算累计涨幅Top8
-    var fcRanking = horses.map(function(h,i){ return {idx:i, fc:h.final_change || 0}; });
-    fcRanking.sort(function(a,b){ return b.fc - a.fc; });
-    var fcTop8Set = {};
-    for (var ti = 0; ti < Math.min(8, fcRanking.length); ti++) {
-        fcTop8Set[fcRanking[ti].idx] = true;
+    // 三组排名（Top1/Top2）
+    function _calcTop2(arr, key) {
+        var ranked = arr.map(function(h, i){ return {idx:i, val: h[key] !== null && h[key] !== undefined ? h[key] : -99999}; });
+        ranked.sort(function(a, b){ return b.val - a.val; });
+        var top2 = {};
+        for (var t = 0; t < Math.min(2, ranked.length); t++) {
+            if (ranked[t].val > -99999) top2[ranked[t].idx] = t + 1;
+        }
+        return top2;
     }
+    var top2_5d = _calcTop2(horses, 'change_5d');
+    var top2_10d = _calcTop2(horses, 'change_10d');
+    var top2_total = _calcTop2(horses, 'final_change');
     // 排序
     var sortedHorses = horses.slice();
     if (ctxInst.sortKey) {
@@ -14934,9 +14988,12 @@ function _renderRaceStats(ctxInst) {
             } else if (ctxInst.sortKey === 'change') {
                 va = a.final_change || 0;
                 vb = b.final_change || 0;
-            } else if (ctxInst.sortKey === 'evcount') {
-                va = (a.events || []).length;
-                vb = (b.events || []).length;
+            } else if (ctxInst.sortKey === 'change_5d') {
+                va = a.change_5d !== null && a.change_5d !== undefined ? a.change_5d : -99999;
+                vb = b.change_5d !== null && b.change_5d !== undefined ? b.change_5d : -99999;
+            } else if (ctxInst.sortKey === 'change_10d') {
+                va = a.change_10d !== null && a.change_10d !== undefined ? a.change_10d : -99999;
+                vb = b.change_10d !== null && b.change_10d !== undefined ? b.change_10d : -99999;
             } else if (ctxInst.sortKey === 'realtime') {
                 va = (data.today_realtime && data.today_realtime[a.stock_code]) || 0;
                 vb = (data.today_realtime && data.today_realtime[b.stock_code]) || 0;
@@ -14954,12 +15011,21 @@ function _renderRaceStats(ctxInst) {
         + '<th>题材标签</th>'
         + '<th style="max-width:180px;">板块·涨停简介</th>'
         + '<th onclick="_raceToggleSort(\\x27realtime\\x27)" style="cursor:pointer;">实时涨幅' + _sortIcon('realtime') + '</th>'
+        + '<th onclick="_raceToggleSort(\\x27change_5d\\x27)" style="cursor:pointer;">近5日涨幅' + _sortIcon('change_5d') + '</th>'
+        + '<th onclick="_raceToggleSort(\\x27change_10d\\x27)" style="cursor:pointer;">近10日涨幅' + _sortIcon('change_10d') + '</th>'
         + '<th onclick="_raceToggleSort(\\x27change\\x27)" style="cursor:pointer;">累计涨跌' + _sortIcon('change') + '</th>'
-        + '<th onclick="_raceToggleSort(\\x27evcount\\x27)" style="cursor:pointer;">涨停次数' + _sortIcon('evcount') + '</th>'
         + '</tr></thead><tbody>';
     var _horseIdxMap = {};
     for (var mi = 0; mi < horses.length; mi++) {
         _horseIdxMap[horses[mi].stock_code] = mi;
+    }
+    function _raceEvBadgeHtml(count) {
+        if (count === null || count === undefined || count === 0) {
+            var cls = count === 0 ? 'race-ev-badge race-ev-badge-0' : '';
+            return '<span class="' + cls + '">' + (count !== null ? count + '次' : '-') + '</span>';
+        }
+        var cls = 'race-ev-badge race-ev-badge-' + (count >= 5 ? '5p' : count);
+        return '<span class="' + cls + '">' + count + '次</span>';
     }
     for (var i = 0; i < sortedHorses.length; i++) {
         var h = sortedHorses[i];
@@ -14990,13 +15056,19 @@ function _renderRaceStats(ctxInst) {
         var rb = h.reason_brief || '';
         if (rb.length > 30) rb = rb.slice(0, 30) + '...';
         var fcLabel = fcSign + fc.toFixed(1) + '%';
-        if (fcTop8Set[origIdx]) {
-            var top8Rank = 0;
-            for (var ti2 = 0; ti2 < fcRanking.length; ti2++) {
-                if (fcRanking[ti2].idx === origIdx) { top8Rank = ti2 + 1; break; }
-            }
-            fcLabel += '<span class="race-badge-rank">Top' + top8Rank + '</span>';
-        }
+        var badgeTotal = top2_total[origIdx] ? '<span class="race-badge-rank">Top' + top2_total[origIdx] + '</span>' : '';
+        // 近5日涨幅
+        var change5d = h.change_5d;
+        var change5dLabel = change5d !== null && change5d !== undefined ? (change5d >= 0 ? '+' : '') + change5d.toFixed(1) + '%' : '-';
+        var change5dClass = change5d > 0 ? 'race-stat-up' : (change5d < 0 ? 'race-stat-down' : 'race-stat-zero');
+        var badge5d = top2_5d[origIdx] ? '<span class="race-badge-rank">Top' + top2_5d[origIdx] + '</span>' : '';
+        var evCount5d = h.ev_count_5d;
+        // 近10日涨幅
+        var change10d = h.change_10d;
+        var change10dLabel = change10d !== null && change10d !== undefined ? (change10d >= 0 ? '+' : '') + change10d.toFixed(1) + '%' : '-';
+        var change10dClass = change10d > 0 ? 'race-stat-up' : (change10d < 0 ? 'race-stat-down' : 'race-stat-zero');
+        var badge10d = top2_10d[origIdx] ? '<span class="race-badge-rank">Top' + top2_10d[origIdx] + '</span>' : '';
+        var evCount10d = h.ev_count_10d;
         var rowCls = '';
         if (ctxInst.hiddenHorses[code]) {
             rowCls = 'race-stat-row-hidden';
@@ -15005,13 +15077,14 @@ function _renderRaceStats(ctxInst) {
         }
         html += rowCls ? '<tr class="' + rowCls + '">' : '<tr>';
         html += '<td>' + (i+1) + '</td>'
-            + '<td><span class="race-name-toggle" onclick="_raceToggleHorse(\\x27' + code + '\\x27)">' + (h.stock_name || code) + '</span> <span class="stock-board-' + bClass + '">' + code + '</span>'
+            + '<td><span class="race-name-toggle" onclick="_raceToggleHorse(\\x27' + code + '\\x27' + instRef + ')">' + (h.stock_name || code) + '</span> <span class="stock-board-' + bClass + '">' + code + '</span>'
             + (lianbanN > 1 ? ' <span class="lianban-badge">连' + lianbanN + '板</span>' : '') + '</td>'
             + '<td style="color:#90caf9;font-size:0.85em;">' + (h.tag || '-') + '</td>'
             + '<td style="color:#ffcc80;font-size:0.78em;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + (h.reason_brief || '') + '">' + (h.plate_name || '-') + ' · ' + (rb || '-') + '</td>'
             + '<td>' + realtime + '</td>'
-            + '<td class="' + fcClass + '">' + fcLabel + '</td>'
-            + '<td>' + evCount + '</td>'
+            + '<td class="' + change5dClass + '">' + change5dLabel + _raceEvBadgeHtml(evCount5d) + badge5d + '</td>'
+            + '<td class="' + change10dClass + '">' + change10dLabel + _raceEvBadgeHtml(evCount10d) + badge10d + '</td>'
+            + '<td class="' + fcClass + '">' + fcLabel + _raceEvBadgeHtml(evCount) + badgeTotal + '</td>'
             + '</tr>';
     }
     html += '</tbody></table>';
@@ -15021,8 +15094,8 @@ function _renderRaceStats(ctxInst) {
     }
     html = '<div class="race-toggle-all">'
         + '<span style="color:#aaa;font-size:0.78em;">显示 <b>' + visibleCount + '</b>/' + horses.length + '</span>'
-        + '<button onclick="_raceSelectAll(true)">全选</button>'
-        + '<button onclick="_raceSelectAll(false)">全取消</button>'
+        + '<button onclick="_raceSelectAll(true' + instRef + ')">全选</button>'
+        + '<button onclick="_raceSelectAll(false' + instRef + ')">全取消</button>'
         + '</div>'
         + html;
     statsEl.innerHTML = html;
@@ -20927,6 +21000,8 @@ class Handler(BaseHTTPRequestHandler):
                 gem_extra = query.get('gem_extra', ['0'])[0] == '1'
                 lianban_filter = query.get('lianban_filter', [None])[0]
 
+                print(f"[kpl_reason_search] REQUEST q={q} date_start={date_start} date_end={date_end} no_st={no_st} strict={strict} gem_extra={gem_extra} lianban_filter={lianban_filter}")
+
                 # 缓存键
                 cache_key = _kpl_search_cache_key(q, date_start, date_end, no_st, strict, lianban_filter)
                 mem_key = f"kpl_search:{cache_key}"
@@ -20946,6 +21021,9 @@ class Handler(BaseHTTPRequestHandler):
 
                 # ③ 全量计算
                 result = _kpl_full_search(q, date_start, date_end, no_st, strict, gem_extra, lianban_filter)
+                # DEBUG: 响应日期范围
+                _resp_dates = [r.get('date', '') for r in result.get('results', []) if r.get('date', '')]
+                print(f"[kpl_reason_search] RESPONSE: results_count={len(result.get('results', []))} date_min={min(_resp_dates) if _resp_dates else 'N/A'} date_max={max(_resp_dates) if _resp_dates else 'N/A'} gem_strong_rise_codes={list(result.get('gem_strong_rise', {}).keys())[:5]}...")
                 _kpl_search_cache_save(cache_key, result)
                 _set_cache(mem_key, result)
                 self._respond_json(result, cors_headers)
@@ -21081,6 +21159,8 @@ class Handler(BaseHTTPRequestHandler):
             keyword = query.get('keyword', [''])[0].strip()
             strict = query.get('strict', ['0'])[0].strip() == '1'
             lianban_filter = query.get('lianban_filter', [''])[0].strip()
+            no_st = query.get('no_st', [None])[0]
+            print(f"[race_data] mode={mode} keyword={keyword} date_start={date_start} date_end={date_end} no_st={no_st} strict={strict} lianban_filter={lianban_filter}")
             try:
                 if mode == 'init':
                     _kpl_ensure_loaded()
@@ -21102,7 +21182,9 @@ class Handler(BaseHTTPRequestHandler):
                             continue
                         for r in records:
                             sc = r.get('stock_code', '')
-                            if not sc or _kpl_is_st(r):
+                            if not sc:
+                                continue
+                            if no_st == '1' and _kpl_is_st(r):
                                 continue
                             tag = (r.get('reason_tag', '') or '').strip()
                             if tag in SNIPER_EXCLUDE_TAGS:
@@ -21146,11 +21228,16 @@ class Handler(BaseHTTPRequestHandler):
                                         if latest_tag in SNIPER_EXCLUDE_TAGS:
                                             continue
                                         name = latest.get('stock_name', '') or _kpl_stock_index.get(code, {}).get('stock_name', '')
+                                        if no_st == '1' and (name.startswith('*ST') or name.startswith('ST') or name.startswith('S') or '退' in name):
+                                            continue
                                         tag = latest_tag or q_lower
                                         plate_name = latest.get('plate_name', '') or ''
                                         reason_brief = latest.get('reason_brief', '') or ''
                                         sr_date = sr_entries[0]['date'] if sr_entries else ''
                                         if sr_date:
+                                            sr_date_stripped = sr_date.replace('-', '')
+                                            if sr_date_stripped < ds_ymd or sr_date_stripped >= de_ymd:
+                                                continue
                                             events_by_stock.setdefault(code, []).append({
                                                 'date': sr_date,
                                                 'type': 'strong_rise',
@@ -21275,6 +21362,21 @@ class Handler(BaseHTTPRequestHandler):
                             continue
                         # 最终累计涨跌幅
                         final_change = curve[-1]['cum_close'] if curve else 0
+                        # 计算近5日、近10日涨跌幅和涨停次数
+                        change_5d = None
+                        change_10d = None
+                        ev_count_5d = None
+                        ev_count_10d = None
+                        if len(curve) >= 2:
+                            last_cum = curve[-1]['cum_close']
+                            if len(curve) >= 6:
+                                change_5d = round(last_cum - curve[-6]['cum_close'], 2)
+                                ref_date_5d = curve[-6]['trade_date']
+                                ev_count_5d = sum(1 for e in events if e['date'] >= ref_date_5d and e['date'] <= curve[-1]['trade_date'])
+                            if len(curve) >= 11:
+                                change_10d = round(last_cum - curve[-11]['cum_close'], 2)
+                                ref_date_10d = curve[-11]['trade_date']
+                                ev_count_10d = sum(1 for e in events if e['date'] >= ref_date_10d and e['date'] <= curve[-1]['trade_date'])
                         name = events[0].get('stock_name', '') or ''
                         tag = events[0].get('tag', '') or ''
                         plate_name = events[0].get('plate_name', '') or ''
@@ -21289,6 +21391,10 @@ class Handler(BaseHTTPRequestHandler):
                             'events': [{'date': e['date'], 'type': e['type'], 'tag': e['tag'], 'reason_brief': e.get('reason_brief', '') or ''} for e in events],
                             'curve': curve,
                             'final_change': final_change,
+                            'change_5d': change_5d,
+                            'change_10d': change_10d,
+                            'ev_count_5d': ev_count_5d,
+                            'ev_count_10d': ev_count_10d,
                         })
                     # 按最终涨幅排序
                     horses.sort(key=lambda x: abs(x['final_change']), reverse=True)
@@ -21442,6 +21548,21 @@ class Handler(BaseHTTPRequestHandler):
                                         name = _kpl_rows_by_stock[zt_code][0].get('stock_name', '') or ''
                                         plate_name = _kpl_rows_by_stock[zt_code][0].get('plate_name', '') or ''
                                         last_rb = events[-1].get('reason_brief', '') if events else ''
+                                    # 计算近5日、近10日涨跌幅和涨停次数
+                                    change_5d = None
+                                    change_10d = None
+                                    ev_count_5d = None
+                                    ev_count_10d = None
+                                    if len(curve) >= 2:
+                                        last_cum = curve[-1]['cum_close']
+                                        if len(curve) >= 6:
+                                            change_5d = round(last_cum - curve[-6]['cum_close'], 2)
+                                            ref_date_5d = curve[-6]['trade_date']
+                                            ev_count_5d = sum(1 for e in events if e['date'] >= ref_date_5d and e['date'] <= curve[-1]['trade_date'])
+                                        if len(curve) >= 11:
+                                            change_10d = round(last_cum - curve[-11]['cum_close'], 2)
+                                            ref_date_10d = curve[-11]['trade_date']
+                                            ev_count_10d = sum(1 for e in events if e['date'] >= ref_date_10d and e['date'] <= curve[-1]['trade_date'])
                                     new_horses.append({
                                         'stock_code': zt_code,
                                         'stock_name': name,
@@ -21451,6 +21572,10 @@ class Handler(BaseHTTPRequestHandler):
                                         'events': events,
                                         'curve': curve,
                                         'final_change': curve[-1]['cum_close'] if curve else 0,
+                                        'change_5d': change_5d,
+                                        'change_10d': change_10d,
+                                        'ev_count_5d': ev_count_5d,
+                                        'ev_count_10d': ev_count_10d,
                                     })
                                 except Exception:
                                     pass
