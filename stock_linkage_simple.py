@@ -1125,7 +1125,7 @@ def _kpl_analyze_rows(q, date_start=None, date_end=None, no_st=None, strict=None
             vv.sort(key=lambda x: x.get('date', ''), reverse=True)
             _filtered_kw[k] = vv
         result['kw_results'] = _filtered_kw
-    result['results'] = results[:200]
+    result['results'] = results[:500]
     result['total_hits'] = len(results)
     return result
 
@@ -4930,6 +4930,15 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 .race-ev-badge-5p { background: linear-gradient(90deg, #b71c1c, #ff1744); color: #fff; }
 /* 连板徽标 */
 .lianban-badge { display:inline-block; padding:0 5px; height:18px; line-height:18px; border-radius:3px; background:#ff6b6b; color:#fff; font-size:0.72em; font-weight:700; margin-left:3px; }
+/* 赛马表格顶部统计栏 */
+.race-stats-header { display:flex; justify-content:space-between; align-items:center; padding:8px 10px; background:rgba(255,255,255,0.02); border-radius:4px; margin-bottom:4px; }
+.race-stats-count { color:#aaa; font-size:0.82em; }
+.race-stats-actions { display:flex; gap:6px; align-items:center; }
+.race-stats-actions button { background:transparent; border:1px solid #555; color:#aaa; border-radius:4px; padding:2px 10px; cursor:pointer; font-size:0.78em; }
+.race-stats-actions button:hover { border-color:#90caf9; color:#90caf9; }
+.race-toggle-icon { display:inline-block; width:16px; height:16px; line-height:16px; text-align:center; border-radius:50%; border:1px solid #555; color:#aaa; font-size:10px; cursor:pointer; margin-left:4px; vertical-align:middle; transition:all .2s; }
+.race-toggle-icon:hover { border-color:#ffd700; color:#ffd700; }
+.race-toggle-icon.hidden { opacity:0.35; background:rgba(255,255,255,0.05); }
 </style>
 </head>
 <body>
@@ -13815,7 +13824,8 @@ var _raceCtx = {
     tooltipId: 'kplRaceTooltip',
     legendId: 'kplRaceLegend',
     statsId: 'kplRaceStats',
-    containerId: 'kplRaceCanvasContainer'
+    containerId: 'kplRaceCanvasContainer',
+    klineOpen: false   // K线图展开状态
 };
 var _raceTimer = null;  // 定时器ID
 var _lastActiveRaceCtx = null;  // zoom/resize事件最新激活的ctx
@@ -13864,6 +13874,7 @@ function _loadRaceForTag(keyword, ds, de, strictMode) {
     _raceCtx.hitPoints = [];
     _raceCtx.labelPositions = [];
     _raceCtx.climaxDayLines = [];
+    _raceCtx.klineOpen = false;
     var raceCanvas = document.getElementById('kplRaceCanvas');
     if (raceCanvas) {
         var rCtx = raceCanvas.getContext('2d');
@@ -14042,6 +14053,9 @@ function _loadMultiRace(tags, ds, de, strictMode) {
             dateEnd: de,
             idx: ti,
             colors: _raceCtx.colors,
+            sortKey: '',
+            sortDir: '',
+            klineOpen: false,
             // DOM ID引用
             canvasId: 'kpl-race-canvas-' + ti,
             tooltipId: 'kpl-race-tooltip-' + ti,
@@ -14092,6 +14106,7 @@ function _loadSingleRace(idx, tag, ds, de, strictMode) {
             }
             inst.data = data;
             inst.hiddenHorses = {};
+            inst.klineOpen = false;
             // 渲染
             _renderSingleRace(idx);
             var st = document.getElementById('kpl-race-status-' + idx);
@@ -14997,6 +15012,15 @@ function _renderRaceStats(ctxInst) {
             } else if (ctxInst.sortKey === 'realtime') {
                 va = (data.today_realtime && data.today_realtime[a.stock_code]) || 0;
                 vb = (data.today_realtime && data.today_realtime[b.stock_code]) || 0;
+            } else if (ctxInst.sortKey === 'ev_count') {
+                va = (a.events || []).length;
+                vb = (b.events || []).length;
+            } else if (ctxInst.sortKey === 'ev_count_5d') {
+                va = a.ev_count_5d !== null && a.ev_count_5d !== undefined ? a.ev_count_5d : -99999;
+                vb = b.ev_count_5d !== null && b.ev_count_5d !== undefined ? b.ev_count_5d : -99999;
+            } else if (ctxInst.sortKey === 'ev_count_10d') {
+                va = a.ev_count_10d !== null && a.ev_count_10d !== undefined ? a.ev_count_10d : -99999;
+                vb = b.ev_count_10d !== null && b.ev_count_10d !== undefined ? b.ev_count_10d : -99999;
             }
             return ctxInst.sortDir === 'asc' ? va - vb : vb - va;
         });
@@ -15011,21 +15035,25 @@ function _renderRaceStats(ctxInst) {
         + '<th>题材标签</th>'
         + '<th style="max-width:180px;">板块·涨停简介</th>'
         + '<th onclick="_raceToggleSort(\\x27realtime\\x27)" style="cursor:pointer;">实时涨幅' + _sortIcon('realtime') + '</th>'
-        + '<th onclick="_raceToggleSort(\\x27change_5d\\x27)" style="cursor:pointer;">近5日涨幅' + _sortIcon('change_5d') + '</th>'
-        + '<th onclick="_raceToggleSort(\\x27change_10d\\x27)" style="cursor:pointer;">近10日涨幅' + _sortIcon('change_10d') + '</th>'
-        + '<th onclick="_raceToggleSort(\\x27change\\x27)" style="cursor:pointer;">累计涨跌' + _sortIcon('change') + '</th>'
+        + '<th onclick="_raceToggleSort(\\x27change_5d\\x27)" style="cursor:pointer;">近5日涨幅' + _sortIcon('change_5d') + '<br><span onclick="event.stopPropagation();_raceToggleSort(\\x27ev_count_5d\\x27)" style="cursor:pointer;font-size:0.75em;color:#888;" title="按次数排序">[次数]' + _sortIcon('ev_count_5d') + '</span></th>'
+        + '<th onclick="_raceToggleSort(\\x27change_10d\\x27)" style="cursor:pointer;">近10日涨幅' + _sortIcon('change_10d') + '<br><span onclick="event.stopPropagation();_raceToggleSort(\\x27ev_count_10d\\x27)" style="cursor:pointer;font-size:0.75em;color:#888;" title="按次数排序">[次数]' + _sortIcon('ev_count_10d') + '</span></th>'
+        + '<th onclick="_raceToggleSort(\\x27change\\x27)" style="cursor:pointer;">累计涨跌' + _sortIcon('change') + '<br><span onclick="event.stopPropagation();_raceToggleSort(\\x27ev_count\\x27)" style="cursor:pointer;font-size:0.75em;color:#888;" title="按次数排序">[次数]' + _sortIcon('ev_count') + '</span></th>'
         + '</tr></thead><tbody>';
     var _horseIdxMap = {};
     for (var mi = 0; mi < horses.length; mi++) {
         _horseIdxMap[horses[mi].stock_code] = mi;
     }
-    function _raceEvBadgeHtml(count) {
+    function _raceEvBadgeHtml(count, sortKey) {
+        var onclickAttr = '';
+        if (sortKey) {
+            onclickAttr = ' onclick="_raceToggleSort(\\x27' + sortKey + '\\x27)" style="cursor:pointer;"';
+        }
         if (count === null || count === undefined || count === 0) {
             var cls = count === 0 ? 'race-ev-badge race-ev-badge-0' : '';
-            return '<span class="' + cls + '">' + (count !== null ? count + '次' : '-') + '</span>';
+            return '<span class="' + cls + '"' + onclickAttr + '>' + (count !== null ? count + '次' : '-') + '</span>';
         }
         var cls = 'race-ev-badge race-ev-badge-' + (count >= 5 ? '5p' : count);
-        return '<span class="' + cls + '">' + count + '次</span>';
+        return '<span class="' + cls + '"' + onclickAttr + '>' + count + '次</span>';
     }
     for (var i = 0; i < sortedHorses.length; i++) {
         var h = sortedHorses[i];
@@ -15077,14 +15105,14 @@ function _renderRaceStats(ctxInst) {
         }
         html += rowCls ? '<tr class="' + rowCls + '">' : '<tr>';
         html += '<td>' + (i+1) + '</td>'
-            + '<td><span class="race-name-toggle" onclick="_raceToggleHorse(\\x27' + code + '\\x27' + instRef + ')">' + (h.stock_name || code) + '</span> <span class="stock-board-' + bClass + '">' + code + '</span>'
-            + (lianbanN > 1 ? ' <span class="lianban-badge">连' + lianbanN + '板</span>' : '') + '</td>'
+            + '<td><span class="race-name-toggle" onclick="showEnlargedCardDetail(\\x27' + code + '\\x27)" title="点击查看详情">' + (h.stock_name || code) + '</span> <span class="stock-board-' + bClass + '" onclick="showEnlargedCardDetail(\\x27' + code + '\\x27)" style="cursor:pointer;" title="点击查看详情">' + code + '</span>'
+            + (lianbanN > 1 ? ' <span class="lianban-badge">连' + lianbanN + '板</span>' : '') + '<span class="race-toggle-icon' + (ctxInst.hiddenHorses[code] ? ' hidden' : '') + '" onclick="_raceToggleHorse(\\x27' + code + '\\x27' + instRef + ')" title="切换显示/隐藏">◎</span></td>'
             + '<td style="color:#90caf9;font-size:0.85em;">' + (h.tag || '-') + '</td>'
             + '<td style="color:#ffcc80;font-size:0.78em;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + (h.reason_brief || '') + '">' + (h.plate_name || '-') + ' · ' + (rb || '-') + '</td>'
             + '<td>' + realtime + '</td>'
-            + '<td class="' + change5dClass + '">' + change5dLabel + _raceEvBadgeHtml(evCount5d) + badge5d + '</td>'
-            + '<td class="' + change10dClass + '">' + change10dLabel + _raceEvBadgeHtml(evCount10d) + badge10d + '</td>'
-            + '<td class="' + fcClass + '">' + fcLabel + _raceEvBadgeHtml(evCount) + badgeTotal + '</td>'
+            + '<td class="' + change5dClass + '">' + change5dLabel + _raceEvBadgeHtml(evCount5d, 'ev_count_5d') + badge5d + '</td>'
+            + '<td class="' + change10dClass + '">' + change10dLabel + _raceEvBadgeHtml(evCount10d, 'ev_count_10d') + badge10d + '</td>'
+            + '<td class="' + fcClass + '">' + fcLabel + _raceEvBadgeHtml(evCount, 'ev_count') + badgeTotal + '</td>'
             + '</tr>';
     }
     html += '</tbody></table>';
@@ -15092,13 +15120,30 @@ function _renderRaceStats(ctxInst) {
     for (var vi = 0; vi < horses.length; vi++) {
         if (!ctxInst.hiddenHorses[horses[vi].stock_code]) visibleCount++;
     }
-    html = '<div class="race-toggle-all">'
-        + '<span style="color:#aaa;font-size:0.78em;">显示 <b>' + visibleCount + '</b>/' + horses.length + '</span>'
+    var ctxRef = (ctxInst && ctxInst.idx !== undefined)
+        ? "_multiRaceInstances['_race_" + ctxInst.idx + "']" : "_raceCtx";
+    html = '<div class="race-stats-header">'
+        + '<span class="race-stats-count">共 <b>' + horses.length + '</b> 只股票，默认按照累计涨幅排序</span>'
+        + '<span class="race-stats-actions">'
         + '<button onclick="_raceSelectAll(true' + instRef + ')">全选</button>'
         + '<button onclick="_raceSelectAll(false' + instRef + ')">全取消</button>'
+        + '<button class="concept-btn" onclick="_toggleRaceKlines(' + ctxRef + ')">K线走势</button>'
+        + '<button class="concept-btn" onclick="_refreshRaceKlines(' + ctxRef + ')" title="刷新K线图">⟳</button>'
+        + '</span>'
         + '</div>'
+        + '<div id="race-kline-wrap-' + ctxInst.statsId + '" class="concept-kline-wrap" style="max-height:0;overflow:hidden;"></div>'
         + html;
     statsEl.innerHTML = html;
+
+    // 恢复K线图展开状态
+    if (ctxInst.klineOpen) {
+        var wrapEl = document.getElementById('race-kline-wrap-' + ctxInst.statsId);
+        if (wrapEl) {
+            _fillRaceKlines(ctxInst, wrapEl);
+            wrapEl.style.maxHeight = '10000px';
+            wrapEl.setAttribute('data-open', '1');
+        }
+    }
 
     // 自动高潮日检测
     function _isZtLimit(code, dailyPct) {
@@ -15152,6 +15197,74 @@ function _renderRaceStats(ctxInst) {
             statsEl.innerHTML += '<div class="race-climax-info">🔥 高潮日 ' + shortDate + ': 涨停 ' + day.ztCount + ', 大涨 ' + day.dzCount + '</div>';
         }
     }
+}
+
+// ===== 赛马K线走势图 =====
+function _toggleRaceKlines(ctxInst) {
+    if (!ctxInst) ctxInst = _raceCtx;
+    var wrap = document.getElementById('race-kline-wrap-' + ctxInst.statsId);
+    if (!wrap) return;
+    var isOpen = wrap.getAttribute('data-open') === '1';
+    if (isOpen) {
+        wrap.style.maxHeight = '0';
+        wrap.setAttribute('data-open', '0');
+        ctxInst.klineOpen = false;
+    } else {
+        _fillRaceKlines(ctxInst, wrap);
+        wrap.style.maxHeight = '10000px';
+        wrap.setAttribute('data-open', '1');
+        ctxInst.klineOpen = true;
+    }
+}
+
+function _refreshRaceKlines(ctxInst) {
+    if (!ctxInst) ctxInst = _raceCtx;
+    var wrap = document.getElementById('race-kline-wrap-' + ctxInst.statsId);
+    if (!wrap) return;
+    var ts = String(Date.now());
+    _fillRaceKlines(ctxInst, wrap, ts);
+    if (wrap.getAttribute('data-open') === '1') wrap.style.maxHeight = '10000px';
+}
+
+function _fillRaceKlines(ctxInst, wrapEl, forceTs) {
+    if (!ctxInst) ctxInst = _raceCtx;
+    if (!ctxInst.data) { wrapEl.innerHTML = ''; return; }
+    var horses = ctxInst.data.horses || [];
+    // 过滤出非隐藏的股票，按 final_change 降序
+    var visible = [];
+    for (var i = 0; i < horses.length; i++) {
+        var h = horses[i];
+        var code = h.stock_code || '';
+        if (ctxInst.hiddenHorses[code]) continue;
+        visible.push({ name: h.stock_name || code, code: code });
+    }
+    if (visible.length === 0) {
+        wrapEl.innerHTML = '<div class="empty" style="padding:10px;color:#666;text-align:center;">无可见股票</div>';
+        return;
+    }
+    // 按 final_change 降序
+    visible.sort(function(a, b) {
+        var va = 0, vb = 0;
+        for (var i = 0; i < horses.length; i++) {
+            if (horses[i].stock_code === a.code) va = horses[i].final_change || 0;
+            if (horses[i].stock_code === b.code) vb = horses[i].final_change || 0;
+        }
+        return vb - va;
+    });
+    var cells = '';
+    for (var i = 0; i < visible.length; i++) {
+        var s = visible[i];
+        var kurl = sinaKlineImg(s.code);
+        var murl = sinaMinImg(s.code);
+        var srcK = forceTs ? kurl.replace(/\?\d*$/, '') + '?' + forceTs : kurl;
+        var srcM = forceTs ? murl.replace(/\?\d*$/, '') + '?' + forceTs : murl;
+        cells += '<div class="concept-kline-cell" onclick="showEnlargedConceptCell(this)" style="cursor:pointer;">' +
+            '<div class="sk-header"><span class="sk-name">' + s.name + '</span><span class="sk-code">' + s.code + '</span></div>' +
+            '<img class="kline-img" src="' + srcK + '" onerror="retryImg(this)">' +
+            '<img class="kline-img min" src="' + srcM + '" onload="checkMinImgLoad(this)" onerror="retryImg(this)">' +
+            '</div>';
+    }
+    wrapEl.innerHTML = '<div class="concept-kline-grid">' + cells + '</div>';
 }
 
 function _raceToggleSort(key, ctxInst) {
@@ -21147,6 +21260,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/kpl_reload_index':
             _kpl_rescan()
             _invalidate_cache(prefix='ladder_trajectory')
+            _invalidate_cache(prefix='kpl_search:')
             _kpl_search_cache_clear()
             self._respond_json({'ok': True, 'files_count': len(_kpl_day_files)}, cors_headers)
 
@@ -21176,6 +21290,7 @@ class Handler(BaseHTTPRequestHandler):
                     matched_codes = set()
                     events_by_stock = {}
                     all_stock_codes = set()
+                    seen_events = set()  # (stock_code, date) 去重
                     for d, records in sorted(_kpl_rows_by_date.items()):
                         d_stripped = d.replace('-', '')
                         if d_stripped < ds_ymd or d_stripped >= de_ymd:
@@ -21198,6 +21313,10 @@ class Handler(BaseHTTPRequestHandler):
                             if q_lower and q_lower not in search_text.lower():
                                 continue
                             matched_codes.add(sc)
+                            key = sc + '|' + d
+                            if key in seen_events:
+                                continue
+                            seen_events.add(key)
                             events_by_stock.setdefault(sc, []).append({
                                 'date': d,
                                 'type': 'zt',
