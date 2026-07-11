@@ -4434,6 +4434,7 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 /* K线网格 */
 .concept-kline-wrap { overflow: hidden; transition: max-height .3s ease; }
 .concept-kline-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px,1fr)); gap: 8px; padding: 8px 0; }
+.sniper-trend-body .concept-kline-grid { grid-template-columns: repeat(4, 1fr); }
 .concept-kline-cell {
     border: 1px solid #0f3460; border-radius: 8px; padding: 6px 6px 8px;
     background: #16213e; text-align: center;
@@ -8711,7 +8712,7 @@ function toggleLhbSection(tag) {
         _renderLhbMatrix(tag, data);
         setTimeout(function() { section.scrollIntoView({behavior: 'smooth', block: 'start'}); }, 150);
     }).catch(function(e) {
-        lhbCards.innerHTML = '<div class="sniper-lhb-loading" style="color:#ff6b6b;">\u7f51\u7edc\u9519\u8bef</div>';
+        lhbCards.innerHTML = '<div class="sniper-lhb-loading" style="color:#ff6b6b;">网络错误: ' + (e.message || '请求失败') + '</div>';
     });
 }
 // 龙虎榜股票板块分类
@@ -8727,6 +8728,10 @@ function _renderLhbMatrix(tag, data) {
     var rankColors = data.rank_colors || {};
     var boardInfo = data.board_info || {};
     var stockCodes = Object.keys(stocks);
+    if (stockCodes.length === 0) {
+        lhbCards.innerHTML = '<div class="sniper-lhb-section"><div class="sniper-lhb-title">📊 ' + _kplEsc(tag) + ' — 所属题材: ' + _kplEsc(data.l1 || '') + '</div><div style="padding:40px;text-align:center;color:#888;font-size:0.9em;">该题材最近20日无龙虎榜记录</div></div>';
+        return;
+    }
     var displayDates = dates.slice().reverse();
 
     // 按板块分组
@@ -20772,6 +20777,9 @@ class Handler(BaseHTTPRequestHandler):
                             stocks_data[code] = {'name': name, 'board': _board, 'ranks': {}}
                         if rank_tag:
                             stocks_data[code]['ranks'][date_ymd] = rank_tag
+                if not stocks_data:
+                    self._respond_json({'empty': True, 'message': '该题材最近20日无龙虎榜记录', 'l1': l1_name, 'dates': [d[:4]+'-'+d[4:6]+'-'+d[6:8] for d in dates], 'stocks': {}, 'rank_colors': {}, 'board_info': {'main': '主板', 'gem': '创业板', 'star': '科创板', 'other': '其他'}}, cors_headers)
+                    return
                 # rank_tag归一化映射
                 rank_map = {
                     '十一': '龙十一', '十二': '龙十二', '十三': '龙十三', '十四': '龙十四', '十五': '龙十五',
