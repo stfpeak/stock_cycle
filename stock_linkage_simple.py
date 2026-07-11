@@ -12273,6 +12273,14 @@ loadRealtime();
             _emtSaveRefreshState();
         }, 1000);
     }
+    // 同步间隔到服务端（确保后台守护线程有最新配置）
+    if (state && state.active && state.intervalMin > 0) {
+        fetch('/api/sentiment_bg_config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({intervalMin: state.intervalMin})
+        }).catch(function(){});
+    }
 })();
 _prefetchAllTabs();
 _loadKplDataEager();
@@ -19427,6 +19435,12 @@ function emtToggleAutoRefresh(minutes) {
         _emtSaveRefreshState();
     }, 1000);
     showToast('\u81EA\u52A8\u5237\u5E16\u5DF2\u5F00\u542F: ' + val + '\u5206\u949F', 'info');
+    // 同步间隔到服务端（后台守护线程据此自动抓取）
+    fetch('/api/sentiment_bg_config', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({intervalMin: val})
+    }).catch(function(){});
 }
 
 function emtUpdateCountdownDisplay() {
@@ -22207,6 +22221,22 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._respond_json({'error': str(e)}, cors_headers)
 
+        elif path == '/api/sentiment_bg_config':
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                if length > 0:
+                    body = json.loads(self.rfile.read(length))
+                    interval_min = body.get('intervalMin', 180)
+                    cfg = {'intervalMin': interval_min, 'updatedAt': time.time()}
+                    os.makedirs(_SENTIMENT_DIR, exist_ok=True)
+                    with open(os.path.join(_SENTIMENT_DIR, 'bg_config.json'), 'w') as f:
+                        json.dump(cfg, f)
+                    self._respond_json({'ok': True}, cors_headers)
+                else:
+                    self._respond_json({'error': 'no body'}, cors_headers)
+            except Exception as e:
+                self._respond_json({'error': str(e)}, cors_headers)
+
         elif path == '/api/industry_chain':
             import uuid
             action = query.get('action', ['list'])[0].strip()
@@ -22526,16 +22556,36 @@ def main():
         except Exception as e:
             print(f"[预热] kpl_top_tags失败: {e}")
 
+    def _sentiment_bg_refresh():
+        """后台守护线程，根据前端配置的间隔自动拉取帖子（即使浏览器已关闭）。"""
+        _BG_CONFIG_PATH = os.path.join(_SENTIMENT_DIR, 'bg_config.json')
+        print(f"[舆情后台] 启动，根据前端配置自动刷新")
+        while True:
+            try:
+                interval_min = 180  # 默认3小时
+                if os.path.exists(_BG_CONFIG_PATH):
+                    with open(_BG_CONFIG_PATH, 'r') as f:
+                        cfg = json.load(f)
+                        interval_min = cfg.get('intervalMin', 180)
+                print(f"[舆情后台] 间隔 {interval_min} 分钟，等待中...")
+                time.sleep(interval_min * 60)
+                merged, new_count = _fetch_jiuyan_posts()
+                print(f"[舆情后台] 抓取完成，新帖 {new_count} 条，总计 {len(merged)} 条（间隔 {interval_min} 分钟）")
+            except Exception as e:
+                print(f"[舆情后台] 异常: {e}")
+                time.sleep(60)
+
     threads = [
         threading.Thread(target=_warm_lianban, daemon=True),
         threading.Thread(target=_warm_stats, daemon=True),
         threading.Thread(target=_warm_hot, daemon=True),
         threading.Thread(target=_warm_data_status, daemon=True),
         threading.Thread(target=_warm_kpl_top_tags, daemon=True),
+        threading.Thread(target=_sentiment_bg_refresh, daemon=True),
     ]
     for t in threads:
         t.start()
-    print("[缓存预热] 5线程并行启动...")
+    print("[缓存预热] 6线程并行启动...")
 
     server.serve_forever()
 
