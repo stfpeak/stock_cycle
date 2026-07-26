@@ -4208,87 +4208,100 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 }
 .lt-trajectory-cell .lt-count { opacity: 0.7; font-size: 0.85em; margin-left: 1px; }
 /* 连板序号标记 - 暖色渐变背景 + 圆角标签 */
+.lt-marker {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 20px; height: 20px;
+    margin-right: 4px;
+    border-radius: 3px;
+    font-size: 0.78em; font-weight: bold;
+    line-height: 1;
+    vertical-align: middle;
+}
 .lt-first {
     background: linear-gradient(135deg, rgba(255,215,0,0.2) 0%, rgba(255,183,77,0.08) 100%) !important;
     border-radius: 3px;
 }
 .lt-first .lt-marker {
-    display: inline-block;
     background: linear-gradient(135deg, #ffd700, #ff8f00);
     color: #1a1a2e !important;
-    font-weight: bold;
-    padding: 0 5px;
-    border-radius: 3px;
-    margin-right: 3px;
-    font-size: 0.9em;
-    min-width: 18px;
-    text-align: center;
 }
 .lt-second {
     background: linear-gradient(135deg, rgba(255,138,101,0.18) 0%, rgba(255,138,101,0.05) 100%) !important;
     border-radius: 3px;
 }
 .lt-second .lt-marker {
-    display: inline-block;
     background: linear-gradient(135deg, #ff8a65, #ff6d00);
     color: #fff !important;
-    font-weight: bold;
-    padding: 0 5px;
-    border-radius: 3px;
-    margin-right: 3px;
-    font-size: 0.9em;
-    min-width: 18px;
-    text-align: center;
 }
 .lt-third {
     background: linear-gradient(135deg, rgba(255,64,129,0.15) 0%, rgba(255,64,129,0.05) 100%) !important;
     border-radius: 3px;
 }
 .lt-third .lt-marker {
-    display: inline-block;
     background: linear-gradient(135deg, #ff4081, #c51162);
     color: #fff !important;
-    font-weight: bold;
-    padding: 0 5px;
-    border-radius: 3px;
-    margin-right: 3px;
-    font-size: 0.9em;
-    min-width: 18px;
-    text-align: center;
 }
 .lt-fourth {
     background: linear-gradient(135deg, rgba(206,147,216,0.15) 0%, rgba(206,147,216,0.05) 100%) !important;
     border-radius: 3px;
 }
 .lt-fourth .lt-marker {
-    display: inline-block;
     background: linear-gradient(135deg, #ce93d8, #7b1fa2);
     color: #fff !important;
-    font-weight: bold;
-    padding: 0 5px;
-    border-radius: 3px;
-    margin-right: 3px;
-    font-size: 0.9em;
-    min-width: 18px;
-    text-align: center;
 }
 .lt-fifth {
     background: linear-gradient(135deg, rgba(100,181,246,0.15) 0%, rgba(100,181,246,0.05) 100%) !important;
     border-radius: 3px;
 }
 .lt-fifth .lt-marker {
-    display: inline-block;
     background: linear-gradient(135deg, #64b5f6, #1565c0);
     color: #fff !important;
-    font-weight: bold;
-    padding: 0 5px;
-    border-radius: 3px;
-    margin-right: 3px;
-    font-size: 0.9em;
-    min-width: 18px;
-    text-align: center;
 }
 .lt-trajectory-loading { padding: 12px; text-align: center; color: #888; font-size: 0.82em; }
+
+/* Theme Wind tooltip */
+.tw-hover-tooltip {
+    position: fixed; pointer-events: none; z-index: 9999;
+    background: rgba(30,30,40,0.95); border: 1px solid #555;
+    border-radius: 6px; padding: 8px 10px; max-width: 380px;
+    font-size: 0.82em; line-height: 1.4; color: #ccc; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+.tw-tooltip-title { font-weight: bold; color: #ffd700; margin-bottom: 4px; }
+.tw-stock-chip {
+    display: inline-block; padding: 2px 7px; margin: 2px;
+    background: #2a4a7a; color: #c8e6ff; border-radius: 3px;
+    font-size: 0.85em; white-space: nowrap; cursor: pointer;
+}
+.tw-stock-chip.gem { background: #5a3d0a; border: 1px solid #ffc107; color: #ffd700; }
+.tw-stock-chip:hover { background: #3a6a9a; }
+.tw-theme-link {
+    cursor: pointer; border-bottom: 1px dashed #666;
+    white-space: nowrap;
+}
+.tw-theme-link:hover { color: #ffd700; border-bottom-color: #ffd700; }
+@keyframes themeWindSweep {
+    0% { background-position: -200% 0; }
+    100% { background-position: 200% 0; }
+}
+@keyframes themeWindPulse {
+    0%, 100% { box-shadow: inset 0 0 6px 2px rgba(255, 215, 0, 0.5), 0 0 8px 2px rgba(255, 215, 0, 0.3); }
+    50% { box-shadow: inset 0 0 12px 4px rgba(255, 215, 0, 0.8), 0 0 16px 4px rgba(255, 215, 0, 0.5); }
+}
+.lt-trajectory-cell.tw-theme-highlight {
+    background: linear-gradient(90deg,
+        rgba(255,215,0,0.12) 0%,
+        rgba(255,215,0,0.12) 20%,
+        rgba(255,215,0,0.55) 40%,
+        rgba(255,215,0,0.7) 50%,
+        rgba(255,215,0,0.55) 60%,
+        rgba(255,215,0,0.12) 80%,
+        rgba(255,215,0,0.12) 100%
+    ) !important;
+    background-size: 400% 100% !important;
+    border-color: #ffd700 !important;
+    animation: themeWindSweep 1.8s ease-in-out infinite, themeWindPulse 1.2s ease-in-out infinite;
+}
+.tw-section { margin-top: 12px; }
 
 /* Update status bar */
 #updateArea {
@@ -4960,6 +4973,7 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
     </p>
 
     <div class="tabs">
+        <div class="tab" data-tab="themewind" onclick="switchTab('themewind')">🧭 题材风向</div>
         <div class="tab active" data-tab="realtime" onclick="switchTab('realtime')">📡 实时</div>
         <div class="tab" data-tab="alertmon" data-not-simple onclick="switchTab('alertmon')">⚠ 异动跟踪</div>
         <div class="tab" data-tab="npattern" data-not-simple onclick="switchTab('npattern')">N字战法</div>
@@ -4981,6 +4995,9 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 
     <div class="tab-content active" id="tab-realtime">
         <div id="realtimeContainer"><div class="loading">加载实时看板...</div></div>
+    </div>
+    <div class="tab-content" id="tab-themewind">
+        <div id="themeWindContainer"><div class="loading">加载题材风向...</div></div>
     </div>
     <div class="tab-content" id="tab-alertmon">
         <div id="alertmonContainer"></div>
@@ -5394,6 +5411,9 @@ function switchTab(tab) {
     if (tab === 'realtime') {
         if (!_realtimeLoaded) loadRealtime();
     }
+    if (tab === 'themewind') {
+        if (!_themeWindLoaded) loadThemeWind();
+    }
     if (tab === 'npattern') loadNPattern();
     if (tab === 'stats') loadStats();
     if (tab === 'sniper') {
@@ -5455,8 +5475,9 @@ var _icZoomLevel = 100;
 var _icMmZoomLevel = 100;
 var _icTopTagsHtml = null;
 var _icPendingSearch = null;  // set by stock card button, consumed by loadIndustryChain
+var _themeWindLoaded = false;
 
-var _simpleTabIds = ['realtime','sniper','kpltree','kpllevel','kplsearch','stockquery','etf','specialwatch','industrychain','sentiment'];
+var _simpleTabIds = ['realtime','themewind','sniper','kpltree','kpllevel','kplsearch','stockquery','etf','specialwatch','industrychain','sentiment'];
 
 function setTabMode(mode) {
     localStorage.setItem('tabMode', mode);
@@ -11035,6 +11056,60 @@ function manualRefreshRealtimeLadder() {
     }
 }
 
+function loadThemeWind() {
+    var container = document.getElementById('themeWindContainer');
+    container.innerHTML = '<div class="loading">加载题材风向...</div>';
+    Promise.all([
+        _cachedFetch('/api/ladder_trajectory_lianban?n=20'),
+        _cachedFetch('/api/ladder_trajectory?n=20'),
+        _cachedFetch('/api/top_theme_trajectory?n=20'),
+    ]).then(function(results) {
+        var lbTrajectory = results[0];
+        var trajectory = results[1];
+        var topTheme = results[2];
+        var html = '';
+
+        // Section 1: 🔥 连板股涨停原因标签轨迹
+        html += '<div class="rt-section lt-trajectory-section" id="twLtTrajectoryLbSection">';
+        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ff8a65;">\U0001F525 连板股涨停原因标签轨迹 <span class="count-badge">近20日</span></h3>';
+        html += '<div id="twLtTrajectoryLbBody">';
+        if (lbTrajectory && lbTrajectory.dates && lbTrajectory.dates.length > 0) {
+            html += renderLadderLianbanTagTrajectory(lbTrajectory);
+        } else {
+            html += '<div class="lt-trajectory-loading">加载中...</div>';
+        }
+        html += '</div></div>';
+
+        // Section 2: 🌐 涨停原因标签轨迹
+        html += '<div class="rt-section lt-trajectory-section" id="twLtTrajectorySection">';
+        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#4fc3f7;">\U0001F310 涨停原因标签轨迹 <span class="count-badge">近20日</span></h3>';
+        html += '<div id="twLtTrajectoryBody">';
+        if (trajectory && trajectory.dates && trajectory.dates.length > 0) {
+            html += renderLadderTagTrajectory(trajectory);
+        } else {
+            html += '<div class="lt-trajectory-loading">加载中...</div>';
+        }
+        html += '</div></div>';
+
+        // Section 3: 🏆 TOP题材风向（涨停）
+        html += '<div class="rt-section lt-trajectory-section" id="twTopThemeSection">';
+        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ffd700;">\U0001F3C6 TOP题材风向（涨停） <span class="count-badge" id="twTopThemeBadge">近20日</span> <span class="rt-refresh-icon" onclick="manualRefreshThemeWind()" title="刷新">\u21bb</span></h3>';
+        html += '<div id="twTopThemeBody">';
+        if (topTheme && topTheme.dates && topTheme.dates.length > 0) {
+            html += renderTopThemeTrajectory(topTheme);
+        } else {
+            html += '<div class="lt-trajectory-loading">加载中...</div>';
+        }
+        html += '</div></div>';
+
+        container.innerHTML = html;
+        _themeWindLoaded = true;
+    }).catch(function(e) {
+        container.innerHTML = '<div class="error">题材风向加载失败: ' + e.message + '</div>';
+        _themeWindLoaded = true;
+    });
+}
+
 // Manual refresh for trajectory data (both lianban and normal)
 function manualRefreshTrajectory() {
     fetch('/api/ladder_trajectory_lianban?n=20&_t=' + Date.now())
@@ -11065,8 +11140,25 @@ function manualRefreshTrajectory() {
 function reloadKplIndex() {
     fetch('/api/kpl_reload_index?_t=' + Date.now())
         .then(function(r) { return r.json(); })
-        .then(function(d) { manualRefreshTrajectory(); })
+        .then(function(d) {
+            manualRefreshTrajectory();
+            manualRefreshThemeWind();
+        })
         .catch(function(e) { console.error('重载索引失败:', e); });
+}
+
+function manualRefreshThemeWind() {
+    fetch('/api/top_theme_trajectory?n=20&_t=' + Date.now())
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var body = document.getElementById('twTopThemeBody');
+            if (body && data && data.dates && data.dates.length > 0) {
+                body.innerHTML = renderTopThemeTrajectory(data);
+            }
+        })
+        .catch(function(e) {
+            console.error('刷新TOP题材风向失败:', e);
+        });
 }
 
 // 按日期加载历史连板天梯
@@ -11787,6 +11879,148 @@ function renderLadderLianbanTagTrajectory(data) {
     html += '</table></div>';
     return html;
 }
+
+function renderTopThemeTrajectory(data) {
+    if (!data || !data.dates || data.dates.length === 0 || !data.daily_top_themes) {
+        return '<div class="empty" style="padding:15px;color:#666;font-size:0.82em;">暂无数据</div>';
+    }
+    var EXCLUDE_TAGS = ['ST', '并购重组', 'ST摘帽', '实控人变更', '业绩预亏', '风险提示'];
+    function shouldExclude(tag) {
+        for (var ei = 0; ei < EXCLUDE_TAGS.length; ei++) {
+            if (tag.indexOf(EXCLUDE_TAGS[ei]) >= 0) return true;
+        }
+        return false;
+    }
+
+    var dates = data.dates.slice();
+    dates.reverse(); // 新→旧 从左到右
+    var dailyTop = data.daily_top_themes || {};
+
+    // 为每个日期过滤（排除噪声标签），不限制行数
+    var filteredByDate = {};
+    var maxRows = 0;
+    dates.forEach(function(d) {
+        var themes = (dailyTop[d] || []).filter(function(item) {
+            return !shouldExclude(item.tag);
+        });
+        filteredByDate[d] = themes;
+        if (themes.length > maxRows) maxRows = themes.length;
+    });
+
+    var rankMarkers = ['1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19','20'];
+    var html = '<div class="lt-trajectory-wrapper" style="overflow-x:auto;"><table class="lt-trajectory-matrix">';
+
+    // 表头：只有日期列
+    html += '<tr>';
+    dates.forEach(function(d) {
+        html += '<th class="lt-trajectory-col-header" title="' + d + '">' + d.slice(5) + '</th>';
+    });
+    html += '</tr>';
+
+    // 数据行：第 1 行 = 各日期第 1 名题材，第 2 行 = 各日期第 2 名题材...
+    for (var ri = 0; ri < maxRows; ri++) {
+        html += '<tr>';
+        dates.forEach(function(d) {
+            var themes = filteredByDate[d] || [];
+            if (ri < themes.length) {
+                var item = themes[ri];
+                var tag = item.tag || '';
+                var cnt = item.zt_count || 0;
+                var cls = '';
+                if (cnt >= 8) cls = 'lt-first';
+                else if (cnt >= 5) cls = 'lt-second';
+                else if (cnt >= 3) cls = 'lt-third';
+                else if (cnt >= 2) cls = 'lt-fourth';
+                else cls = 'lt-fifth';
+
+                var marker = ri < rankMarkers.length ? rankMarkers[ri] : (ri + 1);
+                var mainBoardStocks = (item.stocks || []).filter(function(s) { return !s.isGemOrStar; }).map(function(s) { return s.name || s.code; });
+                var gemStocks = (item.stocks || []).filter(function(s) { return s.isGemOrStar; }).map(function(s) { return s.name || s.code; });
+                // data-theme 用于 hover 高亮同一题材
+                html += '<td class="lt-trajectory-cell ' + cls + '" style="position:relative;text-align:left;" data-theme="' + (tag||'').replace(/"/g,'&quot;') + '">';
+                html += '<span class="lt-marker">' + marker + '</span>';
+                html += '<span class="tw-theme-link" onclick="event.stopPropagation();switchTab(\\x27kplsearch\\x27);setTimeout(function(){doKplSearch(\\x27' + (tag||'').replace(/'/g,'') + '\\x27)},100)"';
+                html += ' onmouseenter="highlightThemeWind(this,\\x27' + (tag||'').replace(/'/g,'') + '\\x27);showThemeWindTooltip(event,\\x27' + (tag||'').replace(/'/g,'') + '\\x27,\\x27' + d + '\\x27,\\x27' + (mainBoardStocks||[]).join(',').replace(/'/g,'') + '\\x27,\\x27' + (gemStocks||[]).join(',').replace(/'/g,'') + '\\x27,' + cnt + ')"';
+                html += ' onmouseleave="unhighlightThemeWind();hideThemeWindTooltip()"';
+                html += ' title="' + _kplEsc(tag) + ' (' + cnt + '只)">';
+                html += _kplEsc(tag) + ' <span class="lt-count">' + cnt + '</span>';
+                html += '</span></td>';
+            } else {
+                html += '<td class="lt-trajectory-cell-empty">-</td>';
+            }
+        });
+        html += '</tr>';
+    }
+    html += '</table></div>';
+
+    html += '<div id="themeWindTooltip" class="tw-hover-tooltip" style="display:none;"></div>';
+
+    return html;
+}
+
+// hover 高亮同一题材的所有单元格（只高亮同名 td）
+function highlightThemeWind(el, themeName) {
+    // 清除之前的高亮
+    document.querySelectorAll('#twTopThemeBody .lt-trajectory-cell.tw-theme-highlight').forEach(function(td) {
+        td.classList.remove('tw-theme-highlight');
+    });
+    // 只高亮 data-theme 完全匹配的 td
+    document.querySelectorAll('#twTopThemeBody td[data-theme]').forEach(function(td) {
+        if (td.getAttribute('data-theme') === themeName) {
+            td.classList.add('tw-theme-highlight');
+        }
+    });
+}
+
+function unhighlightThemeWind() {
+    document.querySelectorAll('#twTopThemeBody .lt-trajectory-cell.tw-theme-highlight').forEach(function(td) {
+        td.classList.remove('tw-theme-highlight');
+    });
+}
+
+function showThemeWindTooltip(event, tag, date, mainBoardStr, gemStr, count) {
+    var tooltip = document.getElementById('themeWindTooltip');
+    if (!tooltip) return;
+    var mainBoard = mainBoardStr ? mainBoardStr.split(',').filter(function(s) { return s; }) : [];
+    var gem = gemStr ? gemStr.split(',').filter(function(s) { return s; }) : [];
+    var html = '<div class="tw-tooltip-title">' + _kplEsc(tag) + ' \u00b7 ' + date + ' (' + count + '只)</div>';
+    if (mainBoard.length > 0) {
+        html += '<div style="margin:4px 0 2px 0;font-size:0.82em;color:#90caf9;">\u4e3b\u677f (' + mainBoard.length + ')</div>';
+        html += '<div style="display:flex;flex-wrap:wrap;gap:4px;padding:2px 0;">';
+        mainBoard.forEach(function(name) {
+            html += '<span class="tw-stock-chip">' + _kplEsc(name) + '</span>';
+        });
+        html += '</div>';
+    }
+    if (gem.length > 0) {
+        html += '<div style="margin:4px 0 2px 0;font-size:0.82em;color:#ffd700;">\u521b\u4e1a\u677f/\u79d1\u521b\u677f (' + gem.length + ')</div>';
+        html += '<div style="display:flex;flex-wrap:wrap;gap:4px;padding:2px 0;">';
+        gem.forEach(function(name) {
+            html += '<span class="tw-stock-chip gem">' + _kplEsc(name) + '</span>';
+        });
+        html += '</div>';
+    }
+    if (mainBoard.length === 0 && gem.length === 0) {
+        html += '<span style="color:#666;font-size:0.82em;display:block;padding:4px 0;">\u6682\u65e0\u6570\u636e</span>';
+    }
+    tooltip.innerHTML = html;
+    tooltip.style.display = 'block';
+
+    var x = event.clientX + 12;
+    var y = event.clientY + 8;
+    var tw = tooltip.offsetWidth || 300;
+    var th = tooltip.offsetHeight || 200;
+    if (x + tw > window.innerWidth - 10) x = event.clientX - tw - 10;
+    if (y + th > window.innerHeight - 10) y = event.clientY - th - 10;
+    tooltip.style.left = x + 'px';
+    tooltip.style.top = y + 'px';
+}
+
+function hideThemeWindTooltip() {
+    var tooltip = document.getElementById('themeWindTooltip');
+    if (tooltip) tooltip.style.display = 'none';
+}
+
 function toggleRtLadderDetail(detailId, rowId) {
     var detail = document.getElementById(detailId);
     var row = document.getElementById(rowId);
@@ -20472,6 +20706,63 @@ class Handler(BaseHTTPRequestHandler):
                 _set_cache(cache_key, result)
             self._respond_json(result, cors_headers)
 
+        elif path == '/api/top_theme_trajectory':
+            n = int(query.get('n', ['20'])[0])
+            cache_key = 'top_theme_trajectory_' + str(n)
+            result = _get_cached(cache_key, ttl=120)
+            if result is None:
+                _kpl_ensure_loaded()
+                today_ymd = datetime.now().strftime('%Y%m%d')
+                recent = [d for d in _trading_days if d <= today_ymd]
+                recent = recent[-n:] if len(recent) >= n else recent
+                recent_fmt = [d[:4]+'-'+d[4:6]+'-'+d[6:] for d in recent]
+
+                daily_top_themes = {}
+                for d_fmt in recent_fmt:
+                    day_rows = _kpl_rows_by_date.get(d_fmt, [])
+                    theme_map = {}
+                    for r in day_rows:
+                        tag = (r.get('reason_tag', '') or '').strip()
+                        if not tag:
+                            continue
+                        sc = r.get('stock_code', '')
+                        name = r.get('stock_name', '') or ''
+                        if tag not in theme_map:
+                            theme_map[tag] = {'tag': tag, 'zt_count': 0, 'stocks': []}
+                        theme_map[tag]['zt_count'] += 1
+                        is_gem = (sc[:3] in ('300', '301') or sc[:3] in ('688', '689')) if sc else False
+                        theme_map[tag]['stocks'].append({
+                            'code': sc, 'name': name,
+                            'isGemOrStar': is_gem,
+                        })
+                    sorted_themes = sorted(theme_map.values(), key=lambda x: -x['zt_count'])
+                    daily_top_themes[d_fmt] = sorted_themes
+
+                # 盘中补充今日实时数据
+                _inject_freq = {}
+                today_injected = _inject_today_zt_to_trajectory(recent_fmt, _inject_freq)
+                if today_injected:
+                    today_fmt = datetime.now().strftime('%Y-%m-%d')
+                    if today_fmt not in daily_top_themes:
+                        daily_top_themes[today_fmt] = []
+                    theme_map = {item['tag']: item for item in daily_top_themes[today_fmt]}
+                    for code, tag in today_injected.items():
+                        if tag not in theme_map:
+                            theme_map[tag] = {'tag': tag, 'zt_count': 0, 'stocks': []}
+                        theme_map[tag]['zt_count'] += 1
+                        is_gem = (code[:3] in ('300', '301') or code[:3] in ('688', '689'))
+                        theme_map[tag]['stocks'].append({'code': code, 'name': '', 'isGemOrStar': is_gem})
+                    daily_top_themes[today_fmt] = sorted(
+                        theme_map.values(), key=lambda x: -x['zt_count']
+                    )
+
+                result = {
+                    'dates': recent_fmt,
+                    'daily_top_themes': daily_top_themes,
+                }
+                _set_cache(cache_key, result)
+            self._respond_json(result, cors_headers)
+
         elif path == '/api/hot_rank_100':
             result = _get_cached('hot_rank_100', ttl=60)
             if result is None:
@@ -21282,6 +21573,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/kpl_reload_index':
             _kpl_rescan()
             _invalidate_cache(prefix='ladder_trajectory')
+            _invalidate_cache(prefix='top_theme_trajectory')
             _invalidate_cache(prefix='kpl_search:')
             _kpl_search_cache_clear()
             self._respond_json({'ok': True, 'files_count': len(_kpl_day_files)}, cors_headers)

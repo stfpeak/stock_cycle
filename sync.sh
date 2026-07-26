@@ -62,6 +62,8 @@ do_sync() {
         --exclude=".claude/" \
         --exclude="data/analysis_output/" \
         --exclude="data/kline_data/" \
+        --exclude="data/sentiment/" \
+        --exclude="data/sentiment/**" \
         --include="*/" \
         --exclude="*" \
         "$LOCAL_DIR/" "$USER@$HOST:$REMOTE_DIR/"
