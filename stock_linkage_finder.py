@@ -453,13 +453,15 @@ class StockLinkageFinder:
             print(f"获取同花顺热门概念板块Top20失败: {e}")
             return []
 
-    def get_lianban_ladder(self, top_n: int = 30) -> List[Dict]:
+    def get_lianban_ladder(self, top_n: int = 30, date_end: str = None) -> List[Dict]:
         """获取连续涨停天数排行（连板天梯）
 
         从最新交易日往前追溯，计算每只股票的连续涨停天数。
 
         Args:
             top_n: 返回前N只
+            date_end: 截止日期(YYYYMMDD或YYYY-MM-DD)。传入时仅统计该日及之前，
+                      天梯的"最新交易日"取 trade_dates 中 ≤ date_end 的最近一天。
 
         Returns:
             [{code, name, consecutive_lianban, zt_count, concepts}, ...]
@@ -467,7 +469,14 @@ class StockLinkageFinder:
         """
         if not self.trade_dates:
             return []
-        latest_date = self.trade_dates[-1]
+        if date_end:
+            de = str(date_end).replace('-', '')
+            eligible = [d for d in self.trade_dates if d <= de]
+            if not eligible:
+                return []           # date_end 早于全部有涨停的交易日
+            latest_date = eligible[-1]
+        else:
+            latest_date = self.trade_dates[-1]   # 默认行为不变
 
         # 筛选最新交易日有涨停的股票
         candidates = []
@@ -479,12 +488,14 @@ class StockLinkageFinder:
         ladder = []
         for code in candidates:
             zt_dates = sorted(self.all_zt_dates[code])
+            if date_end:
+                zt_dates = [d for d in zt_dates if d <= latest_date]
             if not zt_dates:
                 continue
 
             # 从最新日往前追溯连续涨停（使用完整交易日历，避免gap误判）
             consecutive = 0
-            zt_set = self.all_zt_dates.get(code, set())
+            zt_set = set(zt_dates)
             for d in reversed(self.all_trade_dates):
                 if d not in self.trade_date_set:
                     continue  # 跳过非交易日

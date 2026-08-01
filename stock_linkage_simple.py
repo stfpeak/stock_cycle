@@ -1140,7 +1140,7 @@ def _kpl_search_cache_load(cache_key):
     if not os.path.exists(path): return None
     try:
         entry = json.load(open(path, 'r', encoding='utf-8'))
-        if entry.get('version', 0) < 3:
+        if entry.get('version', 0) < 4:
             return None
         return entry.get('data')
     except:
@@ -1150,7 +1150,7 @@ def _kpl_search_cache_save(cache_key, data):
     os.makedirs(_KPL_SEARCH_CACHE_DIR, exist_ok=True)
     path = os.path.join(_KPL_SEARCH_CACHE_DIR, f"{cache_key}.json")
     try:
-        json.dump({'data': data, 'timestamp': time.time(), 'version': 3},
+        json.dump({'data': data, 'timestamp': time.time(), 'version': 4},
                   open(path, 'w', encoding='utf-8'), ensure_ascii=False)
     except Exception as e:
         print(f"[KPL搜索缓存] 写入失败: {e}")
@@ -1161,6 +1161,79 @@ def _kpl_search_cache_clear():
         for f in glob.glob(os.path.join(_KPL_SEARCH_CACHE_DIR, '*.json')):
             try: os.remove(f)
             except: pass
+
+def _kpl_resolve_latest_zt_date(date_end=None):
+    """返回全市场连板天梯实际使用的'最新交易日'(YYYYMMDD)"""
+    td = getattr(finder, 'trade_dates', None)
+    if not td:
+        return None
+    if date_end:
+        de = str(date_end).replace('-', '')
+        prev = [d for d in td if d <= de]
+        return prev[-1] if prev else None
+    return td[-1]
+
+
+def _kpl_backfill_chain(results, q):
+    """连板链条补齐：为命中 2板/3板 的股票，补齐链条上缺失的日期（首板等），
+    使涨停节奏/龙头接力能看到完整的 首板→2板→3板 晋级过程。
+    只做向后回溯（首板日期早于命中日期），不改动已有记录。
+    返回：补齐后的新列表（在原结果基础上追加 _backfilled 条目，按日期降序）。"""
+    if not results:
+        return results
+    # 已存在 (stock_code, YYYYMMDD) 集合，用于判重
+    existing = set()
+    for r in results:
+        sc = r.get('stock_code', '')
+        rd = (r.get('date', '') or '').replace('-', '')
+        if sc and rd:
+            existing.add((sc, rd))
+    additions = []
+    for r in results:
+        sc = r.get('stock_code', '')
+        rd = (r.get('date', '') or '').replace('-', '')
+        lb = r.get('lianban_computed') or 1
+        if not sc or not rd or lb < 2:
+            continue
+        if r.get('is_strong_rise'):
+            continue
+        name = r.get('stock_name', '') or ''
+        concepts = r.get('concepts', '') or ''
+        reason_tag = r.get('reason_tag', '') or q or ''
+        reason_brief = r.get('reason_brief', '') or ''
+        plate_name = r.get('plate_name', '') or ''
+        reason_detail = r.get('reason_detail', '') or ''
+        pos = lb          # 命中日连板数 = 链条末端
+        curr = rd
+        # 从命中日向前补齐链条：curr(N板) → 前一日(N-1板) → … → 首板(1板)
+        while pos >= 1 and curr:
+            key = (sc, curr)
+            if key not in existing:
+                d_fmt = f"{curr[:4]}-{curr[4:6]}-{curr[6:]}"
+                additions.append({
+                    'stock_code': sc,
+                    'stock_name': name,
+                    'date': d_fmt,
+                    'lianban_computed': pos,
+                    'reason_tag': reason_tag,
+                    'reason_brief': reason_brief,
+                    'plate_name': plate_name,
+                    'concepts': concepts,
+                    'reason_detail': reason_detail,
+                    'lianban_desc': '',
+                    'change_pct': 0,
+                    'is_strong_rise': False,
+                    '_backfilled': True,
+                })
+                existing.add(key)
+            curr = finder._get_lagged_date(curr, -1)
+            pos -= 1
+    if not additions:
+        return results
+    out = list(results) + additions
+    out.sort(key=lambda x: x.get('date', ''), reverse=True)
+    return out
+
 
 def _kpl_full_search(q, date_start, date_end, no_st, strict, gem_extra=True, lianban_filter=None):
     """全量计算KPL搜索，返回完整结果"""
@@ -1206,6 +1279,44 @@ def _kpl_full_search(q, date_start, date_end, no_st, strict, gem_extra=True, lia
                 result['results'].sort(key=lambda x: x.get('date', ''), reverse=True)
                 result['total_hits'] = len(result['results'])
         result['gem_strong_rise'] = strong_rise
+
+    # 全市场连板天梯 TOP10（基于本地K线DB，不受 zt_data 新鲜度影响），供前端"连板TOP3"展示
+    result['top_lianban'] = None
+    try:
+        de_norm = date_end.replace('-', '') if date_end else None
+        ladder = finder.get_lianban_ladder(top_n=10, date_end=de_norm)
+        latest = _kpl_resolve_latest_zt_date(date_end=date_end)
+        if ladder:
+            items = []
+            for it in ladder:
+                code = it.get('code', '')
+                name = it.get('name', '') or ''
+                if not name or name == code:
+                    name = _kpl_stock_index.get(code, {}).get('stock_name', '') or name or code
+                items.append({
+                    'stock_code': code,
+                    'stock_name': name,
+                    'lianban_computed': int(it.get('consecutive_lianban', 1)),
+                    'concepts': '\u3001'.join(it.get('concepts', []) or []),
+                })
+            # date 格式化为 YYYY-MM-DD 供前端标题直接显示
+            latest_fmt = f"{latest[:4]}-{latest[4:6]}-{latest[6:]}" if latest else ''
+            result['top_lianban'] = {'date': latest_fmt, 'items': items}
+    except Exception as e:
+        print(f"[KPL TOP3] 计算失败: {e}")
+
+    # 连板链条补齐：为命中2板/3板的股票补齐链条缺失日期（首板等），让涨停节奏/龙头接力看到完整晋级
+    try:
+        _orig_hits = result.get('total_hits', len(result.get('results', [])))
+        result['results'] = _kpl_backfill_chain(result.get('results', []), q)
+        _kw = result.get('kw_results')
+        if _kw:
+            for _k in list(_kw.keys()):
+                _kw[_k] = _kpl_backfill_chain(_kw[_k], _k)
+        # 命中数保持为关键词匹配数（补齐的链条日不算新命中）
+        result['total_hits'] = _orig_hits
+    except Exception as e:
+        print(f"[KPL 链条补齐] 失败: {e}")
     return result
 
 
@@ -2677,6 +2788,9 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 .stock-block .name { font-weight: 700; margin-bottom: 2px; position: relative; color: #fff; }
 .lb-tag { font-size: 0.65em; padding: 1px 5px; border-radius: 3px; color: #fff; font-weight: 700; display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
 .board-inline { font-size: 0.75em; opacity: 0.7; margin-left: 2px; }
+/* 首板/连板色块内 主板 vs 创业板·科创板 标签颜色区分（实心蓝/金，无灰色底） */
+.merged-section .stock-block .board-inline.board-main { color: #fff; background: #2563eb; border: 1px solid rgba(255,255,255,0.4); border-radius: 3px; padding: 0 4px; opacity: 1; }
+.merged-section .stock-block .board-inline.board-gem { color: #422006; background: #facc15; border: 1px solid rgba(255,255,255,0.4); border-radius: 3px; padding: 0 4px; opacity: 1; }
 .pct-tag { font-size: 0.65em; padding: 1px 5px; border-radius: 3px; color: #fff; font-weight: 700; background: rgba(0,0,0,0.35); }
 /* 首板 - 亮蓝色 */
 .stock-block.lb-1 { background: linear-gradient(135deg, #1a4a8a, #2563eb); border: 1px solid #3b82f6; color: #fff; }
@@ -2701,6 +2815,107 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 .legend .dot.lb-2 { background: linear-gradient(135deg, #92400e, #d97706); }
 .legend .dot.lb-3 { background: linear-gradient(135deg, #991b1b, #dc2626); }
 .legend .dot.lb-0 { background: linear-gradient(135deg, #5B21B6, #7C3AED); }
+
+/* ===== KPL涨停深挖 · 行对齐节奏图（merged-section 内新配色，无绿，黄橙红紫） ===== */
+.merged-section .rhythm-grid { display: block; overflow-x: auto; margin-bottom: 6px; }
+.rg-header-row { display: grid; align-items: center; min-width: max-content; background: #161b22; border: 1px solid #30363d; border-bottom: 2px solid #30363d; border-radius: 8px 8px 0 0; overflow: hidden; }
+.rg-corner { padding: 7px 10px; color: #f0f6fc; font-weight: 700; font-size: 0.82em; background: #1f2937; }
+.rg-date { padding: 7px 0; text-align: center; color: #8b949e; font-size: 0.75em; font-weight: 700; border-left: 1px solid #21262d; white-space: nowrap; display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.rg-date.watch { background: rgba(250,204,21,0.08); }
+.rg-date.high { background: rgba(249,115,22,0.14); }
+.rg-day-badge { font-size: 0.66em; font-weight: 700; line-height: 1.2; padding: 2px 6px; border-radius: 9px; white-space: nowrap; }
+.rg-day-badge.watch { color: #facc15; background: rgba(250,204,21,0.16); border: 1px solid rgba(250,204,21,0.45); }
+.rg-day-badge.high { color: #fff; background: rgba(249,115,22,0.25); border: 1px solid #f97316; }
+.rg-row { display: grid; align-items: center; min-width: max-content; background: #0d1117; border-left: 1px solid #30363d; border-right: 1px solid #30363d; border-bottom: 1px solid #21262d; }
+.rg-row:hover { background: #161b22; }
+.rg-stock-name { display: flex; flex-direction: column; justify-content: center; gap: 1px; padding: 6px 8px; background: #161b22; border-right: 1px solid #30363d; overflow: hidden; min-width: 0; }
+.rg-name { color: #fff; font-weight: 700; font-size: 0.82em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rg-code { color: #6e7681; font-size: 0.7em; }
+.rg-cell { display: flex; align-items: center; justify-content: center; min-width: 96px; padding: 3px 0; }
+.rg-cell.empty { background: rgba(255,255,255,0.015); }
+/* 龙头接力行对齐图：表头接力类型标签 */
+.merged-section .rg-date .rg-relay-note { font-size: 0.72em; font-weight: 700; line-height: 1.2; padding: 1px 7px; border-radius: 9px; white-space: nowrap; }
+.merged-section .rg-relay-note.win { color: #ffd700; background: rgba(255,215,0,0.14); border: 1px solid rgba(255,215,0,0.45); }
+.merged-section .rg-relay-note.switch { color: #ff9800; background: rgba(255,152,0,0.16); border: 1px solid rgba(255,152,0,0.5); }
+.merged-section .rg-relay-note.start { color: #22d3ee; background: rgba(34,211,238,0.14); border: 1px solid rgba(34,211,238,0.45); }
+.merged-section .rg-relay-note.dead { color: #9ca3af; background: rgba(156,163,175,0.12); border: 1px solid rgba(156,163,175,0.35); }
+.merged-section .rg-relay-note.continue { color: #8b949e; background: rgba(139,148,158,0.1); border: 1px solid rgba(139,148,158,0.3); }
+/* 新配色：lb-1黄 / lb-2橙 / lb-3红 / lb-4紫 / lb-5+ 混合渐变+跑马灯 / lb-0 淡紫虚线 */
+.merged-section .stock-block.lb-1 { background: linear-gradient(135deg, #b45309, #facc15); border: 1px solid #facc15; color: #fff; }
+.merged-section .stock-block.lb-2 { background: linear-gradient(135deg, #c2410c, #fb923c); border: 1px solid #fb923c; color: #fff; }
+.merged-section .stock-block.lb-3 { background: linear-gradient(135deg, #b91c1c, #ef4444); border: 1px solid #ef4444; color: #fff; }
+.merged-section .stock-block.lb-4 { background: linear-gradient(135deg, #6b21a8, #a855f7); border: 1px solid #a855f7; color: #fff; }
+.merged-section .stock-block.lb-5 { background: linear-gradient(135deg, #7f1d1d, #fb923c); border: 1px solid #f97316; color: #fff; }
+.merged-section .stock-block.lb-6 { background: linear-gradient(135deg, #9d174d, #f59e0b); border: 1px solid #fbbf24; color: #fff; }
+.merged-section .stock-block.lb-7 { background: linear-gradient(135deg, #6b21a8, #f97316); border: 1px solid #f0abfc; color: #fff; }
+.merged-section .stock-block.lb-8 { background: linear-gradient(135deg, #7e22ce, #fb923c); border: 1px solid #fde047; color: #fff; }
+.merged-section .stock-block.lb-high { background: linear-gradient(135deg, #9f1239, #facc15); border: 1px solid #fde047; color: #fff; }
+/* 5板+：改为边框跑马灯（conic 渐变环旋转），去掉背景扫光 */
+.merged-section .stock-block.lb-5,
+.merged-section .stock-block.lb-6,
+.merged-section .stock-block.lb-7,
+.merged-section .stock-block.lb-8,
+.merged-section .stock-block.lb-high { border: 1px solid transparent; animation: none; background-size: auto; }
+@property --lb-angle { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
+.merged-section .stock-block.lb-5::after,
+.merged-section .stock-block.lb-6::after,
+.merged-section .stock-block.lb-7::after,
+.merged-section .stock-block.lb-8::after,
+.merged-section .stock-block.lb-high::after {
+    content: '';
+    position: absolute;
+    inset: -2px;
+    border-radius: 8px;
+    padding: 2px;
+    background: conic-gradient(from var(--lb-angle), #fb923c, #facc15, #f97316, #fde047, #fb923c);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask-composite: exclude;
+    animation: lb-border-marquee 1.4s linear infinite;
+    pointer-events: none;
+    z-index: 1;
+}
+.merged-section .stock-block.lb-8::after,
+.merged-section .stock-block.lb-high::after { animation-duration: 0.8s; }
+@keyframes lb-border-marquee { from { --lb-angle: 0deg; } to { --lb-angle: 360deg; } }
+.merged-section .stock-block.lb-0 { background: linear-gradient(135deg, #3b0764, #6d28d9); border: 1px dashed #a78bfa; opacity: 0.85; color: #fff; }
+.merged-section .stock-block.lb-0 .pct-tag { background: rgba(0,0,0,0.3); }
+/* 去掉 merged-section 首板/连板色块内 lb-tag 的灰色底，仅保留 主/创 实心色块 */
+.merged-section .stock-block .lb-tag { background: transparent; text-shadow: 0 1px 2px rgba(0,0,0,0.45); }
+.merged-section .stock-block .board-inline { text-shadow: none; }
+/* 新图例（merged-section 内） */
+.merged-section .legend .dot.lb-1 { background: linear-gradient(135deg, #b45309, #facc15); }
+.merged-section .legend .dot.lb-2 { background: linear-gradient(135deg, #c2410c, #fb923c); }
+.merged-section .legend .dot.lb-3 { background: linear-gradient(135deg, #b91c1c, #ef4444); }
+.merged-section .legend .dot.lb-4 { background: linear-gradient(135deg, #6b21a8, #a855f7); }
+.merged-section .legend .dot.lb-5 { background: linear-gradient(135deg, #7f1d1d, #fb923c); }
+.merged-section .legend .dot.lb-high { background: linear-gradient(135deg, #9f1239, #facc15); }
+.merged-section .legend .dot.lb-0 { background: linear-gradient(135deg, #3b0764, #6d28d9); border: 1px dashed #a78bfa; }
+/* 连板TOP3 */
+.top3-section .top3-row { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+.top3-row .stock-block { min-width: 64px; }
+.top3-concepts { display: flex; flex-wrap: wrap; gap: 4px; }
+.top3-concept-chip { background: rgba(0,212,255,0.12); color: #00d4ff; border: 1px solid rgba(0,212,255,0.3); border-radius: 10px; padding: 1px 8px; font-size: 0.75em; cursor: pointer; transition: all 0.15s; }
+.top3-concept-chip:hover { background: rgba(0,212,255,0.25); border-color: #00d4ff; }
+/* 龙头接力 */
+.relay-track { display: flex; align-items: flex-start; gap: 4px; overflow-x: auto; padding-bottom: 8px; }
+.relay-node { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 6px 8px; min-width: 84px; }
+.relay-date { color: #58a6ff; font-size: 0.8em; font-weight: 700; margin-bottom: 6px; }
+.relay-leaders { display: flex; flex-direction: column; gap: 4px; align-items: center; }
+.relay-leaders.empty { color: #484f58; font-size: 0.8em; }
+.relay-leader { cursor: pointer; min-width: 64px; }
+.relay-leaders.relay-restart { margin-top: 5px; padding-top: 4px; border-top: 1px dashed #155e75; }
+/* 断板后再首板：青色实心 + 虚线边框 + 重启标记 */
+.merged-section .relay-leader.restart { background: linear-gradient(135deg, #155e75, #06b6d4); border: 1px dashed #22d3ee; }
+.merged-section .relay-leader.restart .lb-tag { background: transparent; }
+.merged-section .relay-leader.restart .restart-mark { font-size: 0.8em; font-weight: 700; color: #ecfeff; background: rgba(34,211,238,0.28); border-radius: 3px; padding: 0 3px; margin-left: 2px; }
+.relay-note { margin-top: 6px; font-size: 0.72em; color: #8b949e; white-space: nowrap; }
+.relay-arrow { flex: 0 0 auto; align-self: center; display: flex; align-items: center; justify-content: center; color: #6e7681; font-size: 0.72em; padding: 0 2px; min-width: 30px; white-space: nowrap; }
+.relay-arrow.switch { color: #ff9800; font-weight: 700; text-shadow: 0 0 8px rgba(255,152,0,0.6); }
+.relay-arrow.win { color: #ffd700; font-weight: 700; text-shadow: 0 0 8px rgba(255,215,0,0.5); }
+.relay-arrow.start { color: #22d3ee; font-weight: 700; text-shadow: 0 0 8px rgba(34,211,238,0.5); }
+.relay-arrow.dead { color: #9ca3af; font-weight: 700; }
 
 .show-all-btn {
     font-size: 0.78em;
@@ -13082,15 +13297,15 @@ var _dsStockConcept = '';  // deep search concept for API calls
 function _buildRhythmNavList(clickedItem) {
     var grid = clickedItem.closest('.rhythm-grid');
     if (!grid) return [];
-    var items = grid.querySelectorAll('.rhythm-item');
+    // 兼容旧节奏图(.rhythm-item) 与 行对齐节奏图(.rg-row)
+    var items = grid.querySelectorAll('.rhythm-item, .rg-row');
     var list = [];
     items.forEach(function(item) {
+        var name = item.getAttribute('data-stock');
+        if (!name) return;
         var block = item.querySelector('.stock-block');
-        if (block) {
-            var name = item.getAttribute('data-stock');
-            var code = block.getAttribute('data-code');
-            if (name && code) list.push({name: name, code: code});
-        }
+        var code = block ? block.getAttribute('data-code') : '';
+        if (name && code) list.push({name: name, code: code});
     });
     return list;
 }
@@ -13246,106 +13461,156 @@ function scrollToKplStock(name) {
     if (el) el.scrollIntoView({behavior:'smooth', block:'center'});
 }
 
-function _kplRenderRhythmGrid(boardRows, boardSecId) {
-    if (!boardRows || boardRows.length === 0) return '';
-    var dateGroups = {};
-    for (var i = 0; i < boardRows.length; i++) {
-        var r = boardRows[i];
-        var d = r.date || '';
-        if (!d) continue;
-        if (!dateGroups[d]) dateGroups[d] = [];
-        // 去重：同一天同一股票只保留一条（保留连板数更高的）
-        var code = r.stock_code || '';
-        if (code) {
-            var dupIdx = -1;
-            for (var j = 0; j < dateGroups[d].length; j++) {
-                if (dateGroups[d][j].stock_code === code) { dupIdx = j; break; }
-            }
-            if (dupIdx >= 0) {
-                if ((r.lianban_computed || 1) > (dateGroups[d][dupIdx].lianban_computed || 1)) {
-                    dateGroups[d][dupIdx] = r;
-                }
-                continue;
-            }
-        }
-        dateGroups[d].push(r);
-    }
-    // 注入创业板/科创板强涨数据（涨幅>10%但未涨停的交易日）
-    var strongRise = typeof _kplGemStrongRise !== 'undefined' ? _kplGemStrongRise : {};
-    if (Object.keys(strongRise).length > 0) {
-        for (var i = 0; i < boardRows.length; i++) {
-            var r = boardRows[i];
-            var code = r.stock_code || '';
-            var name = r.stock_name || '';
-            if (!code || !name) continue;
-            var srEntries = strongRise[code];
-            if (!srEntries) continue;
-            for (var si = 0; si < srEntries.length; si++) {
-                var sr = srEntries[si];
-                var d = sr.date;
-                if (!d) continue;
-                if (!dateGroups[d]) dateGroups[d] = [];
-                var alreadyExists = false;
-                for (var ei = 0; ei < dateGroups[d].length; ei++) {
-                    if (dateGroups[d][ei].stock_code === code) { alreadyExists = true; break; }
-                }
-                if (!alreadyExists) {
-                    dateGroups[d].push({
-                        stock_name: name,
-                        stock_code: code,
-                        lianban_desc: '',
-                        is_strong_rise: true,
-                        change_pct: sr.change_pct
-                    });
-                }
-            }
+// 行对齐节奏图数据构建：按 (date,code) 去重 + 强涨注入 + 按 code 聚合为行
+function _kplBuildRowGridData(mergedRows) {
+    var dateMap = {};  // date -> {code: row}
+    var allDates = [];
+    var i, j, r, d, code;
+    // 1. 按 (date, code) 去重，保留 lianban_computed 更高者
+    for (i = 0; i < mergedRows.length; i++) {
+        r = mergedRows[i];
+        d = r.date || '';
+        code = r.stock_code || '';
+        if (!d || !code) continue;
+        if (!dateMap[d]) { dateMap[d] = {}; allDates.push(d); }
+        var existing = dateMap[d][code];
+        if (existing) {
+            if ((r.lianban_computed || 1) > (existing.lianban_computed || 1)) dateMap[d][code] = r;
+        } else {
+            dateMap[d][code] = r;
         }
     }
-    var sortedDates = Object.keys(dateGroups).sort().reverse();
-    if (sortedDates.length === 0) return '';
+    // 2. 注入创业板/科创板强涨条目（(date,code) 已存在则跳过）
+    var codeName = {};
+    for (i = 0; i < mergedRows.length; i++) {
+        if (mergedRows[i].stock_code) codeName[mergedRows[i].stock_code] = mergedRows[i].stock_name || '';
+    }
+    var strongRise = (typeof _kplGemStrongRise !== 'undefined') ? _kplGemStrongRise : {};
+    for (code in strongRise) {
+        var srName = codeName[code];
+        if (!srName) continue;
+        var srEntries = strongRise[code];
+        for (j = 0; j < srEntries.length; j++) {
+            var sr = srEntries[j];
+            d = sr.date;
+            if (!d) continue;
+            if (!dateMap[d]) { dateMap[d] = {}; allDates.push(d); }
+            if (dateMap[d][code]) continue;
+            dateMap[d][code] = {
+                stock_name: srName,
+                stock_code: code,
+                lianban_desc: '',
+                lianban_computed: 0,
+                is_strong_rise: true,
+                change_pct: sr.change_pct
+            };
+        }
+    }
+    allDates.sort().reverse();  // 新 → 旧，作列
+    // 3. 按 code 聚合为行对象
+    var stockMap = {};
+    for (i = 0; i < allDates.length; i++) {
+        var day = allDates[i];
+        var cells = dateMap[day];
+        for (code in cells) {
+            var cell = cells[code];
+            if (!stockMap[code]) {
+                stockMap[code] = { code: code, name: cell.stock_name || '', cells: {}, maxBoard: 0, hasChain: false, chainEndDate: '', lastDate: '' };
+            }
+            var st = stockMap[code];
+            st.cells[day] = cell;
+            var lb = cell.lianban_computed || 0;
+            if (lb > st.maxBoard) st.maxBoard = lb;
+            if (lb >= 2) { st.hasChain = true; if (day > st.chainEndDate) st.chainEndDate = day; }
+            if (day > st.lastDate) st.lastDate = day;
+        }
+    }
+    var stockList = [];
+    for (code in stockMap) stockList.push(stockMap[code]);
+    return { dateMap: dateMap, allDates: allDates, stockList: stockList };
+}
 
+// 行排序：hasChain → chainEndDate → maxBoard → name
+function _kplSortRows(stockList) {
+    stockList.sort(function(a, b) {
+        if (a.hasChain !== b.hasChain) return a.hasChain ? -1 : 1;
+        var ae = a.chainEndDate || a.lastDate || '';
+        var be = b.chainEndDate || b.lastDate || '';
+        if (ae !== be) return ae > be ? -1 : 1;
+        if (a.maxBoard !== b.maxBoard) return b.maxBoard - a.maxBoard;
+        return (a.name < b.name) ? -1 : (a.name > b.name ? 1 : 0);
+    });
+    return stockList;
+}
+
+function _kplRenderRhythmGrid(mergedRows, secId) {
+    if (!mergedRows || mergedRows.length === 0) return '';
+    var gd = _kplBuildRowGridData(mergedRows);
+    if (gd.allDates.length === 0) return '';
+    _kplSortRows(gd.stockList);
+    var N = gd.allDates.length;
+    var cols = '110px repeat(' + N + ', 96px)';
     var html = '<div class="rhythm-section">';
-    html += '<div class="rhythm-title">\u6da8\u505c\u8282\u594f</div>';
-    html += '<div class="rhythm-grid" id="kpl-rhythm-grid-' + boardSecId + '">';
-
-    for (var di = 0; di < sortedDates.length; di++) {
-        var dateStr = sortedDates[di];
-        var stocks = dateGroups[dateStr];
-        var displayDate = dateStr.length >= 4 ? dateStr.slice(2) : dateStr;
-        html += '<div class="rhythm-date">';
-        html += '<div class="rhythm-header">' + displayDate + '</div>';
-        html += '<div class="rhythm-content">';
-        for (var si = 0; si < stocks.length; si++) {
-            var stk = stocks[si];
-            var stockName = stk.stock_name || '';
-            var stockCode = stk.stock_code || '';
+    html += '<div class="rhythm-title">\u6da8\u505c\u8282\u594f \u00b7 \u5171 ' + mergedRows.length + ' \u53ea</div>';
+    html += '<div class="rhythm-grid" id="kpl-rhythm-grid-' + secId + '">';
+    // 表头行
+    html += '<div class="rg-header-row" style="grid-template-columns:' + cols + ';">';
+    html += '<div class="rg-corner">\u80a1\u7968</div>';
+    for (var ci = 0; ci < N; ci++) {
+        var dateStr = gd.allDates[ci];
+        // 当日 涨停+大涨 数量：≥4 题材关注日，≥8 题材高潮日
+        var dayCnt = Object.keys(gd.dateMap[dateStr] || {}).length;
+        var markCls = '', markBadge = '';
+        if (dayCnt >= 8) {
+            markCls = ' high';
+            markBadge = '<div class="rg-day-badge high" title="\u9898\u6750\u9ad8\u6f6e\u65e5\uff08\u6da8\u505c+\u5927\u6da8 ' + dayCnt + ' \u53ea\uff09">\u9ad8\u6f6e</div>';
+        } else if (dayCnt >= 4) {
+            markCls = ' watch';
+            markBadge = '<div class="rg-day-badge watch" title="\u9898\u6750\u5173\u6ce8\u65e5\uff08\u6da8\u505c+\u5927\u6da8 ' + dayCnt + ' \u53ea\uff09">\u5173\u6ce8</div>';
+        }
+        html += '<div class="rg-date' + markCls + '">' + markBadge + '<div>' + dateStr.slice(2) + '</div></div>';
+    }
+    html += '</div>';
+    // 每股票一行：同一股票恒在同一水平行
+    for (var si = 0; si < gd.stockList.length; si++) {
+        var st = gd.stockList[si];
+        html += '<div class="rg-row" data-stock="' + (st.name || '').replace(/'/g, '') + '" style="grid-template-columns:' + cols + ';">';
+        html += '<div class="rg-stock-name"><span class="rg-name">' + st.name + '</span><span class="rg-code">' + st.code + '</span></div>';
+        for (var di = 0; di < N; di++) {
+            var day = gd.allDates[di];
+            var cell = st.cells[day];
+            if (!cell) { html += '<div class="rg-cell empty"></div>'; continue; }
             var blockClass, labelHtml;
-            if (stk.is_strong_rise) {
+            if (cell.is_strong_rise) {
                 blockClass = 'lb-0';
-                var pctStr = (stk.change_pct > 0 ? '+' : '') + stk.change_pct + '%';
+                var pctStr = (cell.change_pct > 0 ? '+' : '') + cell.change_pct + '%';
                 labelHtml = '<span class="pct-tag">' + pctStr + '</span>';
             } else {
-                var lianban = (stk.lianban_computed !== undefined) ? stk.lianban_computed : 1;
-                blockClass = 'lb-' + Math.min(lianban, 3);
-                var lbLabel = lianban === 1 ? '\u9996\u677f' : (lianban >= 3 ? '3\u677f+' : lianban + '\u677f');
+                var lb = (cell.lianban_computed !== undefined && cell.lianban_computed > 0) ? cell.lianban_computed : 1;
+                blockClass = lb >= 9 ? 'lb-high' : ('lb-' + Math.max(1, Math.min(lb, 8)));
+                var lbLabel = lb === 1 ? '\u9996\u677f' : lb + '\u677f';
                 var board = '\u4e3b';
-                if (stockCode.indexOf('30') === 0 || stockCode.indexOf('300') === 0 || stockCode.indexOf('301') === 0) board = '\u521b';
-                else if (stockCode.indexOf('68') === 0 || stockCode.indexOf('688') === 0 || stockCode.indexOf('689') === 0) board = '\u79d1';
-                labelHtml = '<span class="lb-tag">' + lbLabel + '<span class="board-inline">' + board + '</span></span>';
+                var boardCls = 'board-main';
+                var sc = cell.stock_code || '';
+                if (sc.indexOf('30') === 0 || sc.indexOf('300') === 0 || sc.indexOf('301') === 0) { board = '\u521b'; boardCls = 'board-gem'; }
+                else if (sc.indexOf('68') === 0 || sc.indexOf('688') === 0 || sc.indexOf('689') === 0) { board = '\u79d1'; boardCls = 'board-gem'; }
+                labelHtml = '<span class="lb-tag">' + lbLabel + '<span class="board-inline ' + boardCls + '">' + board + '</span></span>';
             }
-            html += '<div class="rhythm-item" data-stock="' + (stockName||'').replace(/'/g, '') + '">';
-            html += '<div class="stock-block ' + blockClass + '" data-code="' + stockCode + '">';
-            html += '<span class="name">' + stockName + '</span>';
+            html += '<div class="rg-cell"><div class="stock-block ' + blockClass + '" data-code="' + (cell.stock_code || '') + '">';
+            html += '<span class="name">' + (cell.stock_name || '') + '</span>';
             html += labelHtml;
             html += '</div></div>';
         }
-        html += '</div></div>';
+        html += '</div>';
     }
     html += '</div>';
     html += '<div class="legend">';
     html += '<div class="item"><span class="dot lb-1"></span>\u9996\u677f</div>';
     html += '<div class="item"><span class="dot lb-2"></span>2\u677f</div>';
-    html += '<div class="item"><span class="dot lb-3"></span>3\u677f+</div>';
+    html += '<div class="item"><span class="dot lb-3"></span>3\u677f</div>';
+    html += '<div class="item"><span class="dot lb-4"></span>4\u677f</div>';
+    html += '<div class="item"><span class="dot lb-5"></span>5\u677f+</div>';
+    html += '<div class="item"><span class="dot lb-high"></span>9\u677f+</div>';
     html += '<div class="item"><span class="dot lb-0"></span>\u5f3a\u6da8\u226510%</div>';
     html += '</div>';
     html += '</div>';
@@ -13789,25 +14054,269 @@ function _renderKplBoardSection(boardRows, boardSecId, boardLabel, highlightKw, 
     var stats = _kplComputeStats(boardRows);
     var statsHtml = _kplRenderStats(stats, boardRows.length);
     var tableRows = renderKplSearchTable(boardRows, highlightKw);
-    var klineSecId = secIdPrefix ? secIdPrefix + '-' + boardSecId : boardSecId;
-    var rhythmSecId = klineSecId;
     var h = '';
     h += '<div class="board-section">';
-    // 标题行：变大高亮 + 题材走势/刷新按钮放右侧
+    // 标题行（节奏图已合并到顶部，此处仅标题+统计+表格）
     h += '<div style="display:flex;align-items:center;gap:10px;margin:12px 0 8px;">';
     h += '<div style="font-weight:bold;font-size:16px;color:#58a6ff;text-shadow:0 0 8px rgba(88,166,255,0.3);">\u3010' + boardLabel + '\u3011\u5171 ' + boardRows.length + ' \u53ea</div>';
-    h += '<div style="display:flex;gap:6px;margin-left:auto;">';
-    h += '<button class="concept-btn" onclick="toggleKplKlines(\\x27' + klineSecId + '\\x27)">\u9898\u6750\u8d70\u52bf</button>';
-    h += '<button class="concept-btn" onclick="refreshKplKlines(\\x27' + klineSecId + '\\x27)" title="\u5237\u65b0K\u7ebf\u56fe">\u27f3</button>';
-    h += '</div>';
     h += '</div>';
     h += statsHtml;
-    // 涨停节奏网格
-    h += _kplRenderRhythmGrid(boardRows, rhythmSecId);
-    h += '<div id="kpl-kline-wrap-' + klineSecId + '" class="concept-kline-wrap" style="max-height:0;overflow:hidden"></div>';
     h += '<div style="overflow-x:auto;">';
     h += tableRows;
     h += '</div>';
+    h += '</div>';
+    return h;
+}
+
+// 最新交易日连板TOP3（无连板则沿日期倒序向下找）
+function _kplComputeTop3(mergedRows) {
+    if (!mergedRows || mergedRows.length === 0) return [];
+    var dates = {};
+    for (var i = 0; i < mergedRows.length; i++) {
+        var d = mergedRows[i].date || '';
+        if (d) dates[d] = true;
+    }
+    var sortedDates = Object.keys(dates).sort().reverse();
+    var pick = [];
+    for (var di = 0; di < sortedDates.length && pick.length === 0; di++) {
+        var day = sortedDates[di];
+        var byCode = {};
+        for (var i = 0; i < mergedRows.length; i++) {
+            var r = mergedRows[i];
+            if (r.date !== day) continue;
+            var lb = r.lianban_computed || 0;
+            if (lb < 2) continue;
+            var code = r.stock_code || '';
+            if (code && (!byCode[code] || lb > (byCode[code].lianban_computed || 0))) byCode[code] = r;
+        }
+        var arr = [];
+        for (var c in byCode) arr.push(byCode[c]);
+        arr.sort(function(a, b) { return (b.lianban_computed || 0) - (a.lianban_computed || 0); });
+        pick = arr.slice(0, 3);
+    }
+    return pick;
+}
+
+function _kplRenderTop3(mergedRows, topLianban) {
+    if (!mergedRows || mergedRows.length === 0) return '';
+    var top3, latest = '';
+    var useMarket = topLianban && Array.isArray(topLianban.items);
+    if (useMarket) {
+        top3 = topLianban.items.slice(0, 3);         // 全市场 TOP3（服务端已按连板降序）
+        latest = topLianban.date || '';
+    } else {
+        top3 = _kplComputeTop3(mergedRows);          // 回退：板块内原逻辑
+    }
+    if (!latest) {                                   // 标题日期兜底
+        for (var i = 0; i < mergedRows.length; i++) {
+            var d = mergedRows[i].date || '';
+            if (d > latest) latest = d;
+        }
+    }
+    var html = '<div class="rhythm-section top3-section">';
+    html += '<div class="rhythm-title">\u8fde\u677fTOP3 \u00b7 ' + latest + '</div>';
+    if (top3.length === 0) {
+        html += '<div style="color:#888;font-size:0.9em;padding:6px 0;">\u6700\u65b0\u4ea4\u6613\u65e5\u65e0\u8fde\u677f</div>';
+    } else {
+        for (var i = 0; i < top3.length; i++) {
+            var r = top3[i];
+            var lb = r.lianban_computed || 1;
+            var blockClass = lb >= 9 ? 'lb-high' : ('lb-' + Math.max(1, Math.min(lb, 8)));
+            html += '<div class="top3-row">';
+            html += '<span class="stock-block ' + blockClass + '" data-code="' + (r.stock_code || '') + '"><span class="name">' + (r.stock_name || '') + '</span><span class="lb-tag">' + lb + '\u677f</span></span>';
+            html += '<div class="top3-concepts">';
+            var concepts = r.concepts || '';
+            var parts = concepts.split('\u3001');
+            for (var c = 0; c < parts.length; c++) {
+                var cp = parts[c].trim();
+                if (cp) html += '<span class="top3-concept-chip" onclick="doKplSearch(\\x27' + cp.replace(/'/g, '') + '\\x27)">' + cp + '</span> ';
+            }
+            html += '</div>';
+            html += '</div>';
+        }
+    }
+    html += '</div>';
+    return html;
+}
+
+// 龙头接力：按日期旧→新，取每日最高板（≥2）为 leaders，判定交接类型
+function _kplComputeRelay(rowGridData) {
+    if (!rowGridData || !rowGridData.allDates || rowGridData.allDates.length === 0) return [];
+    var datesAsc = rowGridData.allDates.slice().sort();
+    // 预扫描：网格内达到2板及以上的股票 → 其整条链条（含首板日）都参与接力展示，
+    // 这样能看到 首板→2板→3板 谁晋级谁没有；孤立的单日首板不当作龙头，避免噪声。
+    var chainStocks = {};
+    var cellsByDate = {};
+    var stockFirstDate = {};   // 每只股票在网格中的最早日期(YYYYMMDD)，用于识别"断板后再首板"
+    for (var pi = 0; pi < datesAsc.length; pi++) {
+        var pDay = datesAsc[pi];
+        var pCells = rowGridData.dateMap[pDay] || {};
+        cellsByDate[pDay] = pCells;
+        for (var pCode in pCells) {
+            var pc = pCells[pCode];
+            if (pc.is_strong_rise) continue;
+            if (!stockFirstDate[pCode] || pDay < stockFirstDate[pCode]) stockFirstDate[pCode] = pDay;
+            if ((pc.lianban_computed || 1) >= 2) chainStocks[pCode] = true;
+        }
+    }
+    var steps = [];
+    var prev = null;   // prev 记录"龙头"(当日最高板)的交接状态，用于类型判定
+    for (var i = 0; i < datesAsc.length; i++) {
+        var date = datesAsc[i];
+        var dayCells = cellsByDate[date];
+        var allLeaders = [];   // 当日展示：所有 2板+ 链条股（含其首板日），不遗漏
+        var leaders = [];      // 龙头：当日最高板股，仅用于类型判定
+        var maxLb = 0;
+        for (var code in dayCells) {
+            var cell = dayCells[code];
+            if (cell.is_strong_rise) continue;
+            if (!chainStocks[code]) continue;   // 仅2板及以上才能进龙头接力，孤立首板不算
+            var lb = cell.lianban_computed || 1;
+            // 断板后再首板：当日为1板(首板)但该股在网格中已有更早涨停记录 → 重新启动
+            var isRestart = (lb === 1) && stockFirstDate[code] && date > stockFirstDate[code];
+            allLeaders.push({code: code, cell: cell, restart: isRestart});
+            if (lb > maxLb) { maxLb = lb; leaders = [{code: code, cell: cell}]; }
+            else if (lb === maxLb) { leaders.push({code: code, cell: cell}); }
+        }
+        if (maxLb < 1) { leaders = []; maxLb = 0; }
+        var type;
+        if (!prev && leaders.length) {
+            type = 'start';       // 点火
+        } else if (prev && !leaders.length) {
+            type = 'dead';        // 退潮
+        } else if (prev && leaders.length) {
+            var prevKeys = prev.keys;
+            var curKeys = leaders.map(function(l) { return l.code; }).sort().join(',');
+            var curArr = curKeys.split(',');
+            var isSubset = curArr.length > 0 && curArr.every(function(c) { return prevKeys.split(',').indexOf(c) >= 0; });
+            if (prevKeys === curKeys) {
+                // 同股连任：若连板数升高（首板→2板→3板）判为晋级，否则连任
+                type = (maxLb > prev.maxLb) ? 'win' : 'continue';
+            } else if (isSubset && maxLb > prev.maxLb) {
+                type = 'win';       // 晋级
+            } else if (leaders.some(function(l) { return prevKeys.split(',').indexOf(l.code) < 0; })) {
+                type = 'switch';    // 龙头切换
+            } else {
+                type = 'continue';
+            }
+        } else {
+            type = 'continue';
+        }
+        steps.push({date: date, leaders: allLeaders, maxLb: maxLb, type: type});
+        prev = leaders.length ? {keys: leaders.map(function(l) { return l.code; }).sort().join(','), maxLb: maxLb} : null;
+    }
+    return steps;
+}
+
+function _kplRelayTypeText(t) {
+    if (t === 'start') return '\u70b9\u706b';
+    if (t === 'dead') return '\u9000\u6f6e';
+    if (t === 'win') return '\u664b\u7ea7';
+    if (t === 'switch') return '\u9f99\u5934\u5207\u6362';
+    return '\u8fde\u4efb';
+}
+
+function _kplRelayArrowText(t) {
+    if (t === 'switch') return '\u65b0\u9f99\u5934';
+    if (t === 'win') return '\u664b\u7ea7';
+    if (t === 'start') return '\u70b9\u706b';
+    if (t === 'dead') return '\u9000\u6f6e';
+    return '\u2014';
+}
+
+function _kplRenderLeaderRelay(rowGridData) {
+    if (!rowGridData || !rowGridData.allDates || rowGridData.allDates.length === 0) return '';
+    var steps = _kplComputeRelay(rowGridData);
+    // 只保留有龙头的日期 + 退潮日（空日无信息，节省横向空间）
+    var kept = [];
+    for (var i = 0; i < steps.length; i++) {
+        var st = steps[i];
+        if (st.leaders.length > 0 || st.type === 'dead') kept.push(st);
+    }
+    if (kept.length === 0) return '';
+    // 聚合每只股票：code -> {name, maxLb, cells:{date:leader}}，同一股票恒在同一水平行
+    var stkMap = {};
+    for (var i = 0; i < kept.length; i++) {
+        var st = kept[i];
+        for (var j = 0; j < st.leaders.length; j++) {
+            var ld = st.leaders[j];
+            var code = ld.code;
+            if (!stkMap[code]) stkMap[code] = {code: code, name: ld.cell.stock_name || '', maxLb: 0, cells: {}};
+            var so = stkMap[code];
+            var lb = ld.cell.lianban_computed || 1;
+            if (lb > so.maxLb) so.maxLb = lb;
+            so.cells[st.date] = ld;
+        }
+    }
+    var stkList = [];
+    for (var code in stkMap) stkList.push(stkMap[code]);
+    stkList.sort(function(a, b) {
+        if (a.maxLb !== b.maxLb) return b.maxLb - a.maxLb;
+        return (a.name < b.name) ? -1 : (a.name > b.name ? 1 : 0);
+    });
+    var N = kept.length;
+    var cols = '110px repeat(' + N + ', 96px)';
+    var html = '<div class="rhythm-section">';
+    html += '<div class="rhythm-title">\u9f99\u5934\u63a5\u529b <span style="font-weight:400;color:#8b949e;font-size:0.76em;">\u00b7 \u540c\u80a1\u540c\u884c ' + stkList.length + ' \u53ea</span></div>';
+    html += '<div class="rhythm-grid relay-grid" id="kpl-relay-grid">';
+    // 表头行：日期 + 当日接力类型（点火/晋级/龙头切换/连任/退潮）
+    html += '<div class="rg-header-row" style="grid-template-columns:' + cols + ';">';
+    html += '<div class="rg-corner">\u80a1\u7968</div>';
+    for (var ci = 0; ci < N; ci++) {
+        var st = kept[ci];
+        var noteCls = '';
+        if (st.type === 'switch') noteCls = ' switch';
+        else if (st.type === 'win') noteCls = ' win';
+        else if (st.type === 'start') noteCls = ' start';
+        else if (st.type === 'dead') noteCls = ' dead';
+        else noteCls = ' continue';
+        html += '<div class="rg-date"><div class="rg-relay-note' + noteCls + '">' + _kplRelayTypeText(st.type) + '</div><div>' + st.date.slice(2) + '</div></div>';
+    }
+    html += '</div>';
+    // 每股票一行：同一股票恒在同一水平行，跨日链一目了然
+    for (var si = 0; si < stkList.length; si++) {
+        var so = stkList[si];
+        html += '<div class="rg-row" data-stock="' + (so.name || '').replace(/'/g, '') + '" style="grid-template-columns:' + cols + ';">';
+        html += '<div class="rg-stock-name"><span class="rg-name">' + so.name + '</span><span class="rg-code">' + so.code + '</span></div>';
+        for (var di = 0; di < N; di++) {
+            var day = kept[di].date;
+            var ld = so.cells[day];
+            if (!ld) { html += '<div class="rg-cell empty"></div>'; continue; }
+            var lb = ld.cell.lianban_computed || 1;
+            var blockClass = lb >= 9 ? 'lb-high' : ('lb-' + Math.max(1, Math.min(lb, 8)));
+            var lbLabel = (lb === 1) ? '\u9996\u677f' : lb + '\u677f';
+            // 断板后再首板：青色 + 虚线边框 + 重启标记（颜色保留，位置同行）
+            var restartCls = ld.restart ? ' restart' : '';
+            html += '<div class="rg-cell"><div class="stock-block ' + blockClass + restartCls + ' relay-leader" data-code="' + ld.code + '" data-name="' + (ld.cell.stock_name || '').replace(/'/g, '') + '" title="' + (ld.restart ? '\u65ad\u677f\u540e\u518d\u9996\u677f\uff08\u91cd\u542f\uff09' : lb + '\u677f') + '">';
+            html += '<span class="name">' + (ld.cell.stock_name || '') + '</span>';
+            html += '<span class="lb-tag">' + lbLabel + (ld.restart ? '<span class="restart-mark">\u91cd\u542f</span>' : '') + '</span>';
+            html += '</div></div>';
+        }
+        html += '</div>';
+    }
+    html += '</div>';
+    html += '</div>';
+    return html;
+}
+
+// 合并区块：唯一题材走势按钮 + TOP3 + 行对齐节奏图 + 龙头接力 + 合并K线
+function _renderKplMergedSection(mergedRows, mergedSecId, kw, topLianban) {
+    if (!mergedRows || mergedRows.length === 0) return '';
+    _kplSectionHits[mergedSecId] = mergedRows;
+    var h = '';
+    h += '<div class="board-section merged-section">';
+    h += '<div style="display:flex;align-items:center;gap:10px;margin:12px 0 8px;">';
+    h += '<div style="font-weight:bold;font-size:16px;color:#58a6ff;text-shadow:0 0 8px rgba(88,166,255,0.3);">\u3010\u6da8\u505c\u8282\u594f \u00b7 \u5171 ' + mergedRows.length + ' \u53ea\u3011</div>';
+    h += '<div style="display:flex;gap:6px;margin-left:auto;">';
+    h += '<button class="concept-btn" onclick="toggleKplKlines(\\x27' + mergedSecId + '\\x27)">\u9898\u6750\u8d70\u52bf</button>';
+    h += '<button class="concept-btn" onclick="refreshKplKlines(\\x27' + mergedSecId + '\\x27)" title="\u5237\u65b0K\u7ebf\u56fe">\u27f3</button>';
+    h += '</div>';
+    h += '</div>';
+    h += _kplRenderTop3(mergedRows, topLianban);      // ① TOP3（全市场）
+    var gd = _kplBuildRowGridData(mergedRows);
+    h += _kplRenderLeaderRelay(gd);                   // ② 龙头接力（上移）
+    h += _kplRenderRhythmGrid(mergedRows, mergedSecId); // ③ 涨停节奏
+    h += '<div id="kpl-kline-wrap-' + mergedSecId + '" class="concept-kline-wrap" style="max-height:0;overflow:hidden"></div>';
     h += '</div>';
     return h;
 }
@@ -13822,6 +14331,7 @@ function renderFullKplSearch(data, rawQuery) {
     _kplSearchHits = results;
     _kplSectionHits = {};
     _kplGemStrongRise = data.gem_strong_rise || {};
+    var topLianban = data.top_lianban || null;
 
     var html = '<div class="ds-result-count">\u5171 ' + totalHits + ' \u6761\u7ed3\u679c</div>';
 
@@ -13836,6 +14346,10 @@ function renderFullKplSearch(data, rawQuery) {
             html += '<div class="or-section">';
             html += '<div class="or-section-title">"' + highlightText(kw, kw) + '" \u2014 \u5171 ' + kwRows.length + ' \u6761</div>';
             var boards = _kplSplitByBoard(kwRows);
+            // 合并区块：主板+创业板/科创板（+其他）
+            var mergedRows = boards.main_board.concat(boards.gem_star, boards.other);
+            var mergedSecId = secIdPrefix + '-merged';
+            html += _renderKplMergedSection(mergedRows, mergedSecId, kw, topLianban);
             var boardIds = ['main_board', 'gem_star', 'other'];
             for (var b = 0; b < boardIds.length; b++) {
                 var bid = boardIds[b];
@@ -13848,6 +14362,8 @@ function renderFullKplSearch(data, rawQuery) {
         }
     } else {
         var boards = _kplSplitByBoard(results);
+        var mergedRows = boards.main_board.concat(boards.gem_star, boards.other);
+        html += _renderKplMergedSection(mergedRows, 'merged', rawQuery, topLianban);
         var boardIds = ['main_board', 'gem_star', 'other'];
         for (var b = 0; b < boardIds.length; b++) {
             var bid = boardIds[b];
@@ -13857,14 +14373,14 @@ function renderFullKplSearch(data, rawQuery) {
     }
 
     document.getElementById('kplSearchResult').innerHTML = html;
-    // 涨停节奏网格hover高亮
+    // 行对齐节奏图：hover整行高亮 + 点击弹窗；龙头接力色块点击弹窗
     setTimeout(function() {
         document.querySelectorAll('.rhythm-grid[id^="kpl-rhythm-grid-"]').forEach(function(grid) {
-            grid.querySelectorAll('.rhythm-item').forEach(function(item) {
-                item.addEventListener('mouseenter', function() {
+            grid.querySelectorAll('.rg-row[data-stock]').forEach(function(row) {
+                row.addEventListener('mouseenter', function() {
                     var stockName = this.getAttribute('data-stock');
                     if (!stockName) return;
-                    grid.querySelectorAll('.rhythm-item').forEach(function(other) {
+                    grid.querySelectorAll('.rg-row[data-stock]').forEach(function(other) {
                         var blocks = other.querySelectorAll('.stock-block');
                         if (other.getAttribute('data-stock') === stockName) {
                             blocks.forEach(function(b) { b.classList.add('highlighted'); });
@@ -13873,19 +14389,18 @@ function renderFullKplSearch(data, rawQuery) {
                         }
                     });
                 });
-                item.addEventListener('mouseleave', function() {
-                    grid.querySelectorAll('.rhythm-item .stock-block').forEach(function(b) {
+                row.addEventListener('mouseleave', function() {
+                    grid.querySelectorAll('.rg-row .stock-block').forEach(function(b) {
                         b.classList.remove('highlighted');
                     });
                 });
-                var block = item.querySelector('.stock-block');
-                if (block) {
+                row.querySelectorAll('.stock-block').forEach(function(block) {
                     block.addEventListener('click', function(e) {
                         e.stopPropagation();
-                        var stockName = item.getAttribute('data-stock');
+                        var stockName = row.getAttribute('data-stock');
                         var stockCode = this.getAttribute('data-code');
                         if (stockName && stockCode) {
-                            var navList = _buildRhythmNavList(item);
+                            var navList = _buildRhythmNavList(this);
                             var navIdx = -1;
                             for (var i = 0; i < navList.length; i++) {
                                 if (navList[i].code === stockCode) { navIdx = i; break; }
@@ -13893,7 +14408,29 @@ function renderFullKplSearch(data, rawQuery) {
                             openDsStockFromRhythm(stockName, stockCode, '', navList, navIdx);
                         }
                     });
-                }
+                });
+            });
+        });
+        document.querySelectorAll('.relay-grid').forEach(function(track) {
+            track.querySelectorAll('.relay-leader').forEach(function(blk) {
+                blk.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    var name = this.getAttribute('data-name') || '';
+                    var code = this.getAttribute('data-code') || '';
+                    if (!name || !code) return;
+                    var leaders = track.querySelectorAll('.relay-leader');
+                    var list = [];
+                    var idx = -1;
+                    leaders.forEach(function(l) {
+                        var n = l.getAttribute('data-name') || '';
+                        var c = l.getAttribute('data-code') || '';
+                        if (n && c) {
+                            list.push({name: n, code: c});
+                            if (c === code && idx < 0) idx = list.length - 1;
+                        }
+                    });
+                    openDsStockFromRhythm(name, code, '', list, idx);
+                });
             });
         });
     }, 50);
