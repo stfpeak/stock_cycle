@@ -1578,6 +1578,587 @@ def _build_theme_structure_tree():
     return {'date': trade_date_fmt, 'fallback': used_ladder_fallback, 'trees': trees}
 
 
+# ===== 复盘总结和交易计划（题材风向 Section 5）=====
+_ZT_LADDER_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'zt_ladder_cache')
+# 主线标签 → ETF 名关键词（用于关联 ETF 过滤）。键与 reason_tag 拆分后的标签匹配
+_REVIEW_ETF_TAG_KEYWORDS = {
+    '算力': ['算力', '云计算', 'AI', '服务器', '光模块'],
+    'AI应用': ['AI', '人工智能', '软件', '计算机', '大数据'],
+    'AI视频': ['AI', '传媒', '游戏'],
+    'AI营销': ['AI', '传媒', '数字'],
+    '芯片': ['芯片', '半导体', '集成电路'],
+    '半导体': ['半导体', '芯片', '集成电路'],
+    '机器人': ['机器人', '人工智能'],
+    '机器人概念': ['机器人', '人工智能'],
+    '低空经济': ['低空', '无人机', '航天'],
+    '军工': ['军工', '国防', '航天'],
+    '新能源': ['新能源', '光伏', '锂电', '电池', '储能'],
+    '锂电池': ['电池', '锂电', '新能源'],
+    '光伏': ['光伏', '新能源', '电力'],
+    '通信': ['通信', '5G', '光模块'],
+    '智能驾驶': ['智能驾驶', '汽车'],
+    '无人驾驶': ['智能驾驶', '汽车'],
+    '存储': ['存储', '半导体'],
+    '数据要素': ['数据', '大数据', '软件'],
+    '算力租赁': ['算力', '云计算', 'AI'],
+}
+
+
+def _kpl_board_of_code(code):
+    """按股票代码前缀判定板块：创(30)/科(68)/主。返回 '创'/'科'/'主'"""
+    if not code:
+        return '主'
+    if code[:3] in ('300', '301') or code[:2] == '30':
+        return '创'
+    if code[:3] in ('688', '689') or code[:2] == '68':
+        return '科'
+    return '主'
+
+
+def _get_zt_ladder(date_fmt):
+    """get_zttt 封装 + 文件缓存。date_fmt: YYYY-MM-DD。
+    缓存：历史日 24h、当天 60s（当天数据盘中可变）；失败落盘空条目防击穿。"""
+    import levistock.stock.stock_fupanla_kph as _lk_zttt
+    try:
+        os.makedirs(_ZT_LADDER_CACHE_DIR, exist_ok=True)
+    except Exception:
+        pass
+    cache_path = os.path.join(_ZT_LADDER_CACHE_DIR, date_fmt.replace('-', '') + '.json')
+    today_fmt = datetime.now().strftime('%Y-%m-%d')
+    ttl = 60 if date_fmt == today_fmt else 86400
+    if os.path.exists(cache_path):
+        try:
+            if time.time() - os.path.getmtime(cache_path) < ttl:
+                return json.load(open(cache_path, 'r', encoding='utf-8'))
+        except Exception:
+            pass
+    try:
+        data = _lk_zttt.get_zttt(date=date_fmt) or {}
+        try:
+            with open(cache_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False)
+        except Exception:
+            pass
+        return data
+    except Exception as e:
+        print(f"[复盘ZT天梯] {date_fmt} 获取失败: {e}")
+        try:
+            with open(cache_path, 'w', encoding='utf-8') as f:
+                json.dump({'StockList': [], 'Date': date_fmt, 'errcode': 1}, f, ensure_ascii=False)
+        except Exception:
+            pass
+        return {'StockList': [], 'Date': date_fmt, 'errcode': 1}
+
+
+def _build_zt_ladder_evolution(window_dates):
+    """板块涨停天梯演绎：逐日拉 get_zttt，按 zs_name 聚合每板块涨停数/最高连板/龙头。
+    返回 {dates, sectors:[{sector,total_zt,cells:{date:{zt_count,max_lianban,leader_name,leader_lianban}}}], missing:{date:原因}}"""
+    sectors = {}
+    missing = {}
+    for d in window_dates:   # 升序（旧→新）
+        data = _get_zt_ladder(d)
+        sl = data.get('StockList', []) or []
+        if not sl:
+            if data.get('errcode'):
+                missing[d] = '获取失败'
+            continue
+        day_cells = {}
+        for row in sl:
+            if len(row) < 6:
+                continue
+            code, name = str(row[0]), str(row[1])
+            try:
+                lb = int(row[2] or 0)
+            except (ValueError, TypeError):
+                lb = 0
+            zs_name = str(row[5] or '未知')
+            cell = day_cells.setdefault(zs_name, {'zt_count': 0, 'max_lianban': 0, 'leader_name': '', 'leader_lianban': 0})
+            cell['zt_count'] += 1
+            if lb > cell['max_lianban']:
+                cell['max_lianban'] = lb
+                cell['leader_name'] = name
+                cell['leader_lianban'] = lb
+        for zs, cell in day_cells.items():
+            s = sectors.setdefault(zs, {'sector': zs, 'total_zt': 0, 'cells': {}})
+            s['total_zt'] += cell['zt_count']
+            s['cells'][d] = cell
+    sorted_sectors = sorted(sectors.values(), key=lambda x: -x['total_zt'])[:12]
+    return {'dates': window_dates, 'sectors': sorted_sectors, 'missing': missing}
+
+
+def _review_tag_day_index(window_dates):
+    """近10日标签日聚合（主线识别数据源，口径与轨迹图一致：split-tag 双计数可接受）。
+    返回 {day_count:{tag:{date:涨停数}}, day_stock:{tag:{date:{code:stock}}}}，stock 含 code/name/lianban/reason_brief/concepts/isGemOrStar/board"""
+    day_count = {}
+    day_stock = {}
+    for d in window_dates:
+        for r in _kpl_rows_by_date.get(d, []):
+            name = (r.get('stock_name', '') or '').strip()
+            if name.startswith('*ST') or name.startswith('ST') or name.startswith('S') or '退' in name:
+                continue
+            tag = (r.get('reason_tag', '') or '').strip()
+            if not tag or tag in SNIPER_EXCLUDE_TAGS:
+                continue
+            tags = _split_reason_tag(tag, r.get('reason_brief', '') or '')
+            tags = [t for t in tags if t and t != '未分类' and t not in SNIPER_EXCLUDE_TAGS
+                    and not (t.startswith('ST') or t == '退市' or '退' in t)]
+            if not tags:
+                continue
+            code = r.get('stock_code', '') or ''
+            sc_lb = _kpl_compute_lianban(code, d) if code else 1
+            is_gem = (code[:3] in ('300', '301') or code[:3] in ('688', '689')) if code else False
+            stock = {
+                'code': code,
+                'name': name,
+                'lianban': sc_lb,
+                'reason_brief': (r.get('reason_brief', '') or ''),
+                'concepts': (r.get('concepts', '') or ''),
+                'isGemOrStar': is_gem,
+                'board': _kpl_board_of_code(code),
+            }
+            for t in tags:
+                day_count.setdefault(t, {}).setdefault(d, 0)
+                day_count[t][d] += 1
+                day_stock.setdefault(t, {}).setdefault(d, {})[code] = stock
+    return {'day_count': day_count, 'day_stock': day_stock}
+
+
+def _review_build_market_leader(resolved_ymd):
+    """今日连板高度榜：finder.get_lianban_ladder 取前5只最高连板股（K线DB口径，不受泛标签排除影响）。
+    含 reason_tag/reason_brief（来自 KPL 最新记录，可为空）。resolved_ymd: YYYYMMDD"""
+    try:
+        ladder = finder.get_lianban_ladder(top_n=10, date_end=resolved_ymd)
+    except Exception as e:
+        print(f"[复盘龙头] 天梯失败: {e}")
+        return None
+    if not ladder:
+        return None
+    leaders = []
+    for it in ladder:
+        lb = it.get('consecutive_lianban', 0)
+        if lb < 2:
+            continue
+        code = it.get('code', '')
+        name = it.get('name', '') or code
+        if not name or name == code:
+            name = _kpl_stock_index.get(code, {}).get('stock_name', '') or name or code
+        lt = _kpl_stock_latest_tag.get(code, {})
+        leaders.append({
+            'code': code,
+            'name': name,
+            'lianban': lb,
+            'reason_tag': lt.get('tag', '') or '',
+            'reason_brief': lt.get('reason_brief', '') or '',
+            'isGemOrStar': (code[:3] in ('300', '301') or code[:3] in ('688', '689')),
+            'board': _kpl_board_of_code(code),
+        })
+        if len(leaders) >= 5:
+            break
+    if not leaders:
+        return {'lianban': 0, 'leaders': []}
+    return {'lianban': leaders[0]['lianban'], 'leaders': leaders}
+
+
+def _build_line_evolution(day_index, tag, window_dates):
+    """该主线近10日连板演绎：{date, zt_count, max_lianban, leader_name}"""
+    day_stock = day_index['day_stock']
+    evo = []
+    for d in window_dates:
+        stocks = day_stock.get(tag, {}).get(d, {})
+        zt_count = len(stocks)
+        if zt_count == 0:
+            evo.append({'date': d, 'zt_count': 0, 'max_lianban': 0, 'leader_name': ''})
+            continue
+        max_lb = max((s.get('lianban') or 1) for s in stocks.values())
+        leader = None
+        for s in stocks.values():
+            if (s.get('lianban') or 1) == max_lb:
+                leader = s
+                break
+        evo.append({'date': d, 'zt_count': zt_count, 'max_lianban': max_lb,
+                    'leader_name': leader['name'] if leader else ''})
+    return evo
+
+
+def _review_build_plan(line, leaders, relay_stocks, etfs):
+    """交易计划结构化建议。line 含 status/peak_10d 等。
+    not_high → 预期管理板块高潮（龙头晋级/创科套利/ETF埋伏）；high → 二次高潮预期（龙头续板/第2只龙头接力/风险提示）"""
+    if line['status'] == 'not_high':
+        scenario = '预期管理板块高潮'
+        items = []
+        if leaders:
+            for l in leaders:
+                items.append({'type': 'leader', 'text': f"龙头 {l['name']}({l['code']}) {l['lianban']}板 明日晋级预期：晋级则催化板块高潮，关注低吸/打板机会"})
+        else:
+            items.append({'type': 'leader', 'text': '主线暂无2板龙头，关注明日新龙头晋级带动板块'})
+        items.append({'type': 'arbitrage', 'text': '创业板/科创板 20cm 套利：板块高潮时创科弹性更大，选最强题材补涨标的'})
+        if etfs:
+            for e in etfs[:2]:
+                items.append({'type': 'etf', 'text': f"ETF 埋伏 {e['name']}({e['code']})：板块未高潮，可用 ETF 博板块整体拉升"})
+        else:
+            items.append({'type': 'etf', 'text': '板块未高潮，关注对应题材 ETF 埋伏机会'})
+        return {'scenario': scenario, 'items': items}
+    scenario = '二次高潮预期'
+    items = []
+    if leaders:
+        for l in leaders:
+            items.append({'type': 'leader', 'text': f"龙头 {l['name']}({l['code']}) {l['lianban']}板 续板预期：板块已高潮，龙头续板或带动二次发酵"})
+    else:
+        items.append({'type': 'leader', 'text': '板块已高潮，关注龙头续板带动情绪'})
+    if relay_stocks:
+        for r in relay_stocks:
+            items.append({'type': 'relay', 'text': f"第2只龙头接力：{r['name']}({r['code']}) {r['lianban']}板，关注接力晋级"})
+    else:
+        items.append({'type': 'relay', 'text': '关注第2只龙头接力（同题材2板+非最高板股）'})
+    items.append({'type': 'risk', 'text': '风险提示：板块已高潮，谨防高标分歧、断板退潮'})
+    return {'scenario': scenario, 'items': items}
+
+
+def _review_match_etfs(tag):
+    """按题材关键词过滤 ETF 列表，取前6。读缓存；为空则按需调 _build_etf_spot()。"""
+    etfs = _get_cached('etf_spot')
+    if not etfs:
+        try:
+            etfs = _build_etf_spot()
+            if etfs:
+                _set_cache('etf_spot', etfs)
+        except Exception as e:
+            print(f"[复盘ETF] 获取失败: {e}")
+            return []
+    if not etfs:
+        return []
+    kws = _REVIEW_ETF_TAG_KEYWORDS.get(tag, [tag])
+    matched = []
+    for e in etfs:
+        name = e.get('name', '') or ''
+        sub = e.get('subcategory', '') or ''
+        if any(k and (k in name or k in sub) for k in kws):
+            matched.append(e)
+    return matched[:6]
+
+
+def _review_build_mainlines(day_index, today, window_dates):
+    """主线聚类→排序→高潮判定。候选 = 今日有连板≥2 锚点的标签；排序 (-today_lb, -today_zt, -today_max_lianban) 取前5。
+    高潮判定：近10日单日峰值涨停数 > 6 → 已高潮。"""
+    day_count = day_index['day_count']
+    day_stock = day_index['day_stock']
+    candidates = []
+    for tag, by_date in day_stock.items():
+        today_stocks = by_date.get(today, {})
+        if not today_stocks:
+            continue
+        anchors = [s for s in today_stocks.values() if (s.get('lianban') or 1) >= 2]
+        if not anchors:
+            continue
+        today_lb = len(anchors)
+        today_zt = len(today_stocks)
+        today_max_lianban = max((s.get('lianban') or 1) for s in today_stocks.values())
+        peak = max(day_count.get(tag, {}).values() or [0])
+        candidates.append({
+            'tag': tag,
+            'today_zt': today_zt,
+            'today_lb': today_lb,
+            'today_max_lianban': today_max_lianban,
+            'peak_10d': peak,
+            'status': 'high' if peak > 6 else 'not_high',
+        })
+    candidates.sort(key=lambda c: (-c['today_lb'], -c['today_zt'], -c['today_max_lianban']))
+    main_lines = []
+    for c in candidates[:5]:
+        tag = c['tag']
+        today_stocks = day_stock.get(tag, {}).get(today, {})
+        by_lb = sorted(today_stocks.values(), key=lambda s: -(s.get('lianban') or 1))
+        max_lb = by_lb[0]['lianban'] if by_lb else 0
+        leaders = [s for s in by_lb if (s.get('lianban') or 1) == max_lb and max_lb >= 2]
+        leader_codes = {x['code'] for x in leaders}
+        lianban_stocks = [s for s in by_lb if (s.get('lianban') or 1) >= 2]
+        shouban_stocks = [s for s in by_lb if (s.get('lianban') or 1) == 1]
+        relay_stocks = [s for s in lianban_stocks if s['code'] not in leader_codes]
+        etfs = _review_match_etfs(tag)
+        trade_plan = _review_build_plan(c, leaders, relay_stocks, etfs)
+        evolution = _build_line_evolution(day_index, tag, window_dates)
+        main_lines.append({
+            'tag': tag,
+            'status': c['status'],
+            'peak_10d': c['peak_10d'],
+            'today_zt': c['today_zt'],
+            'today_lb': c['today_lb'],
+            'today_max_lianban': max_lb,
+            'leaders': leaders,
+            'lianban_stocks': lianban_stocks,
+            'shouban_stocks': shouban_stocks,
+            'relay_stocks': relay_stocks,
+            'etfs': etfs,
+            'trade_plan': trade_plan,
+            'evolution': evolution,
+        })
+    return main_lines
+
+
+def _review_build_sentiment(day_index, window_dates):
+    """市场情绪演进：昨日连板股今日断板 + 同题材今日新首板 → 疑似龙头接力，明日涨停预期。
+    按 prev_lianban 降序取前8。"""
+    if len(window_dates) < 2:
+        return []
+    prev_date = window_dates[-2]
+    today = window_dates[-1]
+    day_stock = day_index['day_stock']
+    prev_stocks = {}
+    for tag, by_date in day_stock.items():
+        for code, s in by_date.get(prev_date, {}).items():
+            prev_stocks.setdefault(code, []).append({'tag': tag, 'stock': s})
+    today_zt_codes = set()
+    for tag, by_date in day_stock.items():
+        today_zt_codes.update(by_date.get(today, {}).keys())
+    sentiment = []
+    for code, entries in prev_stocks.items():
+        if code in today_zt_codes:
+            continue
+        prev_lianban = max((e['stock'].get('lianban') or 1) for e in entries)
+        if prev_lianban < 2:
+            continue
+        tag = entries[0]['tag']
+        relay_shouban = []
+        for e in entries:
+            for s in day_stock.get(e['tag'], {}).get(today, {}).values():
+                if s['code'] != code and (s.get('lianban') or 1) == 1:
+                    relay_shouban.append({'code': s['code'], 'name': s['name'], 'tag': e['tag']})
+        seen = set()
+        uniq_relay = []
+        for rs in relay_shouban:
+            if rs['code'] not in seen:
+                seen.add(rs['code'])
+                uniq_relay.append(rs)
+        relay_potential = len(uniq_relay) > 0
+        if relay_potential:
+            note = '疑似龙头接力：昨日连板断板后，今日同题材现新首板，明日有望接力晋级'
+        else:
+            note = '断板退潮观察：昨日连板今日断板，题材热度降温'
+        sentiment.append({
+            'code': code,
+            'name': entries[0]['stock']['name'],
+            'prev_date': prev_date,
+            'prev_lianban': prev_lianban,
+            'tag': tag,
+            'relay_shouban': uniq_relay,
+            'relay_potential': relay_potential,
+            'note': note,
+        })
+    sentiment.sort(key=lambda x: -x['prev_lianban'])
+    return sentiment[:8]
+
+
+def _review_resolve_base_ymd():
+    """解析复盘基准日（YYYYMMDD 字符串）：zt_data 最新交易日，K线DB 若更新则取 K线 最新交易日。"""
+    resolved_ymd = _kpl_resolve_latest_zt_date()
+    if not resolved_ymd:
+        return None
+    # 基准日 = 天梯最新交易日（可能晚于 zt_data），若 K线 更新则用 K线 最新交易日
+    kline_ymd = _get_kline_max_date()
+    if kline_ymd:
+        kd_candidates = [d for d in _trading_days if d <= kline_ymd]
+        if kd_candidates:
+            kline_latest = kd_candidates[-1]
+            if kline_latest > resolved_ymd:
+                resolved_ymd = kline_latest
+    return resolved_ymd
+
+
+def _kpl_is_zt(code, date_ymd):
+    """判断股票在指定日期是否涨停（KPL 本地数据）。date_ymd: YYYYMMDD 字符串。
+    注意：不能用 _kpl_compute_lianban(code, date) > 1 判断——首板日返回1与未涨停同为1，
+    必须直接查 KPL 行判断当日是否在涨停列表。"""
+    if not code:
+        return False
+    date_fmt = f"{date_ymd[:4]}-{date_ymd[4:6]}-{date_ymd[6:]}"
+    for r in _kpl_rows_by_stock.get(code, []):
+        if r.get('date', '') == date_fmt:
+            return True
+    return False
+
+
+def _kpl_is_zt_date_present(ymd):
+    """该交易日是否有 KPL 涨停数据（_kpl_rows_by_date 非空）。ymd: YYYYMMDD 字符串。"""
+    date_fmt = f"{ymd[:4]}-{ymd[4:6]}-{ymd[6:]}"
+    return bool(_kpl_rows_by_date.get(date_fmt))
+
+
+def _build_review_summary():
+    """复盘总结主流程（最新日）：基准日解析 → _build_review_summary_for。返回 None 表示无基准日。"""
+    try:
+        _kpl_ensure_loaded()
+    except Exception as e:
+        print(f"[复盘] ensure_loaded 失败: {e}")
+    resolved_ymd = _review_resolve_base_ymd()
+    if not resolved_ymd:
+        return None
+    return _build_review_summary_for(resolved_ymd)
+
+
+def _build_review_summary_for(resolved_ymd, with_ladder=True):
+    """按指定基准日（YYYYMMDD 字符串）构建复盘总结。
+    近10交易日窗口 → 标签日聚合 → 主线/龙头/情绪/板块天梯(可选) → 后一日校验。
+    with_ladder=False 时跳过 get_zttt 板块天梯（纯 KPL，无网络），供存档历史日快速构建。"""
+    td = [d for d in _trading_days if d <= resolved_ymd][-10:]
+    if not td:
+        return None
+    window_dates = [f"{d[:4]}-{d[4:6]}-{d[6:]}" for d in td]   # YYYY-MM-DD 升序（旧→新）
+    today = window_dates[-1]
+    day_index = _review_tag_day_index(window_dates)
+    market_leader = _review_build_market_leader(resolved_ymd)
+    main_lines = _review_build_mainlines(day_index, today, window_dates)
+    sentiment_evolution = _review_build_sentiment(day_index, window_dates)
+    sector_ladder = _build_zt_ladder_evolution(window_dates) if with_ladder else None
+    # ETF 来源标注：先看缓存，无则预拉一次供各主线复用
+    etf_source = 'unavailable'
+    etf_cache = _get_cached('etf_spot')
+    if etf_cache:
+        etf_source = 'cache'
+    else:
+        try:
+            fresh = _build_etf_spot()
+            if fresh:
+                _set_cache('etf_spot', fresh)
+                etf_source = 'akshare'
+        except Exception as e:
+            print(f"[复盘ETF] 预拉失败: {e}")
+    kpl_latest = _kpl_day_files[-1].replace('.json', '') if _kpl_day_files else ''
+    # 后一日校验：下一交易日存在且有 KPL 数据时才构建（历史缺数据兜底）
+    next_ymd = None
+    nxt = [d for d in _trading_days if d > resolved_ymd]
+    if nxt:
+        next_ymd = nxt[0]
+    verification = None
+    if next_ymd and _kpl_is_zt_date_present(next_ymd):
+        verification = _review_build_verification(market_leader, main_lines, sentiment_evolution, next_ymd)
+    return {
+        'date': today,
+        'window_dates': window_dates,
+        'market_leader': market_leader,
+        'main_lines': main_lines,
+        'sentiment_evolution': sentiment_evolution,
+        'sector_ladder': sector_ladder,
+        'verification': verification,
+        'next_date': f"{next_ymd[:4]}-{next_ymd[4:6]}-{next_ymd[6:]}" if next_ymd else None,
+        'meta': {
+            'kpl_latest_date': kpl_latest,
+            'etf_source': etf_source,
+            'data_source': 'kpl_zt_data + levistock_zttt + kline_ladder',
+        },
+    }
+
+
+def _review_build_verification(market_leader, main_lines, sentiment_evolution, next_ymd):
+    """前后校验：以基准日 D 的龙头/主线/情绪为预期，用下一交易日 next_ymd(YYYYMMDD) 的 KPL 数据验证。
+    全部 KPL 本地计算，无 get_zttt。晋级/续板→leader_ok，升温→up_lines，接力成功或自身反转→relay_ok。"""
+    next_date = f"{next_ymd[:4]}-{next_ymd[4:6]}-{next_ymd[6:]}"
+    day_index_next = _review_tag_day_index([next_date])   # 仅 next 单日聚合
+    day_count_next = day_index_next.get('day_count', {})
+    # ① 龙头校验：晋级/续板/断板
+    leaders = []
+    leader_ok = 0
+    leader_total = 0
+    for l in ((market_leader or {}).get('leaders') or []):
+        code = l.get('code', '')
+        prev_lb = l.get('lianban') or 1
+        leader_total += 1
+        if _kpl_is_zt(code, next_ymd):
+            new_lb = _kpl_compute_lianban(code, next_date)
+            leader_ok += 1
+            status = '晋级' if new_lb > prev_lb else '续板'
+        else:
+            new_lb = 0
+            status = '断板'
+        leaders.append({'code': code, 'name': l.get('name', ''), 'prev_lianban': prev_lb,
+                        'new_lianban': new_lb, 'status': status})
+    # ② 主线校验：升温/降温/持平 + 龙头续板/断板
+    mainlines = []
+    up_lines = 0
+    line_total = 0
+    for line in (main_lines or []):
+        tag = line.get('tag', '')
+        prev_zt = line.get('today_zt') or 0
+        next_zt = (day_count_next.get(tag, {}) or {}).get(next_date, 0)
+        if next_zt > prev_zt:
+            trend = 'up'
+            up_lines += 1
+        elif next_zt < prev_zt:
+            trend = 'down'
+        else:
+            trend = 'flat'
+        line_total += 1
+        l0 = (line.get('leaders') or [None])[0]
+        lname = l0.get('name', '') if l0 else ''
+        lcode = l0.get('code', '') if l0 else ''
+        leader_zt = _kpl_is_zt(lcode, next_ymd) if lcode else False
+        leader_new_lb = _kpl_compute_lianban(lcode, next_date) if lcode else 0
+        mainlines.append({'tag': tag, 'prev_zt': prev_zt, 'next_zt': next_zt, 'trend': trend,
+                          'leader_name': lname, 'leader_zt': leader_zt, 'leader_new_lianban': leader_new_lb})
+    # ③ 接力校验：断板股次日新首板接力成功 / 自身反转
+    sentiment = []
+    relay_ok = 0
+    relay_total = 0
+    for st in (sentiment_evolution or []):
+        code = st.get('code', '')
+        relay_total += 1
+        relay_list = st.get('relay_shouban') or []
+        relay_success = [s for s in relay_list if _kpl_is_zt(s.get('code', ''), next_ymd)]
+        self_zt = _kpl_is_zt(code, next_ymd)
+        if relay_success or self_zt:
+            relay_ok += 1
+        sentiment.append({
+            'code': code, 'name': st.get('name', ''),
+            'prev_lianban': st.get('prev_lianban') or 2,
+            'relay_codes': [s.get('code', '') for s in relay_list],
+            'relay_names': [s.get('name', '') for s in relay_list],
+            'relay_success_count': len(relay_success),
+            'relay_success_names': [s.get('name', '') for s in relay_success],
+            'self_zt': self_zt,
+        })
+    summary = {'leader_ok': leader_ok, 'leader_total': leader_total,
+               'up_lines': up_lines, 'line_total': line_total,
+               'relay_ok': relay_ok, 'relay_total': relay_total}
+    return {'next_date': next_date, 'leaders': leaders, 'mainlines': mainlines,
+            'sentiment': sentiment, 'summary': summary}
+
+
+def _build_review_archive():
+    """复盘存档：近10个交易日的复盘摘要 + 最新日完整内容。
+    days[] 每项 {date, has_next, verification, verify_badge}；latest 为最新日完整 dict（含板块天梯）。
+    dates/days 均为 新→旧（最新在左）。前9日用 with_ladder=False 快速构建（纯 KPL，无网络），最新日 with_ladder=True（拉 get_zttt）。"""
+    try:
+        _kpl_ensure_loaded()
+    except Exception as e:
+        print(f"[复盘] ensure_loaded 失败: {e}")
+    resolved_ymd = _review_resolve_base_ymd()
+    if not resolved_ymd:
+        return None
+    base_days = [d for d in _trading_days if d <= resolved_ymd][-10:]
+    if not base_days:
+        return None
+    dates = [f"{d[:4]}-{d[4:6]}-{d[6:]}" for d in base_days][::-1]   # 新→旧（最新在左）
+    latest_date = dates[0]
+    days = []
+    latest = None
+    for i, bd in enumerate(base_days):
+        with_ladder = (i == len(base_days) - 1)
+        core = _build_review_summary_for(bd, with_ladder=with_ladder)
+        nxt = [d for d in _trading_days if d > bd]
+        next_ymd = nxt[0] if nxt else None
+        verification = (core or {}).get('verification') if core else None
+        verify_badge = 'wait'
+        if verification and verification.get('summary'):
+            s = verification['summary']
+            if s.get('leader_total'):
+                verify_badge = f"{s.get('leader_ok', 0)}/{s.get('leader_total', 0)}"
+        days.append({'date': f"{bd[:4]}-{bd[4:6]}-{bd[6:]}", 'has_next': bool(next_ymd),
+                     'verification': verification, 'verify_badge': verify_badge})
+        if with_ladder and core:
+            latest = core
+    days.reverse()   # 对齐 dates（新→旧）
+    return {'latest_date': latest_date, 'dates': dates, 'days': days, 'latest': latest}
+
+
 def _kpl_get_gem_strong_rise(stock_codes, lookback=20):
     """查询创业板/科创板股票近N个交易日涨幅>10%的强涨交易日"""
     if not stock_codes:
@@ -3092,6 +3673,12 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 .rg-day-badge { font-size: 0.66em; font-weight: 700; line-height: 1.2; padding: 2px 6px; border-radius: 9px; white-space: nowrap; }
 .rg-day-badge.watch { color: #facc15; background: rgba(250,204,21,0.16); border: 1px solid rgba(250,204,21,0.45); }
 .rg-day-badge.high { color: #fff; background: rgba(249,115,22,0.25); border: 1px solid #f97316; }
+.rg-day-stats { display: flex; flex-direction: column; align-items: center; gap: 1px; }
+.rg-stat { font-size: 0.62em; font-weight: 700; line-height: 1.35; white-space: nowrap; display: inline-flex; align-items: center; gap: 3px; color: #d1d5db; }
+.rg-stat i { width: 7px; height: 7px; border-radius: 2px; display: inline-block; flex: none; }
+.rg-stat-main { color: #93c5fd; } .rg-stat-main i { background: #3b82f6; box-shadow: 0 0 4px rgba(59,130,246,0.5); }
+.rg-stat-gem { color: #fde047; } .rg-stat-gem i { background: #facc15; box-shadow: 0 0 4px rgba(250,204,21,0.5); }
+.rg-stat-rise { color: #d8b4fe; } .rg-stat-rise i { background: #a855f7; box-shadow: 0 0 4px rgba(168,85,247,0.5); }
 .rg-row { display: grid; align-items: center; min-width: max-content; background: #0d1117; border-left: 1px solid #30363d; border-right: 1px solid #30363d; border-bottom: 1px solid #21262d; }
 .rg-row:hover { background: #161b22; }
 .rg-stock-name { display: flex; flex-direction: column; justify-content: center; gap: 1px; padding: 6px 8px; background: #161b22; border-right: 1px solid #30363d; overflow: hidden; min-width: 0; }
@@ -4871,6 +5458,164 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 }
 /* 双归属 alt-tag：金色小 chip 提示主标签 */
 .tst-alt-tag { color: #ffd700; border: 1px solid rgba(255,215,0,0.35); background: rgba(255,215,0,0.08); border-radius: 8px; padding: 0 4px; font-size: 0.68em; white-space: nowrap; }
+
+/* ===== 复盘总结和交易计划（题材风向 Section 5）===== */
+.rs-market-leader { margin: 6px 0 10px; }
+.rs-block-title { font-size: 0.9em; color: #ffd700; margin: 8px 0 6px; font-weight: 600; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rs-src-note { font-size: 0.7em; color: #8b949e; font-weight: 400; border: 1px solid #374151; border-radius: 8px; padding: 0 6px; }
+.rs-leader-stocks { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.rs-stock-block { position: relative; }
+.rs-stock-block .rs-stock-tag { font-size: 0.66em; color: #ffd700; border: 1px solid rgba(255,215,0,0.3); background: rgba(255,215,0,0.06); border-radius: 8px; padding: 0 4px; margin-top: 2px; white-space: nowrap; }
+.rs-stock-block .lb-tag { background: transparent; text-shadow: 0 1px 2px rgba(0,0,0,0.45); }
+.rs-stock-block .board-inline { font-size: 0.7em; margin-left: 0; }
+.rs-stock-block .board-inline.board-main { color: #fff; background: #2563eb; border: 1px solid rgba(255,255,255,0.4); border-radius: 3px; padding: 0 4px; opacity: 1; }
+.rs-stock-block .board-inline.board-gem { color: #422006; background: #facc15; border: 1px solid rgba(255,255,255,0.4); border-radius: 3px; padding: 0 4px; opacity: 1; }
+/* 龙头块配色（沿用 merged-section 渐变，rs 作用域） */
+.rs-stock-block.stock-block.lb-1 { background: linear-gradient(135deg, #b45309, #facc15); border: 1px solid #facc15; color: #fff; }
+.rs-stock-block.stock-block.lb-2 { background: linear-gradient(135deg, #c2410c, #fb923c); border: 1px solid #fb923c; color: #fff; }
+.rs-stock-block.stock-block.lb-3 { background: linear-gradient(135deg, #b91c1c, #ef4444); border: 1px solid #ef4444; color: #fff; }
+.rs-stock-block.stock-block.lb-4 { background: linear-gradient(135deg, #6b21a8, #a855f7); border: 1px solid #a855f7; color: #fff; }
+.rs-stock-block.stock-block.lb-5 { background: linear-gradient(135deg, #7f1d1d, #fb923c); border: 1px solid #f97316; color: #fff; }
+.rs-stock-block.stock-block.lb-6 { background: linear-gradient(135deg, #9d174d, #f59e0b); border: 1px solid #fbbf24; color: #fff; }
+.rs-stock-block.stock-block.lb-7 { background: linear-gradient(135deg, #6b21a8, #f97316); border: 1px solid #f0abfc; color: #fff; }
+.rs-stock-block.stock-block.lb-8 { background: linear-gradient(135deg, #7e22ce, #fb923c); border: 1px solid #fde047; color: #fff; }
+.rs-stock-block.stock-block.lb-high { background: linear-gradient(135deg, #9f1239, #facc15); border: 1px solid #fde047; color: #fff; }
+.rs-stock-block.stock-block.lb-5,
+.rs-stock-block.stock-block.lb-6,
+.rs-stock-block.stock-block.lb-7,
+.rs-stock-block.stock-block.lb-8,
+.rs-stock-block.stock-block.lb-high { border: 1px solid transparent; animation: none; background-size: auto; }
+.rs-stock-block.stock-block.lb-5::after,
+.rs-stock-block.stock-block.lb-6::after,
+.rs-stock-block.stock-block.lb-7::after,
+.rs-stock-block.stock-block.lb-8::after,
+.rs-stock-block.stock-block.lb-high::after {
+    content: '';
+    position: absolute;
+    inset: -2px;
+    border-radius: 8px;
+    padding: 2px;
+    background: conic-gradient(from var(--lb-angle), #fb923c, #facc15, #f97316, #fde047, #fb923c);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask-composite: exclude;
+    animation: lb-border-marquee 1.4s linear infinite;
+    pointer-events: none;
+    z-index: 1;
+}
+.rs-stock-block.stock-block.lb-8::after,
+.rs-stock-block.stock-block.lb-high::after { animation-duration: 0.8s; }
+/* 主线横向卡片：每排 3 张等分占满宽度，超过自动折行 */
+.rs-mainlines { display: flex; flex-wrap: wrap; gap: 10px; padding: 4px 0 8px; }
+.rs-mainline-card { flex: 1 1 0; min-width: 280px; background: rgba(15,52,96,0.22); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 8px 10px; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); box-shadow: 0 2px 12px rgba(0,0,0,0.15); }
+.rs-ml-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
+.rs-rank { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 6px; font-size: 0.8em; font-weight: 700; }
+.rs-rank-1 { background: linear-gradient(135deg, #ffd700, #ff8f00); color: #422006; }
+.rs-rank-2 { background: linear-gradient(135deg, #c0c0c0, #9ca3af); color: #111827; }
+.rs-rank-3 { background: linear-gradient(135deg, #cd7f32, #b45309); color: #fff; }
+.rs-ml-tag { font-size: 0.95em; font-weight: 700; background: linear-gradient(135deg, #ffd700, #ff8f00); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.rs-status { font-size: 0.72em; border-radius: 8px; padding: 1px 7px; margin-left: auto; white-space: nowrap; }
+.rs-status-high { background: rgba(239,68,68,0.18); color: #ef4444; border: 1px solid rgba(239,68,68,0.45); }
+.rs-status-not_high { background: rgba(79,195,247,0.16); color: #4fc3f7; border: 1px solid rgba(79,195,247,0.45); }
+.rs-ml-stats { font-size: 0.75em; color: #9ca3af; margin: 4px 0; }
+.rs-peak-bars { display: flex; align-items: flex-end; gap: 4px; height: 48px; margin: 4px 0 6px; }
+.rs-bar-col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 2px; min-width: 0; }
+.rs-bar-count { font-size: 0.64em; color: #facc15; font-weight: 700; line-height: 1; }
+.rs-bar { width: 100%; max-width: 26px; background: linear-gradient(180deg, #facc15, #fb923c); border-radius: 3px 3px 0 0; min-height: 3px; }
+.rs-bar-label { font-size: 0.6em; color: #8b949e; white-space: nowrap; }
+.rs-ml-label { font-size: 0.76em; color: #ffd700; margin: 7px 0 4px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rs-stock-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.rs-stock-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 0.72em; color: #e6edf3; background: rgba(22,33,62,.55); border: 1px solid rgba(255,255,255,.14); border-radius: 8px; padding: 1px 7px; cursor: pointer; white-space: nowrap; }
+.rs-stock-chip:hover { border-color: #ffd700; }
+.rs-stock-chip i { font-style: normal; color: #facc15; font-weight: 700; }
+.rs-stock-chip.rs-relay-chip { border-color: rgba(79,195,247,.5); background: rgba(79,195,247,.1); }
+.rs-stock-chip.rs-relay-chip i { color: #4fc3f7; }
+.rs-shouban .rs-stock-chip { border-color: rgba(79,195,247,.4); background: rgba(79,195,247,.08); }
+.rs-plan { display: flex; flex-direction: column; gap: 4px; }
+.rs-plan-item { font-size: 0.72em; line-height: 1.5; border-radius: 8px; padding: 3px 8px; color: #d1d5db; }
+.rs-plan-leader { background: rgba(255,215,0,.08); border: 1px solid rgba(255,215,0,.25); }
+.rs-plan-arbitrage { background: rgba(79,195,247,.08); border: 1px solid rgba(79,195,247,.25); }
+.rs-plan-etf { background: rgba(79,195,247,.08); border: 1px solid rgba(79,195,247,.25); }
+.rs-plan-relay { background: rgba(167,139,250,.08); border: 1px solid rgba(167,139,250,.25); }
+.rs-plan-risk { background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.28); color: #fca5a5; }
+.rs-etf-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.rs-etf-chip { font-size: 0.7em; color: #7dd3fc; background: rgba(79,195,247,.1); border: 1px solid rgba(79,195,247,.3); border-radius: 8px; padding: 1px 7px; white-space: nowrap; }
+.rs-etf-chip i { font-style: normal; font-weight: 700; }
+.rs-etf-chip i.up { color: #ef4444; }
+.rs-etf-chip i.down { color: #22c55e; }
+.rs-evo { margin-top: 6px; }
+.rs-evo-strip { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 2px; }
+.rs-evo-day { flex: 0 0 auto; min-width: 54px; display: flex; flex-direction: column; align-items: center; border: 1px solid rgba(255,255,255,.08); border-radius: 6px; padding: 3px 4px; background: rgba(22,33,62,.35); }
+.rs-evo-date { font-size: 0.6em; color: #8b949e; white-space: nowrap; }
+.rs-evo-top { font-size: 0.7em; color: #facc15; font-weight: 700; white-space: nowrap; }
+.rs-evo-leader { font-size: 0.6em; color: #4fc3f7; max-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.rs-evo-none { color: #4b5563; }
+.rs-sentiment { margin-top: 6px; }
+.rs-sent-item { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 4px 0; border-bottom: 1px dashed rgba(255,255,255,.06); }
+.rs-sent-item .rs-stock-block { flex-direction: row; padding: 2px 8px; }
+.rs-sent-item .rs-stock-block .name { margin-bottom: 0; }
+.rs-broken-arrow { color: #ef4444; font-size: 0.72em; }
+.rs-sent-tag { color: #ffd700; font-size: 0.72em; }
+.rs-relay-shouban { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.rs-relay-note { font-size: 0.7em; color: #4fc3f7; border: 1px solid rgba(79,195,247,.35); background: rgba(79,195,247,.08); border-radius: 8px; padding: 1px 7px; }
+.rs-relay-note.rs-relay-dead { color: #9ca3af; border-color: rgba(156,163,175,.3); background: rgba(156,163,175,.06); }
+.rs-sector-ladder { margin-top: 8px; }
+.rs-ladder { margin-top: 2px; }
+.rs-ladder-legend { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; font-size: 0.68em; color: #9ca3af; margin: 4px 0 6px; }
+.rs-lg-item { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.rs-lg-swatch { display: inline-block; width: 15px; height: 11px; border-radius: 3px; border: 1px solid rgba(255,255,255,.2); }
+.rs-lg-note { color: #6b7280; }
+.rs-ladder-wrap { overflow-x: auto; }
+.rs-ladder-matrix { border-collapse: collapse; font-size: 0.74em; width: 100%; }
+.rs-ladder-matrix th, .rs-ladder-matrix td { border: 1px solid rgba(255,255,255,.08); padding: 3px 7px; text-align: center; white-space: nowrap; }
+.rs-ladder-matrix th { background: rgba(22,33,62,.6); color: #9ca3af; font-weight: 400; }
+.rs-ladder-sector { color: #ffd700; font-weight: 600; text-align: left !important; }
+.rs-ladder-matrix th.rs-ladder-today { color: #ffd700; font-weight: 700; background: rgba(255,215,0,.14); }
+.rs-ladder-matrix th.rs-ladder-total, .rs-ladder-matrix td.rs-ladder-total { color: #fde047; font-weight: 700; background: rgba(255,215,0,.05); }
+.rs-ladder-cell { position: relative; }
+.rs-lc-top { color: #fff; font-weight: 700; font-size: 1em; white-space: nowrap; }
+.rs-lc-lb { color: #fb923c; font-weight: 400; font-size: 0.8em; margin-left: 2px; }
+.rs-lc-leader { color: #4fc3f7; font-size: 0.78em; max-width: 88px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.rs-heat-hot .rs-lc-top { color: #fde047; }
+.rs-ladder-empty { color: #374151; }
+.rs-meta { font-size: 0.68em; color: #6b7280; margin-top: 8px; border-top: 1px dashed rgba(255,255,255,.08); padding-top: 6px; }
+.rs-empty { color: #8b949e; font-size: 0.8em; padding: 6px 0; }
+.rs-empty-inline { color: #8b949e; font-size: 0.75em; }
+/* 复盘存档：近10交易日日期导航 + 前后校验 */
+.rs-date-nav { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; margin: 6px 0 8px; padding: 6px 8px; background: rgba(15,52,96,.18); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; }
+.rs-date-arrow { cursor: pointer; color: #ffd700; font-size: 0.85em; padding: 2px 8px; border: 1px solid rgba(255,215,0,.3); border-radius: 8px; background: rgba(255,215,0,.06); user-select: none; }
+.rs-date-arrow:hover { background: rgba(255,215,0,.16); }
+.rs-date-chip { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; font-size: 0.74em; color: #d1d5db; background: rgba(22,33,62,.5); border: 1px solid rgba(255,255,255,.14); border-radius: 8px; padding: 2px 8px; user-select: none; }
+.rs-date-chip:hover { border-color: #ffd700; }
+.rs-date-chip.rs-date-sel { color: #fff; background: rgba(255,215,0,.16); border-color: #ffd700; box-shadow: 0 0 8px rgba(255,215,0,.35); font-weight: 700; }
+.rs-chip-vb { font-size: 0.66em; border-radius: 6px; padding: 0 4px; margin-left: 1px; }
+.rs-vb-ok { color: #facc15; background: rgba(250,204,21,.12); border: 1px solid rgba(250,204,21,.4); }
+.rs-vb-bad { color: #60a5fa; background: rgba(96,165,250,.12); border: 1px solid rgba(96,165,250,.4); }
+.rs-vb-wait { color: #94a3b8; background: rgba(148,163,184,.1); border: 1px solid rgba(148,163,184,.3); }
+.rs-verify { margin-top: 10px; border: 1px solid rgba(6,182,212,.3); background: rgba(6,182,212,.05); border-radius: 12px; padding: 8px 10px; }
+.rs-verify-title { font-size: 0.86em; color: #22d3ee; font-weight: 700; margin-bottom: 6px; }
+.rs-verify-summary { font-size: 0.78em; color: #facc15; font-weight: 700; margin: 4px 0 6px; padding: 3px 8px; background: rgba(255,215,0,.08); border: 1px solid rgba(255,215,0,.3); border-radius: 8px; display: inline-block; }
+.rs-verify-block-title { font-size: 0.8em; color: #facc15; font-weight: 700; margin: 8px 0 4px; }
+.rs-verify-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 0.74em; padding: 3px 8px; border-radius: 8px; margin: 2px 0; }
+.rs-vf-good { color: #fde68a; background: rgba(250,204,21,.1); border: 1px solid rgba(250,204,21,.3); }
+.rs-vf-bad { color: #93c5fd; background: rgba(96,165,250,.1); border: 1px solid rgba(96,165,250,.3); }
+.rs-vf-flat { color: #cbd5e1; background: rgba(148,163,184,.08); border: 1px solid rgba(148,163,184,.25); }
+.rs-vf-name { font-weight: 700; color: #fff; }
+.rs-vf-prev { color: #94a3b8; }
+.rs-vf-status { font-weight: 700; }
+.rs-vf-leader { color: #94a3b8; font-size: 0.92em; }
+.rs-vf-good .rs-vf-status { color: #facc15; }
+.rs-vf-bad .rs-vf-status { color: #60a5fa; }
+.rs-vf-flat .rs-vf-status { color: #94a3b8; }
+.rs-verify-pending { margin-top: 10px; border: 1px dashed rgba(148,163,184,.35); border-radius: 12px; padding: 10px; text-align: center; color: #94a3b8; font-size: 0.76em; }
+/* 明日校验计划（待校验，无结果）—— 灰/蓝，无金、无绿 */
+.rs-verify.rs-verify-plan { border: 1px dashed rgba(6,182,212,.35); }
+.rs-verify-plan .rs-verify-summary { color: #93c5fd; background: rgba(96,165,250,.08); border-color: rgba(96,165,250,.3); }
+.rs-tm-wait { color: #cbd5e1; background: rgba(148,163,184,.08); border: 1px dashed rgba(148,163,184,.3); }
+.rs-tm-status { font-weight: 700; color: #94a3b8; }
+.rs-tm-note { color: #94a3b8; font-size: 0.9em; }
+.rs-tm-footer { margin-top: 8px; text-align: center; color: #94a3b8; font-size: 0.72em; }
 
 /* Update status bar */
 #updateArea {
@@ -11633,11 +12378,13 @@ function loadThemeWind() {
         _cachedFetch('/api/ladder_trajectory?n=20'),
         _cachedFetch('/api/top_theme_trajectory?n=20'),
         fetch('/api/theme_structure_tree?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
+        fetch('/api/review_archive?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
     ]).then(function(results) {
         var lbTrajectory = results[0];
         var trajectory = results[1];
         var topTheme = results[2];
         var treeData = results[3];
+        var reviewData = results[4];
         var html = '';
 
         // Section 1: 🔥 连板股涨停原因标签轨迹
@@ -11680,7 +12427,21 @@ function loadThemeWind() {
         html += (treeData && treeData.trees && treeData.trees.length > 0) ? renderThemeStructureTree(treeData) : '<div class="lt-trajectory-loading">' + (treeData && treeData.fallback ? '实时数据不可用，已用历史连板兜底' : '当前无连板股或实时数据获取失败') + '</div>';
         html += '</div></div>';
 
+        // Section 5: 📝 复盘总结和交易计划（近10个交易日存档 + 前后校验）
+        html += '<div class="rt-section lt-trajectory-section" id="twReviewSection">';
+        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ffd700;">\U0001F4DD 复盘总结和交易计划 <span class="count-badge">近10个交易日</span> <span class="rt-refresh-icon" onclick="manualRefreshReview(true)" title="刷新">\u21bb</span><button class="rt-auto-refresh-btn" id="reviewAutoBtn" onclick="toggleReviewAutoRefresh()">\u23f1 自动刷新 1分钟</button></h3>';
+        html += '<div id="twReviewNav">' + (reviewData ? renderReviewDateNav(reviewData) : '') + '</div>';
+        html += '<div id="twReviewBody">' + ((reviewData && reviewData.latest) ? renderReviewSummary(reviewData.latest) : '<div class="lt-trajectory-loading">暂无复盘数据</div>') + '</div>';
+        html += '</div></div>';
+
+        // 复盘存档导航状态初始化
+        _reviewDatesOrder = (reviewData && reviewData.dates) ? reviewData.dates.slice() : [];
+        _reviewSelDate = (reviewData && reviewData.latest_date) || (_reviewDatesOrder.length ? _reviewDatesOrder[0] : null);
+        _reviewDayCache = {};
+        if (reviewData && reviewData.latest) _reviewDayCache[reviewData.latest_date] = reviewData.latest;
+
         container.innerHTML = html;
+        updateReviewNavSel();   // 导航渲染在 _reviewSelDate 赋值之前，需手动补选中态
         _themeWindLoaded = true;
     }).catch(function(e) {
         container.innerHTML = '<div class="error">题材风向加载失败: ' + e.message + '</div>';
@@ -12693,6 +13454,535 @@ function _tstOpenStock(el) {
         }
     }
     openDsStockFromRhythm(name, code, '', list, idx);
+}
+
+// ===== 复盘总结和交易计划（题材风向 Section 5）=====
+function renderReviewSummary(data) {
+    if (!data) return '<div class="lt-trajectory-loading">暂无复盘数据</div>';
+    var h = '';
+    // 今日连板高度榜 TOP5
+    h += '<div class="rs-market-leader">';
+    h += '<div class="rs-block-title">\U0001F3C6 今日连板高度榜 <span class="rs-src-note">TOP5</span></div>';
+    if (data.market_leader && data.market_leader.leaders && data.market_leader.leaders.length) {
+        h += '<div class="rs-leader-stocks">';
+        var ml = data.market_leader.leaders;
+        for (var i = 0; i < ml.length; i++) {
+            h += _rsRenderStockBlock(ml[i], ml[i].lianban);
+        }
+        h += '</div>';
+    } else {
+        h += '<div class="rs-empty">暂无连板股（最新交易日无连板）</div>';
+    }
+    h += '</div>';
+    // 主线（横向卡片 ×3）
+    h += '<div class="rs-mainlines">';
+    var mlArr = data.main_lines || [];
+    for (var i = 0; i < mlArr.length; i++) {
+        h += _rsRenderMainlineCard(mlArr[i], i + 1);
+    }
+    if (!mlArr.length) h += '<div class="rs-empty">今日无主线（无连板≥2的题材）</div>';
+    h += '</div>';
+    // 情绪演进
+    h += '<div class="rs-sentiment">';
+    h += '<div class="rs-block-title">\U0001F500 情绪演进 · 断板与接力</div>';
+    h += _rsRenderSentiment(data.sentiment_evolution || []);
+    h += '</div>';
+    // 板块涨停天梯演绎
+    h += '<div class="rs-sector-ladder">';
+    h += '<div class="rs-block-title">\U0001F4CA 板块涨停天梯演绎 <span class="rs-src-note">levistock</span></div>';
+    h += _rsRenderSectorLadder(data.sector_ladder);
+    h += '</div>';
+    // meta 提示
+    if (data.meta) {
+        h += '<div class="rs-meta">数据基准日 ' + (data.date || '-') + ' · KPL最新 ' + (data.meta.kpl_latest_date || '-') + ' · ETF来源 ' + (data.meta.etf_source || '-') + '</div>';
+    }
+    // 后一日校验 / 明日校验计划：有校验结果→显示结果；无结果但知下一交易日→显示明日校验计划
+    if (data.verification) {
+        h += renderReviewVerification(data.verification);
+    } else if (data.next_date) {
+        h += renderReviewTomorrowPlan(data);
+    }
+    return h;
+}
+
+// ===== 复盘存档：日期导航 + 前后校验 =====
+var _reviewDayCache = {};      // date(YYYY-MM-DD) → 完整复盘 dict
+var _reviewDatesOrder = [];    // 10个日期，新→旧（最新在左）
+var _reviewSelDate = null;     // 当前选中日期
+
+function renderReviewDateNav(archive) {
+    if (!archive || !archive.dates || !archive.dates.length) return '';
+    var h = '<div class="rs-date-nav">';
+    h += '<span class="rs-date-arrow" onclick="reviewNavArrow(-1)" title="后一交易日">\u25C0</span>';
+    for (var i = 0; i < archive.dates.length; i++) {
+        var d = archive.dates[i];
+        var isSel = (_reviewSelDate === d) ? ' rs-date-sel' : '';
+        var info = null;
+        if (archive.days) {
+            for (var j = 0; j < archive.days.length; j++) {
+                if (archive.days[j].date === d) { info = archive.days[j]; break; }
+            }
+        }
+        var vb = '';
+        if (info) {
+            if (info.verify_badge && info.verify_badge !== 'wait') {
+                var parts = String(info.verify_badge).split('/');
+                var ok = parseInt(parts[0], 10), total = parseInt(parts[1], 10);
+                var vbCls = (total > 0 && ok >= total / 2) ? 'rs-vb-ok' : 'rs-vb-bad';
+                vb = '<span class="rs-chip-vb ' + vbCls + '" title="后一日校验：龙头晋级 ' + info.verify_badge + '">\u2713' + info.verify_badge + '</span>';
+            } else {
+                vb = '<span class="rs-chip-vb rs-vb-wait">\u23F3</span>';
+            }
+        }
+        h += '<span class="rs-date-chip' + isSel + '" data-date="' + d + '" onclick="reviewSelectDate(\\x27' + d + '\\x27)" title="' + d + '">' + d.slice(5) + vb + '</span>';
+    }
+    h += '<span class="rs-date-arrow" onclick="reviewNavArrow(1)" title="前一交易日">\u25B6</span>';
+    h += '</div>';
+    return h;
+}
+
+function reviewSelectDate(dateStr) {
+    _reviewSelDate = dateStr;
+    updateReviewNavSel();
+    var body = document.getElementById('twReviewBody');
+    if (!body) return;
+    if (_reviewDayCache[dateStr]) {
+        body.innerHTML = renderReviewSummary(_reviewDayCache[dateStr]);
+        return;
+    }
+    body.innerHTML = '<div class="lt-trajectory-loading">\u52A0\u8F7D ' + dateStr + ' \u590D\u76D8...</div>';
+    fetch('/api/review_summary?date=' + dateStr + '&_t=' + Date.now())
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data && data.date) {
+                _reviewDayCache[dateStr] = data;
+                body.innerHTML = renderReviewSummary(data);
+            } else {
+                body.innerHTML = '<div class="lt-trajectory-loading">\u8BE5\u65E5\u65E0\u590D\u76D8\u6570\u636E</div>';
+            }
+        })
+        .catch(function() { body.innerHTML = '<div class="lt-trajectory-loading">\u52A0\u8F7D\u5931\u8D25</div>'; });
+}
+
+function updateReviewNavSel() {
+    var chips = document.querySelectorAll('#twReviewNav .rs-date-chip');
+    for (var i = 0; i < chips.length; i++) {
+        var on = chips[i].getAttribute('data-date') === _reviewSelDate;
+        if (on) chips[i].classList.add('rs-date-sel');
+        else chips[i].classList.remove('rs-date-sel');
+    }
+}
+
+function reviewNavArrow(dir) {
+    if (!_reviewDatesOrder || !_reviewDatesOrder.length) return;
+    var idx = _reviewDatesOrder.indexOf(_reviewSelDate);
+    var target = idx + dir;
+    if (target < 0 || target >= _reviewDatesOrder.length) return;
+    reviewSelectDate(_reviewDatesOrder[target]);
+}
+
+function renderReviewVerification(v) {
+    if (!v) return '';
+    var h = '<div class="rs-verify">';
+    h += '<div class="rs-verify-title">\U0001F50D \u540E\u4E00\u65E5\u6821\u9A8C \u2192 ' + _kplEsc(v.next_date || '') + '</div>';
+    var s = v.summary || {};
+    h += '<div class="rs-verify-summary">\u9F99\u5934\u664B\u7EA7 ' + (s.leader_ok || 0) + '/' + (s.leader_total || 0) +
+         ' \u00B7 \u4E3B\u7EBF\u5347\u6E29 ' + (s.up_lines || 0) + '/' + (s.line_total || 0) +
+         ' \u00B7 \u63A5\u529B\u6210\u529F ' + (s.relay_ok || 0) + '/' + (s.relay_total || 0) + '</div>';
+    // 龙头校验
+    if (v.leaders && v.leaders.length) {
+        h += '<div class="rs-verify-block-title">\u9F99\u5934\u6821\u9A8C</div>';
+        for (var i = 0; i < v.leaders.length; i++) {
+            var l = v.leaders[i];
+            var cls, txt;
+            if (l.status === '\u664B\u7EA7') { cls = 'rs-vf-good'; txt = '\u2713\u664B\u7EA7' + (l.new_lianban || 0) + '\u677F'; }
+            else if (l.status === '\u7EED\u677F') { cls = 'rs-vf-good'; txt = '\u2713\u7EED\u677F' + (l.new_lianban || 0) + '\u677F'; }
+            else { cls = 'rs-vf-bad'; txt = '\u2717\u65AD\u677F'; }
+            h += '<div class="rs-verify-row ' + cls + '"><span class="rs-vf-name">' + _kplEsc(l.name || '') + '</span> <span class="rs-vf-prev">' + (l.prev_lianban || 0) + '\u677F</span> \u2192 <span class="rs-vf-status">' + txt + '</span></div>';
+        }
+    }
+    // 主线校验
+    if (v.mainlines && v.mainlines.length) {
+        h += '<div class="rs-verify-block-title">\u4E3B\u7EBF\u6821\u9A8C</div>';
+        for (var i = 0; i < v.mainlines.length; i++) {
+            var m = v.mainlines[i];
+            var cls2 = 'rs-vf-flat';
+            var tArr = m.trend === 'up' ? '\u2191\u5347\u6E29' : (m.trend === 'down' ? '\u2193\u964D\u6E29' : '\u2192\u6301\u5E73');
+            if (m.trend === 'up') cls2 = 'rs-vf-good';
+            else if (m.trend === 'down') cls2 = 'rs-vf-bad';
+            var ldrTxt = m.leader_name ? (m.leader_zt ? '\u2713\u7EED\u677F' : '\u2717\u65AD\u677F') : '\u65E0\u9F99\u5934';
+            h += '<div class="rs-verify-row ' + cls2 + '"><span class="rs-vf-name">' + _kplEsc(m.tag || '') + '</span> <span class="rs-vf-prev">' + (m.prev_zt || 0) + '\u5BB6</span> \u2192 <span class="rs-vf-status">' + (m.next_zt || 0) + '\u5BB6 ' + tArr + '</span> <span class="rs-vf-leader">' + _kplEsc(m.leader_name || '') + ' ' + ldrTxt + '</span></div>';
+        }
+    }
+    // 接力校验
+    if (v.sentiment && v.sentiment.length) {
+        h += '<div class="rs-verify-block-title">\u63A5\u529B\u6821\u9A8C</div>';
+        for (var i = 0; i < v.sentiment.length; i++) {
+            var st = v.sentiment[i];
+            var okN = st.relay_success_count || 0;
+            var totalN = (st.relay_codes || []).length;
+            var cls3 = (okN > 0 || st.self_zt) ? 'rs-vf-good' : 'rs-vf-bad';
+            var txt3 = '';
+            if (okN > 0) txt3 = '\u2713\u63A5\u529B\u6210\u529F ' + okN + '/' + totalN + ' (' + _kplEsc((st.relay_success_names || []).join('\u3001')) + ')';
+            else txt3 = '\u2717\u63A5\u529B\u5931\u8D25 0/' + totalN;
+            if (st.self_zt) txt3 += ' \u00B7 \u672C\u80A1\u53CD\u8F6C';
+            h += '<div class="rs-verify-row ' + cls3 + '"><span class="rs-vf-name">' + _kplEsc(st.name || '') + '</span> <span class="rs-vf-prev">' + (st.prev_lianban || 0) + '\u677F\u65AD\u677F</span> \u2192 <span class="rs-vf-status">' + txt3 + '</span></div>';
+        }
+    }
+    h += '</div>';
+    return h;
+}
+
+// 明日校验计划：无后一日数据时，展示明日应该观察/校验什么（数据全部取自 data，前端派生）
+function renderReviewTomorrowPlan(data) {
+    if (!data) return '';
+    var h = '<div class="rs-verify rs-verify-plan">';
+    h += '<div class="rs-verify-title">\U0001F52D \u660E\u65E5\u6821\u9A8C\u8BA1\u5212 \u2192 ' + _kplEsc(data.next_date || '') + '</div>';
+    var leaderCount = ((data.market_leader || {}).leaders || []).length;
+    var lineCount = (data.main_lines || []).length;
+    var relayCount = (data.sentiment_evolution || []).length;
+    h += '<div class="rs-verify-summary">\u660E\u65E5\u9700\u89C2\u5BDF\uFF1A\u9F99\u5934 ' + leaderCount + ' \u00B7 \u4E3B\u7EBF ' + lineCount + ' \u00B7 \u65AD\u677F\u63A5\u529B ' + relayCount + '</div>';
+    // 龙头校验
+    if (leaderCount) {
+        h += '<div class="rs-verify-block-title">\u9F99\u5934\u6821\u9A8C\uFF08\u4ECA\u65E5\u8FDE\u677F\u9AD8\u5EA6\u699CTOP5\uFF09</div>';
+        var ml = data.market_leader.leaders;
+        for (var i = 0; i < ml.length; i++) {
+            var l = ml[i];
+            var n = l.lianban || 1;
+            h += '<div class="rs-verify-row rs-tm-wait"><span class="rs-vf-name">' + _kplEsc(l.name || '') + '</span> <span class="rs-vf-prev">' + n + '\u677F</span> \u2192 <span class="rs-tm-status">[\u5F85\u6821\u9A8C]</span> <span class="rs-tm-note">\u660E\u65E5\u6DA8\u505C\u2265' + (n + 1) + '=\u664B\u7EA7 \u00B7 =' + n + '=\u7EED\u677F \u00B7 \u672A\u6DA8\u505C=\u65AD\u677F</span></div>';
+        }
+    }
+    // 主线校验
+    if (lineCount) {
+        h += '<div class="rs-verify-block-title">\u4E3B\u7EBF\u6821\u9A8C\uFF08\u660E\u65E5\u6DA8\u505C\u6570\u5BF9\u7167\u4ECA\u65E5\uFF09</div>';
+        var mlArr = data.main_lines;
+        for (var i = 0; i < mlArr.length; i++) {
+            var ln = mlArr[i];
+            var z = ln.today_zt || 0;
+            var ldr = (ln.leaders && ln.leaders.length) ? (ln.leaders[0].name || '') : '';
+            h += '<div class="rs-verify-row rs-tm-wait"><span class="rs-vf-name">' + _kplEsc(ln.tag || '') + '</span> <span class="rs-vf-prev">\u4ECA\u65E5' + z + '\u5BB6</span> \u2192 <span class="rs-tm-status">[\u5F85\u6821\u9A8C]</span> <span class="rs-tm-note">\u660E\u65E5\u6DA8\u505C&gt;' + z + '=\u5347\u6E29 \u00B7 &lt;' + z + '=\u964D\u6E29 \u00B7 =' + z + '=\u6301\u5E73\uFF1B\u9F99\u5934' + _kplEsc(ldr || '\u65E0\u9F99\u5934') + ' \u6DA8\u505C=\u7EED\u677F/\u672A\u6DA8\u505C=\u65AD\u677F</span></div>';
+        }
+    }
+    // 接力校验
+    if (relayCount) {
+        h += '<div class="rs-verify-block-title">\u63A5\u529B\u6821\u9A8C\uFF08\u4ECA\u65E5\u65AD\u677F\u80A1\u660E\u65E5\u8868\u73B0\uFF09</div>';
+        var seArr = data.sentiment_evolution;
+        for (var i = 0; i < seArr.length; i++) {
+            var st = seArr[i];
+            var pn = st.prev_lianban || 2;
+            h += '<div class="rs-verify-row rs-tm-wait"><span class="rs-vf-name">' + _kplEsc(st.name || '') + '</span> <span class="rs-vf-prev">' + pn + '\u677F\u65AD\u677F</span> \u2192 <span class="rs-tm-status">[\u5F85\u6821\u9A8C]</span> <span class="rs-tm-note">\u660E\u65E5\u540C\u9898\u6750\u65B0\u9996\u677F=\u63A5\u529B\u6210\u529F \u00B7 \u672C\u80A1\u6DA8\u505C=\u53CD\u8F6C \u00B7 \u65E0=\u63A5\u529B\u5931\u8D25</span></div>';
+        }
+    }
+    h += '<div class="rs-tm-footer">\u23F3 \u7B49 ' + _kplEsc(data.next_date || '') + ' \u6570\u636E\u5230\u6765\u540E\u81EA\u52A8\u7ED9\u51FA\u6821\u9A8C\u7ED3\u679C</div>';
+    h += '</div>';
+    return h;
+}
+
+function _rsRenderStockBlock(s, lb) {
+    if (!s) return '';
+    var code = (s.code || '').replace(/'/g, '');
+    var name = (s.name || '').replace(/'/g, '');
+    lb = lb || s.lianban || 1;
+    var blockClass = lb >= 9 ? 'lb-high' : ('lb-' + Math.max(1, Math.min(lb, 8)));
+    var boardCls = s.isGemOrStar ? 'board-gem' : 'board-main';
+    var boardText = s.isGemOrStar ? '创·科' : '主';
+    var tag = s.reason_tag ? '<span class="rs-stock-tag">' + _kplEsc(s.reason_tag) + '</span>' : '';
+    return '<span class="rs-stock-block stock-block ' + blockClass + '" data-code="' + code + '" data-name="' + name + '" onclick="rsOpenStock(this)" title="' + name + ' ' + lb + '\u677f">' +
+           '<span class="name">' + _kplEsc(s.name || '') + '</span>' +
+           '<span class="lb-tag">' + lb + '\u677f</span>' +
+           '<span class="board-inline ' + boardCls + '">' + boardText + '</span>' +
+           tag + '</span>';
+}
+
+function _rsRenderMainlineCard(line, rank) {
+    var statusCls = line.status === 'high' ? 'rs-status-high' : 'rs-status-not_high';
+    var statusText = line.status === 'high' ? '已高潮' : '未高潮';
+    var h = '<div class="rs-mainline-card" data-tag="' + _kplEsc(line.tag || '').replace(/'/g, '') + '">';
+    h += '<div class="rs-ml-head">';
+    h += '<span class="rs-rank rs-rank-' + rank + '">' + rank + '</span>';
+    h += '<span class="rs-ml-tag">' + _kplEsc(line.tag || '') + '</span>';
+    h += '<span class="rs-status ' + statusCls + '">' + statusText + '</span>';
+    h += '</div>';
+    var shoubanN = (line.shouban_stocks && line.shouban_stocks.length) || 0;
+    h += '<div class="rs-ml-stats">\u4eca\u65e5\u6da8\u505c ' + line.today_zt + ' \u00b7 \u8fde\u677f ' + line.today_lb + ' \u00b7 \u9996\u677f ' + shoubanN + ' \u00b7 \u8fd110\u65e5\u5cf0\u503c ' + line.peak_10d + '</div>';
+    h += _rsRenderPeakBars(line.evolution);
+    h += '<div class="rs-ml-label">\u9f99\u5934\uff08' + (line.today_max_lianban || 0) + '\u677f\uff09</div>';
+    h += '<div class="rs-leader-stocks">';
+    var leaders = line.leaders || [];
+    if (leaders.length) {
+        for (var i = 0; i < leaders.length; i++) h += _rsRenderStockBlock(leaders[i], line.today_max_lianban);
+    } else {
+        h += '<span class="rs-empty-inline">\u65e0 2\u677f\u9f99\u5934</span>';
+    }
+    h += '</div>';
+    if (line.lianban_stocks && line.lianban_stocks.length) {
+        h += '<div class="rs-ml-label">\u8fde\u677f\u68af\u961f</div><div class="rs-stock-chips">';
+        for (var i = 0; i < line.lianban_stocks.length; i++) {
+            var s = line.lianban_stocks[i];
+            h += '<span class="rs-stock-chip" data-code="' + (s.code || '').replace(/'/g, '') + '" data-name="' + (s.name || '').replace(/'/g, '') + '" onclick="rsOpenStock(this)">' + _kplEsc(s.name || '') + ' <i>' + s.lianban + '\u677f</i></span>';
+        }
+        h += '</div>';
+    }
+    if (line.shouban_stocks && line.shouban_stocks.length) {
+        h += '<div class="rs-ml-label">\u4eca\u65e5\u9996\u677f</div><div class="rs-stock-chips rs-shouban">';
+        var maxSb = Math.min(line.shouban_stocks.length, 8);
+        for (var i = 0; i < maxSb; i++) {
+            var s = line.shouban_stocks[i];
+            h += '<span class="rs-stock-chip" data-code="' + (s.code || '').replace(/'/g, '') + '" data-name="' + (s.name || '').replace(/'/g, '') + '" onclick="rsOpenStock(this)">' + _kplEsc(s.name || '') + '</span>';
+        }
+        h += '</div>';
+    }
+    if (line.trade_plan) {
+        h += '<div class="rs-ml-label">\u4ea4\u6613\u8ba1\u5212 \u00b7 ' + _kplEsc(line.trade_plan.scenario || '') + '</div><div class="rs-plan">';
+        var items = line.trade_plan.items || [];
+        for (var i = 0; i < items.length; i++) {
+            h += '<div class="rs-plan-item rs-plan-' + (items[i].type || '') + '">' + _kplEsc(items[i].text || '') + '</div>';
+        }
+        h += '</div>';
+    }
+    if (line.etfs && line.etfs.length) {
+        h += '<div class="rs-ml-label">\u5173\u8054ETF</div><div class="rs-etf-list">';
+        for (var i = 0; i < line.etfs.length; i++) {
+            var e = line.etfs[i];
+            var ePct = '';
+            var ePctCls = '';
+            if (e.change_pct !== null && e.change_pct !== undefined) {
+                ePctCls = e.change_pct > 0 ? 'up' : (e.change_pct < 0 ? 'down' : '');
+                ePct = (e.change_pct > 0 ? '+' : '') + e.change_pct + '%';
+            }
+            h += '<span class="rs-etf-chip" title="' + _kplEsc(e.name || '') + '">' + _kplEsc(e.name || '') + (ePct ? ' <i class="' + ePctCls + '">' + ePct + '</i>' : '') + '</span>';
+        }
+        h += '</div>';
+    }
+    h += _rsRenderEvolution(line.evolution);
+    h += '</div>';
+    return h;
+}
+
+function _rsRenderPeakBars(evolution) {
+    if (!evolution || !evolution.length) return '';
+    var max = 1;
+    for (var i = 0; i < evolution.length; i++) max = Math.max(max, evolution[i].zt_count || 0);
+    var h = '<div class="rs-peak-bars">';
+    for (var i = evolution.length - 1; i >= 0; i--) {   // 近→旧，最近在左
+        var e = evolution[i];
+        var pct = Math.round(((e.zt_count || 0) / max) * 100);
+        var tip = e.date + ' 涨停' + (e.zt_count || 0) + ' 最高' + (e.max_lianban || 0) + '板' + (e.leader_name ? ' · ' + e.leader_name : '');
+        h += '<div class="rs-bar-col" title="' + tip + '">';
+        h += '<div class="rs-bar-count">' + (e.zt_count || 0) + '</div>';
+        h += '<div class="rs-bar" style="height:' + Math.max(4, pct) + '%"></div>';
+        h += '<div class="rs-bar-label">' + (e.date || '').slice(5) + '</div>';
+        h += '</div>';
+    }
+    h += '</div>';
+    return h;
+}
+
+function _rsRenderEvolution(evolution) {
+    if (!evolution || !evolution.length) return '';
+    var h = '<div class="rs-evo">';
+    h += '<div class="rs-ml-label">\u8fd110\u65e5\u8fde\u677f\u6f14\u7ece</div>';
+    h += '<div class="rs-evo-strip">';
+    for (var i = evolution.length - 1; i >= 0; i--) {   // 近→旧，最近在左
+        var e = evolution[i];
+        var d = (e.date || '').slice(5);
+        var tip = (e.date || '') + '\u6da8\u505c' + (e.zt_count || 0) + '\u6700\u9ad8' + (e.max_lianban || 0) + '\u677f' + (e.leader_name ? ' \u00b7 ' + _kplEsc(e.leader_name) : '');
+        h += '<div class="rs-evo-day" title="' + tip + '">';
+        h += '<div class="rs-evo-date">' + d + '</div>';
+        if (e.zt_count > 0) {
+            h += '<div class="rs-evo-top">' + e.zt_count + '\u5bb6/' + e.max_lianban + '\u677f</div>';
+            if (e.leader_name) h += '<div class="rs-evo-leader">' + _kplEsc(e.leader_name) + '</div>';
+        } else {
+            h += '<div class="rs-evo-top rs-evo-none">-</div>';
+        }
+        h += '</div>';
+    }
+    h += '</div></div>';
+    return h;
+}
+
+function _rsRenderSentiment(list) {
+    if (!list || !list.length) return '<div class="rs-empty">\u8fd12\u65e5\u65e0\u65ad\u677f\u8fde\u677f\u80a1\uff0c\u60c5\u7eea\u5e73\u7a33</div>';
+    var h = '';
+    for (var i = 0; i < list.length; i++) {
+        var it = list[i];
+        var lbCls = it.prev_lianban >= 9 ? 'lb-high' : ('lb-' + Math.max(1, Math.min(it.prev_lianban, 8)));
+        h += '<div class="rs-sent-item">';
+        h += '<span class="rs-stock-block stock-block ' + lbCls + '" data-code="' + (it.code || '').replace(/'/g, '') + '" data-name="' + (it.name || '').replace(/'/g, '') + '" onclick="rsOpenStock(this)"><span class="name">' + _kplEsc(it.name || '') + '</span><span class="lb-tag">' + it.prev_lianban + '\u677f</span></span>';
+        h += '<span class="rs-broken-arrow">\u2192 \u65ad\u677f</span>';
+        h += '<span class="rs-sent-tag">' + _kplEsc(it.tag || '') + '</span>';
+        if (it.relay_shouban && it.relay_shouban.length) {
+            h += '<span class="rs-relay-shouban">';
+            for (var j = 0; j < it.relay_shouban.length; j++) {
+                var rs = it.relay_shouban[j];
+                h += '<span class="rs-stock-chip rs-relay-chip" data-code="' + (rs.code || '').replace(/'/g, '') + '" data-name="' + (rs.name || '').replace(/'/g, '') + '" onclick="rsOpenStock(this)">' + _kplEsc(rs.name || '') + '</span>';
+            }
+            h += '</span>';
+            h += '<span class="rs-relay-note">\u7591\u4f3c\u63a5\u529b\uff0c\u660e\u65e5\u6da8\u505c\u9884\u671f \u2191</span>';
+        } else {
+            h += '<span class="rs-relay-note rs-relay-dead">\u65ad\u677f\u9000\u6f6e\uff0c\u89c2\u5bdf</span>';
+        }
+        h += '</div>';
+    }
+    return h;
+}
+
+function _rsRenderSectorLadder(ladder) {
+    if (!ladder || !ladder.sectors || !ladder.sectors.length) return '<div class="rs-empty">\u6682\u65e0\u677f\u5757\u5929\u68af\u6570\u636e</div>';
+    var dates = (ladder.dates || []).slice().reverse();   // 近→旧，最近在左
+    var h = '<div class="rs-ladder">';
+    // 图例说明
+    h += '<div class="rs-ladder-legend">';
+    h += '<span class="rs-lg-item"><i class="rs-lg-swatch" style="background:rgba(255,215,0,0.4);"></i>\u9ad8\u70ed \u22658\u5bb6</span>';
+    h += '<span class="rs-lg-item"><i class="rs-lg-swatch" style="background:rgba(255,215,0,0.22);"></i>\u4e2d\u70ed 4-7\u5bb6</span>';
+    h += '<span class="rs-lg-item"><i class="rs-lg-swatch" style="background:rgba(255,215,0,0.08);"></i>\u4f4e\u70ed 1-3\u5bb6</span>';
+    h += '<span class="rs-lg-note">\u6bcf\u683c=\u5f53\u65e5\u6da8\u505c\u5bb6\u6570/\u6700\u9ad8\u8fde\u677f\uff1b\u683c\u4e0b\u65b9=\u5f53\u65e5\u9f99\u5934\uff1b\u884c\u53f3\u4fa7=\u8fd110\u65e5\u5408\u8ba1\uff1b\u8868\u5934\u9ec4\u8272=\u4eca\u65e5</span>';
+    h += '</div>';
+    h += '<div class="rs-ladder-wrap"><table class="rs-ladder-matrix">';
+    h += '<thead><tr><th>\u677f\u5757</th>';
+    for (var i = 0; i < dates.length; i++) {
+        var isToday = (i === 0);
+        h += '<th' + (isToday ? ' class="rs-ladder-today"' : '') + '>' + (dates[i] || '').slice(5) + '</th>';
+    }
+    h += '<th class="rs-ladder-total">\u5408\u8ba1</th>';
+    h += '</tr></thead><tbody>';
+    for (var s = 0; s < ladder.sectors.length; s++) {
+        var sec = ladder.sectors[s];
+        h += '<tr><td class="rs-ladder-sector">' + _kplEsc(sec.sector || '') + '</td>';
+        for (var d = 0; d < dates.length; d++) {
+            var cell = (sec.cells || {})[dates[d]];
+            if (cell && cell.zt_count > 0) {
+                var heat = 'rs-heat-low';
+                if (cell.zt_count >= 8) heat = 'rs-heat-hot';
+                else if (cell.zt_count >= 4) heat = 'rs-heat-mid';
+                var alpha = Math.min(0.45, 0.06 + cell.zt_count * 0.03).toFixed(3);
+                h += '<td class="rs-ladder-cell ' + heat + '" style="background:rgba(255,215,0,' + alpha + ');">' +
+                     '<div class="rs-lc-top">' + cell.zt_count + '<span class="rs-lc-lb">/' + cell.max_lianban + '\u677f</span></div>' +
+                     (cell.leader_name ? '<div class="rs-lc-leader">' + _kplEsc(cell.leader_name) + '</div>' : '') +
+                     '</td>';
+            } else {
+                h += '<td class="rs-ladder-cell rs-ladder-empty">-</td>';
+            }
+        }
+        h += '<td class="rs-ladder-total">' + (sec.total_zt || 0) + '\u5bb6</td>';
+        h += '</tr>';
+    }
+    h += '</tbody></table></div></div>';
+    return h;
+}
+
+function rsOpenStock(el) {
+    var code = el.getAttribute('data-code') || '';
+    var name = el.getAttribute('data-name') || '';
+    if (!code || !name) return;
+    var container = el.closest('.rs-leader-stocks, .rs-mainline-card, .rs-sent-item');
+    var blocks = container ? container.querySelectorAll('[data-code][data-name]') : [];
+    var list = [];
+    var idx = -1;
+    for (var i = 0; i < blocks.length; i++) {
+        var n = blocks[i].getAttribute('data-name') || '';
+        var c = blocks[i].getAttribute('data-code') || '';
+        if (n && c) {
+            list.push({name: n, code: c});
+            if (c === code && idx < 0) idx = list.length - 1;
+        }
+    }
+    openDsStockFromRhythm(name, code, '', list, idx);
+}
+
+function manualRefreshReview(force) {
+    var body = document.getElementById('twReviewBody');
+    if (!body) return;
+    body.innerHTML = '<div class="lt-trajectory-loading">\u5237\u65b0\u4e2d...</div>';
+    if (force) {
+        // 强制刷新：清 JS 侧按日缓存，重拉 archive 重建导航条 + 最新日
+        _reviewDayCache = {};
+        fetch('/api/review_archive?no_cache=1&_t=' + Date.now())
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!data) { body.innerHTML = '<div class="lt-trajectory-loading">\u52a0\u8f7d\u5931\u8d25</div>'; return; }
+                _reviewDatesOrder = (data.dates || []).slice();
+                _reviewSelDate = data.latest_date || (_reviewDatesOrder.length ? _reviewDatesOrder[0] : null);
+                _reviewDayCache = {};
+                if (data.latest) _reviewDayCache[data.latest_date] = data.latest;
+                var nav = document.getElementById('twReviewNav');
+                if (nav) nav.innerHTML = renderReviewDateNav(data);
+                body.innerHTML = (data.latest ? renderReviewSummary(data.latest) : '<div class="lt-trajectory-loading">\u6682\u65e0\u590d\u76d8\u6570\u636e</div>');
+            })
+            .catch(function() { body.innerHTML = '<div class="lt-trajectory-loading">\u52a0\u8f7d\u5931\u8d25</div>'; });
+    } else {
+        // 自动刷新：维持当前选中日，刷新该日内容（走服务端缓存）
+        var target = _reviewSelDate || null;
+        var url = '/api/review_summary?_t=' + Date.now();
+        if (target) url = '/api/review_summary?date=' + target + '&_t=' + Date.now();
+        fetch(url)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (target && data && data.date) _reviewDayCache[target] = data;
+                body.innerHTML = renderReviewSummary(data);
+            })
+            .catch(function() { body.innerHTML = '<div class="lt-trajectory-loading">\u52a0\u8f7d\u5931\u8d25</div>'; });
+    }
+}
+
+// 复盘自动刷新（复刻 toggleThemeTreeAutoRefresh 模式）
+var _reviewAutoTimer = null;
+var _reviewAutoCountdown = null;
+var _reviewAutoRemaining = 0;
+var _reviewAutoActive = false;
+var _REVIEW_AUTO_INTERVAL = 60;   // 秒，可调
+
+function toggleReviewAutoRefresh() {
+    var btn = document.getElementById('reviewAutoBtn');
+    if (!btn) return;
+    if (_reviewAutoActive) {
+        clearInterval(_reviewAutoTimer); clearInterval(_reviewAutoCountdown);
+        _reviewAutoActive = false; _reviewAutoTimer = null; _reviewAutoCountdown = null;
+        btn.innerHTML = '\u23f1 \u81ea\u52a8\u5237\u65b0 1\u5206\u949f';
+        btn.classList.remove('active');
+        showToast('\u5df2\u505c\u6b62\u590d\u76d8\u81ea\u52a8\u5237\u65b0', 'info');
+        return;
+    }
+    var now = new Date();
+    var beijingHour = (now.getUTCHours() + 8) % 24;
+    var totalMin = beijingHour * 60 + now.getUTCMinutes();
+    if (totalMin < 565 || totalMin >= 900) {
+        showToast('\u23f0 \u975e\u4ea4\u6613\u65f6\u6bb5 (9:25~15:00)\uff0c\u81ea\u52a8\u5237\u65b0\u4e0d\u53ef\u7528', 'warning');
+        return;
+    }
+    _reviewAutoActive = true;
+    _reviewAutoRemaining = _REVIEW_AUTO_INTERVAL;
+    btn.classList.add('active');
+    function updateReviewBtn() {
+        var m = Math.floor(_reviewAutoRemaining / 60);
+        var s = _reviewAutoRemaining % 60;
+        btn.innerHTML = '<span class="rt-pulse-dot"></span> \u81ea\u52a8\u5237\u65b0 (' + m + ':' + (s < 10 ? '0' : '') + s + ')';
+    }
+    updateReviewBtn();
+    _reviewAutoCountdown = setInterval(function() {
+        _reviewAutoRemaining--;
+        if (_reviewAutoRemaining <= 0) {
+            var n = new Date();
+            var h = (n.getUTCHours() + 8) % 24;
+            var tot = h * 60 + n.getUTCMinutes();
+            if (tot < 565 || tot >= 900) {   // 过交易时段自动停
+                clearInterval(_reviewAutoTimer); clearInterval(_reviewAutoCountdown);
+                _reviewAutoActive = false; _reviewAutoTimer = null; _reviewAutoCountdown = null;
+                btn.innerHTML = '\u23f1 \u81ea\u52a8\u5237\u65b0 1\u5206\u949f';
+                btn.classList.remove('active');
+                showToast('\u23f0 \u5df2\u8fc7\u4ea4\u6613\u65f6\u6bb5\uff0c\u81ea\u52a8\u5237\u65b0\u5df2\u505c\u6b62', 'info');
+                return;
+            }
+            if (currentTab !== 'themewind') {   // 不在题材风向tab则跳过本次刷新，避免后台空转
+                _reviewAutoRemaining = _REVIEW_AUTO_INTERVAL;
+                updateReviewBtn();
+                return;
+            }
+            _reviewAutoRemaining = _REVIEW_AUTO_INTERVAL;
+            manualRefreshReview(false);   // 盘中自动触发（走缓存 60s TTL）
+        }
+        updateReviewBtn();
+    }, 1000);
 }
 
 // hover 高亮同一题材的所有单元格（只高亮同名 td）
@@ -14081,8 +15371,9 @@ function _kplRenderRhythmGrid(mergedRows, secId) {
     html += '<div class="rg-corner">\u80a1\u7968</div>';
     for (var ci = 0; ci < N; ci++) {
         var dateStr = gd.allDates[ci];
+        var dayCells = gd.dateMap[dateStr] || {};
         // 当日 涨停+大涨 数量：≥4 题材关注日，≥8 题材高潮日
-        var dayCnt = Object.keys(gd.dateMap[dateStr] || {}).length;
+        var dayCnt = Object.keys(dayCells).length;
         var markCls = '', markBadge = '';
         if (dayCnt >= 8) {
             markCls = ' high';
@@ -14091,7 +15382,27 @@ function _kplRenderRhythmGrid(mergedRows, secId) {
             markCls = ' watch';
             markBadge = '<div class="rg-day-badge watch" title="\u9898\u6750\u5173\u6ce8\u65e5\uff08\u6da8\u505c+\u5927\u6da8 ' + dayCnt + ' \u53ea\uff09">\u5173\u6ce8</div>';
         }
-        html += '<div class="rg-date' + markCls + '">' + markBadge + '<div>' + dateStr.slice(2) + '</div></div>';
+        // 分类统计：主板涨停 / 创业板·科创板涨停 / 创业板·科创板大涨
+        var mainZt = 0, gemZt = 0, gemRise = 0;
+        for (var cc in dayCells) {
+            var c = dayCells[cc];
+            var sc = c.stock_code || '';
+            var isGem = sc.indexOf('30') === 0 || sc.indexOf('68') === 0; // 创业板300/301 + 科创板688/689
+            if (c.is_strong_rise) {
+                if (isGem) gemRise++;
+            } else {
+                if (isGem) gemZt++; else mainZt++;
+            }
+        }
+        var dayStats = '';
+        if (dayCnt > 0) {
+            dayStats = '<div class="rg-day-stats">' +
+                '<span class="rg-stat rg-stat-main" title="\u4e3b\u677f\u6da8\u505c ' + mainZt + ' \u53ea"><i></i>\u4e3b ' + mainZt + '</span>' +
+                '<span class="rg-stat rg-stat-gem" title="\u521b\u4e1a\u677f/\u79d1\u521b\u677f\u6da8\u505c ' + gemZt + ' \u53ea"><i></i>\u521b/\u79d1 ' + gemZt + '</span>' +
+                '<span class="rg-stat rg-stat-rise" title="\u521b\u4e1a\u677f/\u79d1\u521b\u677f\u5927\u6da8 ' + gemRise + ' \u53ea"><i></i>\u5927\u6da8 ' + gemRise + '</span>' +
+                '</div>';
+        }
+        html += '<div class="rg-date' + markCls + '">' + markBadge + dayStats + '<div>' + dateStr.slice(2) + '</div></div>';
     }
     html += '</div>';
     // 每股票一行：同一股票恒在同一水平行
@@ -21232,6 +22543,28 @@ def _cat_order(cat):
     order = {'宽基指数': 0, '行业主题': 1, '商品': 2, '债券': 3, '货币': 4, '跨境': 5}
     return order.get(cat, 6)
 
+def _build_etf_spot():
+    """构建 ETF 行情列表（akshare fund_etf_spot_ths）。失败返回 []。供 /api/etf_spot 与复盘ETF匹配复用。"""
+    import akshare as ak
+    import pandas as pd
+    df = ak.fund_etf_spot_ths()
+    result = []
+    if df is not None and not df.empty:
+        for _, row in df.iterrows():
+            code = str(row.get('基金代码', '')).strip() if pd.notna(row.get('基金代码')) else ''
+            name = str(row.get('基金名称', '')).strip() if pd.notna(row.get('基金名称')) else ''
+            price = float(row['当前-单位净值']) if pd.notna(row.get('当前-单位净值')) else None
+            change_pct = float(row['增长率']) if pd.notna(row.get('增长率')) else 0.0
+            category = _classify_etf(name)
+            subcategory = _classify_etf_sub(name, category)
+            result.append({
+                'code': code, 'name': name, 'price': price,
+                'change_pct': change_pct, 'category': category,
+                'subcategory': subcategory,
+            })
+        result.sort(key=lambda x: (_cat_order(x['category']), -x['change_pct']))
+    return result
+
 _ETF_L2 = {
     '宽基指数': [
         ('科创板', ['科创', '双创', '创成长']),
@@ -21661,6 +22994,41 @@ class Handler(BaseHTTPRequestHandler):
                 result = _build_theme_structure_tree()
                 if result:
                     _set_cache('theme_structure_tree', result)
+            self._respond_json(result, cors_headers)
+
+        elif path == '/api/review_summary':
+            no_cache = query.get('no_cache', ['0'])[0].strip() == '1'
+            ttl = 60 if _is_trading_hours() else 600   # 盘中60s / 非盘600s
+            date_param = query.get('date', [None])[0]
+            if date_param:
+                # 按指定日期构建该日完整复盘（含板块天梯），供历史日点选查看
+                ymd = date_param.replace('-', '')
+                ck = 'review_summary_' + ymd
+                result = None if no_cache else _get_cached(ck, ttl=ttl)
+                if result is None:
+                    result = _build_review_summary_for(ymd, with_ladder=True)
+                    if result:
+                        _set_cache(ck, result)
+            else:
+                result = None
+                if not no_cache:
+                    result = _get_cached('review_summary', ttl=ttl)
+                if result is None:
+                    result = _build_review_summary()
+                    if result:
+                        _set_cache('review_summary', result)
+            self._respond_json(result, cors_headers)
+
+        elif path == '/api/review_archive':
+            no_cache = query.get('no_cache', ['0'])[0].strip() == '1'
+            ttl = 60 if _is_trading_hours() else 600   # 盘中60s / 非盘600s
+            result = None
+            if not no_cache:
+                result = _get_cached('review_archive', ttl=ttl)
+            if result is None:
+                result = _build_review_archive()
+                if result:
+                    _set_cache('review_archive', result)
             self._respond_json(result, cors_headers)
 
         elif path == '/api/ladder_by_date':
@@ -22689,6 +24057,8 @@ class Handler(BaseHTTPRequestHandler):
             _kpl_rescan()
             _invalidate_cache(prefix='ladder_trajectory')
             _invalidate_cache(prefix='top_theme_trajectory')
+            _invalidate_cache(prefix='review_summary')
+            _invalidate_cache(prefix='review_archive')
             _invalidate_cache(prefix='kpl_search:')
             _kpl_search_cache_clear()
             self._respond_json({'ok': True, 'files_count': len(_kpl_day_files)}, cors_headers)
@@ -23457,24 +24827,7 @@ class Handler(BaseHTTPRequestHandler):
             result = _get_cached('etf_spot')
             if result is None:
                 try:
-                    import akshare as ak
-                    import pandas as pd
-                    df = ak.fund_etf_spot_ths()
-                    result = []
-                    if df is not None and not df.empty:
-                        for _, row in df.iterrows():
-                            code = str(row.get('基金代码', '')).strip() if pd.notna(row.get('基金代码')) else ''
-                            name = str(row.get('基金名称', '')).strip() if pd.notna(row.get('基金名称')) else ''
-                            price = float(row['当前-单位净值']) if pd.notna(row.get('当前-单位净值')) else None
-                            change_pct = float(row['增长率']) if pd.notna(row.get('增长率')) else 0.0
-                            category = _classify_etf(name)
-                            subcategory = _classify_etf_sub(name, category)
-                            result.append({
-                                'code': code, 'name': name, 'price': price,
-                                'change_pct': change_pct, 'category': category,
-                                'subcategory': subcategory,
-                            })
-                        result.sort(key=lambda x: (_cat_order(x['category']), -x['change_pct']))
+                    result = _build_etf_spot()
                     _set_cache('etf_spot', result)
                 except Exception as e:
                     self._respond_json({'error': str(e)}, cors_headers)
