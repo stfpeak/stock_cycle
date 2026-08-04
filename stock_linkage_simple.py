@@ -948,6 +948,48 @@ def _kpl_compute_lianban(stock_code, date_str):
     return lb
 
 
+def _kpl_is_restart(stock_code, date_fmt, known_zt=False):
+    """判断股票在指定日期是否为'重启'：此前 ≥2 连板、回调数日后再次孤立首板（20个交易日内）。
+    规则：当日为该股涨停日且不在连板中（连板中不算重启时刻）；
+    从当日向前最多回溯20个交易日，找到最近一次旧的涨停日；
+    该旧涨停日属于一条 ≥2 连板的旧链条。
+    date_fmt: YYYY-MM-DD
+    known_zt: True 表示调用方已确认当日为该股涨停日（盘中注入场景，今日记录可能尚未入库）"""
+    if _kpl_compute_lianban(stock_code, date_fmt) >= 2:
+        return False  # 正在连板中，不算重启时刻
+    records = _kpl_rows_by_stock.get(stock_code, [])
+    if not records:
+        return False
+    zt_set = set()
+    for r in records:
+        d = r.get('date', '').replace('-', '')
+        if d:
+            zt_set.add(d)
+    date_ymd = date_fmt.replace('-', '')
+    if not known_zt and date_ymd not in zt_set:
+        return False
+    # 从当日向前最多回溯20个交易日，找最近一次旧的涨停日
+    cur = date_ymd
+    for _ in range(20):
+        prev = finder._get_lagged_date(cur, -1)
+        if not prev:
+            break
+        if prev in zt_set:
+            # 该旧涨停日属于一条 ≥2 连板的旧链条（继续向前数连续涨停天数）
+            chain_len = 1
+            pc = prev
+            while True:
+                pp = finder._get_lagged_date(pc, -1)
+                if pp and pp in zt_set:
+                    chain_len += 1
+                    pc = pp
+                else:
+                    break
+            return chain_len >= 2
+        cur = prev
+    return False
+
+
 def _kpl_is_shouban(stock_code, date_str, lookback=15):
     """判断股票在指定日期是否为'首板'（前N个交易日无涨停记录）。
     date_str: YYYY-MM-DD 格式
@@ -1014,7 +1056,7 @@ def _kpl_filter_lianban(results, lianban_filter):
     return filtered
 
 
-def _inject_today_zt_to_trajectory(recent_fmt, freq_by_tag, min_lianban=0):
+def _inject_today_zt_to_trajectory(recent_fmt, freq_by_tag, min_lianban=0, stocks_by_tag=None):
     """
     盘中实时补充今日涨停原因标签到轨迹表。
     当今日KPL数据不存在时，从实时涨停池获取今日涨停股票，
@@ -1024,6 +1066,7 @@ def _inject_today_zt_to_trajectory(recent_fmt, freq_by_tag, min_lianban=0):
         recent_fmt: 日期列表 (YYYY-MM-DD)
         freq_by_tag: {tag: {date: count}} 会被修改
         min_lianban: 最低连板数过滤（连板版用 >= 2）
+        stocks_by_tag: 可选 {tag: {date: [股票明细]}}，传入时额外写入今日注入股票明细
 
     Returns:
         today_stock_tags: {stock_code: reason_tag}
@@ -1045,8 +1088,13 @@ def _inject_today_zt_to_trajectory(recent_fmt, freq_by_tag, min_lianban=0):
             for _, row in df.iterrows():
                 code = str(int(row['代码'])).zfill(6)
                 lianban = int(row['连板数']) if pd.notna(row.get('连板数')) else 0
+                # 调用方需要股票明细时，允许"重启首板"(lb<2) 通过连板过滤（盘中补充今日重启）
+                is_restart = False
+                if stocks_by_tag is not None and lianban < 2:
+                    is_restart = _kpl_is_restart(code, today_fmt, known_zt=True)
                 if lianban < min_lianban:
-                    continue
+                    if not (stocks_by_tag is not None and is_restart):
+                        continue
                 # LEVEL 1: _kpl_rows_by_stock 最新记录
                 reason_tag = ''
                 for r in sorted(_kpl_rows_by_stock.get(code, []), key=lambda x: x.get('date', ''), reverse=True):
@@ -1061,9 +1109,485 @@ def _inject_today_zt_to_trajectory(recent_fmt, freq_by_tag, min_lianban=0):
                     if reason_tag not in freq_by_tag:
                         freq_by_tag[reason_tag] = {}
                     freq_by_tag[reason_tag][today_fmt] = freq_by_tag[reason_tag].get(today_fmt, 0) + 1
+                    if stocks_by_tag is not None:
+                        name = str(row.get('名称', '')) or ''
+                        stocks_by_tag.setdefault(reason_tag, {}).setdefault(today_fmt, []).append({
+                            'code': code,
+                            'name': name,
+                            'lianban': lianban,
+                            'is_restart': is_restart,
+                            'is_gem': (code[:3] in ('300', '301') or code[:3] in ('688', '689')),
+                        })
     except Exception:
         pass
     return today_stock_tags
+
+
+# ===== 连板总结与预期：明日预期 → 次日实时验证（Session 18） =====
+_today_zt_snap_cache = None
+_today_zt_snap_ts = 0.0
+
+
+def _kpl_today_zt_snapshot():
+    """盘中 akshare 实时涨停池快照（60s 内存缓存）。返回 {code: {'name':..., 'lianban': int}}。
+    非交易时段返回 {}，失败静默返回 {}。"""
+    global _today_zt_snap_cache, _today_zt_snap_ts
+    now = time.time()
+    if _today_zt_snap_cache is not None and now - _today_zt_snap_ts < 60:
+        return _today_zt_snap_cache
+    _today_zt_snap_cache = {}
+    _today_zt_snap_ts = now
+    if not _is_trading_hours():
+        return _today_zt_snap_cache
+    try:
+        import akshare as ak
+        import pandas as pd
+        today_ymd = datetime.now().strftime('%Y%m%d')
+        df = ak.stock_zt_pool_em(date=today_ymd)
+        if df is not None and not df.empty:
+            for _, row in df.iterrows():
+                code = str(int(row['代码'])).zfill(6)
+                lianban = int(row['连板数']) if pd.notna(row.get('连板数')) else 0
+                _today_zt_snap_cache[code] = {
+                    'name': str(row.get('名称', '')) or '',
+                    'lianban': lianban,
+                }
+    except Exception:
+        _today_zt_snap_cache = {}
+    return _today_zt_snap_cache
+
+
+def _kpl_theme_zt_count(tag, date_fmt):
+    """题材某日全量涨停只数（含首板）。优先 _kpl_rows_by_date 按 reason_tag 计数；
+    当日无 KPL 且盘中 → 实时涨停池按最新 reason_tag 解析兜底。"""
+    rows = _kpl_rows_by_date.get(date_fmt)
+    if rows:
+        cnt = 0
+        for r in rows:
+            if (r.get('reason_tag', '') or '').strip() == tag:
+                cnt += 1
+        return cnt
+    snap = _kpl_today_zt_snapshot()
+    if not snap:
+        return 0
+    cnt = 0
+    for code, info in snap.items():
+        if _kpl_stock_latest_tag.get(code, {}).get('tag', '') == tag:
+            cnt += 1
+    return cnt
+
+
+def _kpl_restart_prev_chain(code, date_fmt):
+    """重启股断板前的旧连板数：仿 _kpl_is_restart 回溯20交易日内最近旧涨停日，返回该日连板数；无则0。"""
+    records = _kpl_rows_by_stock.get(code, [])
+    if not records:
+        return 0
+    zt_set = set()
+    for r in records:
+        d = r.get('date', '').replace('-', '')
+        if d:
+            zt_set.add(d)
+    date_ymd = date_fmt.replace('-', '')
+    cur = date_ymd
+    for _ in range(20):
+        prev = finder._get_lagged_date(cur, -1)
+        if not prev:
+            break
+        if prev in zt_set:
+            return _kpl_compute_lianban(code, f"{prev[:4]}-{prev[4:6]}-{prev[6:]}")
+        cur = prev
+    return 0
+
+
+def _kpl_group_expectations(date_fmt, stocks_by_tag):
+    """按日期聚合连板+重启题材预期（同题材全部连板+重启并一条）。
+    返回 [{tag, stocks, max_lb, top, types}]，按 -max_lb 排序。"""
+    by_tag = {}
+    for tag, date_map in (stocks_by_tag or {}).items():
+        for s in (date_map.get(date_fmt) or []):
+            by_tag.setdefault(tag, []).append(s)
+    groups = []
+    for tag, stocks in by_tag.items():
+        lb2 = [s for s in stocks if int(s.get('lianban', 0) or 0) >= 2]
+        restart = [s for s in stocks if s.get('is_restart')]
+        if not lb2 and not restart:
+            continue
+        merged = []
+        seen = set()
+        for s in lb2 + restart:
+            c = s.get('code', '') or ''
+            if c in seen:
+                continue
+            seen.add(c)
+            merged.append({
+                'name': s.get('name', '') or '',
+                'code': c,
+                'lianban': int(s.get('lianban', 0) or 0),
+                'is_restart': bool(s.get('is_restart')),
+                'is_gem': bool(s.get('is_gem')),
+            })
+        if not merged:
+            continue
+        merged.sort(key=lambda s: (-s['lianban'], s['name']))
+        max_lb = max(s['lianban'] for s in merged)
+        top = merged[0]
+        types = []
+        if lb2:
+            types.append('ladder')
+        if restart:
+            types.append('restart')
+        groups.append({
+            'tag': tag,
+            'stocks': merged,
+            'max_lb': max_lb,
+            'top': {'name': top['name'], 'code': top['code'], 'lianban': top['lianban'],
+                    'is_restart': top['is_restart'], 'is_gem': top['is_gem']},
+            'types': types,
+        })
+    groups.sort(key=lambda x: -x['max_lb'])
+    return groups
+
+
+def _kpl_expect_parts(g, date_fmt):
+    """确定性生成明日预期结构化分条（前端逐条展示，不挤一行）。
+    返回 [{kind:'advance'|'break'|'restart', text:...}, ...]。"""
+    parts = []
+    if 'ladder' in g['types']:
+        top = g['top']
+        parts.append({'kind': 'advance',
+                      'text': '若晋级%s板 → 题材情绪升温、或推动板块高潮' % (top['lianban'] + 1)})
+        parts.append({'kind': 'break',
+                      'text': '若断板 → 注意高度退潮'})
+    for s in g['stocks']:
+        if s.get('is_restart'):
+            prev = _kpl_restart_prev_chain(s['code'], date_fmt)
+            parts.append({'kind': 'restart',
+                          'text': '%s 前期%s连板断板后重启首板：若题材明日走强 → 板块回流机会，关注二波'
+                                  % (s['name'], prev)})
+    return parts
+
+
+def _kpl_expect_text(g, date_fmt):
+    """确定性生成明日预期整段文本（兼容字段；前端改用 expect_parts 逐条展示）。"""
+    return '；'.join(p['text'] for p in _kpl_expect_parts(g, date_fmt))
+
+
+def _kpl_opportunity_text(verdict):
+    """验证 verdict → 机会建议文字（确定性模板）。"""
+    if verdict == '晋级成功·板块升温':
+        return '龙头晋级，题材情绪升温 → 关注板块低吸/追涨、对应ETF、创业板/科创板套利'
+    if verdict == '晋级成功·板块降温':
+        return '龙头独立走强、板块降温 → 关注龙头，谨慎跟风，留意补涨'
+    if verdict == '断板·板块退潮':
+        return '龙头断板、板块退潮 → 注意回避，等待新主线或回流信号'
+    if verdict == '断板·板块仍热':
+        return '龙头断板但板块仍活跃 → 关注补涨股/新龙头'
+    if verdict == '回流确认':
+        return '板块回流确认 → 关注二波机会（前期龙头/低位补涨）'
+    if verdict == '回流未确认':
+        return '回流未确认，继续观察'
+    return '连板延续 → 跟踪龙头与板块强度'
+
+
+def _kpl_build_candidates(tag, prev_date, today_date, verdict, stocks_by_tag):
+    """验证后机会候选股：晋级→补涨、断板→反弹关注、回流→回流候选。"""
+    cands = []
+    seen = set()
+    def _add(name, code, role):
+        if not code or code in seen:
+            return
+        seen.add(code)
+        cands.append({'name': name, 'code': code, 'role': role})
+    today_stocks = (stocks_by_tag or {}).get(tag, {}).get(today_date) or []
+    prev_stocks = (stocks_by_tag or {}).get(tag, {}).get(prev_date) or []
+    if verdict in ('晋级成功·板块升温', '晋级成功·板块降温'):
+        today_max = 0
+        for s in today_stocks:
+            lb = int(s.get('lianban', 0) or 0)
+            if lb > today_max:
+                today_max = lb
+        for s in today_stocks:
+            lb = int(s.get('lianban', 0) or 0)
+            if 2 <= lb < today_max:
+                _add(s.get('name', ''), s.get('code', ''), '补涨')
+        # 今日该题材首板股（KPL；盘中无 KPL 用快照兜底）
+        day_rows = _kpl_rows_by_date.get(today_date)
+        if day_rows:
+            for r in day_rows:
+                if (r.get('reason_tag', '') or '').strip() == tag:
+                    sc = r.get('stock_code', '') or ''
+                    if sc:
+                        name = r.get('stock_name', '') or ''
+                        if _kpl_compute_lianban(sc, today_date) < 2:
+                            _add(name, sc, '补涨')
+        else:
+            snap = _kpl_today_zt_snapshot()
+            for code, info in snap.items():
+                if _kpl_stock_latest_tag.get(code, {}).get('tag', '') == tag:
+                    if (info.get('lianban', 0) or 0) < 2:
+                        _add(info.get('name', ''), code, '补涨')
+    elif verdict in ('断板·板块退潮', '断板·板块仍热'):
+        for s in prev_stocks:
+            if int(s.get('lianban', 0) or 0) >= 2:
+                _add(s.get('name', ''), s.get('code', ''), '反弹关注')
+    elif verdict in ('回流确认', '回流未确认'):
+        for s in today_stocks:
+            if s.get('is_restart'):
+                _add(s.get('name', ''), s.get('code', ''), '回流候选')
+        for s in prev_stocks:
+            if int(s.get('lianban', 0) or 0) >= 2:
+                _add(s.get('name', ''), s.get('code', ''), '回流候选')
+    else:  # 续板观察
+        for s in prev_stocks:
+            if int(s.get('lianban', 0) or 0) >= 2:
+                _add(s.get('name', ''), s.get('code', ''), '龙头跟踪')
+    return cands[:10]
+
+
+def _kpl_verify_expectation(g, prev_date, today_date, stocks_by_tag):
+    """验证昨日一条预期：龙头晋级/断板 + 板块热度 + 回流 + 机会建议 + 候选股。"""
+    tag = g['tag']
+    prev_top = g['top']
+    prev_max_lb = g['max_lb']
+    code = prev_top['code']
+    today_ymd = today_date.replace('-', '')
+    snap = _kpl_today_zt_snapshot()
+    today_snap_hit = code in snap
+    is_zt_today = _kpl_is_zt(code, today_ymd) or today_snap_hit
+    if is_zt_today:
+        if today_snap_hit:
+            new_lb = snap[code]['lianban'] or 1
+            if new_lb < 1:
+                new_lb = 1
+        else:
+            new_lb = _kpl_compute_lianban(code, today_date)
+        top_status = '晋级' if new_lb > prev_max_lb else '续板'
+    else:
+        new_lb = 0
+        top_status = '断板'
+    prev_zt = _kpl_theme_zt_count(tag, prev_date)
+    today_zt = _kpl_theme_zt_count(tag, today_date)
+    if today_zt > prev_zt:
+        heat = 'up'
+    elif today_zt < prev_zt:
+        heat = 'down'
+    else:
+        heat = 'flat'
+    reflow = ('restart' in g['types']) and (today_zt > prev_zt)
+    if 'restart' in g['types']:
+        verdict = '回流确认' if reflow else '回流未确认'
+    elif top_status == '晋级' and heat == 'up':
+        verdict = '晋级成功·板块升温'
+    elif top_status == '晋级':
+        verdict = '晋级成功·板块降温'
+    elif top_status == '断板' and heat == 'down':
+        verdict = '断板·板块退潮'
+    elif top_status == '断板':
+        verdict = '断板·板块仍热'
+    else:
+        verdict = '续板观察'
+    candidates = _kpl_build_candidates(tag, prev_date, today_date, verdict, stocks_by_tag)
+    return {
+        'tag': tag,
+        'prev_max_lb': prev_max_lb,
+        'prev_top': {'name': prev_top['name'], 'code': prev_top['code'], 'lianban': prev_top['lianban'],
+                     'is_restart': prev_top['is_restart'], 'is_gem': prev_top['is_gem']},
+        'top_status': top_status,
+        'top_new_lb': new_lb,
+        'prev_zt': prev_zt,
+        'today_zt': today_zt,
+        'heat': heat,
+        'reflow': reflow,
+        'verdict': verdict,
+        'opportunity': _kpl_opportunity_text(verdict),
+        'candidates': candidates,
+    }
+
+
+def _build_trajectory_summary(recent_fmt, freq_by_tag, stocks_by_tag):
+    """构建连板轨迹的'连板总结与预期'结构化卡片数据。
+
+    数据源：stocks_by_tag（含今日盘中注入）与全局 _kpl_rows_by_date（近10日全量涨停只数）。
+    Args:
+        recent_fmt: 近N日日期列表 (YYYY-MM-DD, 旧→新)
+        freq_by_tag: {tag: {date: count}}（本函数仅用于签名对齐，统计以 stocks_by_tag 为准）
+        stocks_by_tag: {tag: {date: [{code,name,lianban,is_restart,is_gem}]}}
+    Returns:
+        summary dict 或 None（recent_fmt 为空）
+    """
+    if not recent_fmt:
+        return None
+    latest_date = recent_fmt[-1]
+    # 今日股票聚合：code -> info, tag -> [stock]
+    today_stocks = {}
+    today_by_tag = {}
+    for tag, date_map in (stocks_by_tag or {}).items():
+        for s in (date_map.get(latest_date) or []):
+            code = s.get('code', '') or ''
+            if not code:
+                continue
+            today_stocks[code] = {
+                'code': code,
+                'name': s.get('name', '') or '',
+                'lianban': int(s.get('lianban', 0) or 0),
+                'is_restart': bool(s.get('is_restart')),
+                'is_gem': bool(s.get('is_gem')),
+                'tag': tag,
+            }
+            today_by_tag.setdefault(tag, []).append(s)
+
+    def _lb(s):
+        return int(s.get('lianban', 0) or 0)
+
+    # 1) 今日连板梯队：lianban>=2 的题材
+    today_ladders = []
+    for tag, stocks in today_by_tag.items():
+        lb2 = [s for s in stocks if _lb(s) >= 2]
+        if not lb2:
+            continue
+        lb2.sort(key=lambda s: (-_lb(s), s.get('name', '') or ''))
+        today_ladders.append({
+            'tag': tag,
+            'top_lianban': max(_lb(s) for s in lb2),
+            'stocks': [{'name': s.get('name', '') or '', 'code': s.get('code', '') or '',
+                        'lianban': _lb(s), 'is_restart': bool(s.get('is_restart')),
+                        'is_gem': bool(s.get('is_gem'))} for s in lb2],
+        })
+    today_ladders.sort(key=lambda x: -x['top_lianban'])
+
+    # 2) 板块高潮预警：近 N 日内每题材【单日】涨停只数峰值 > 8（历史全量行 + 今日注入，按日去重）
+    n = min(10, len(recent_fmt))
+    climax_by_tag = {}
+    for d_fmt in recent_fmt[-n:]:
+        day_sets = {}
+        for r in (_kpl_rows_by_date.get(d_fmt) or []):
+            tag = (r.get('reason_tag', '') or '').strip()
+            sc = r.get('stock_code', '') or ''
+            if tag and sc:
+                day_sets.setdefault(tag, set()).add(sc)
+        for tag, date_map in (stocks_by_tag or {}).items():
+            for s in (date_map.get(d_fmt) or []):
+                code = s.get('code', '') or ''
+                if code:
+                    day_sets.setdefault(tag, set()).add(code)
+        for tag, codes in day_sets.items():
+            cnt = len(codes)
+            cur = climax_by_tag.get(tag, {'peak': 0, 'peak_date': ''})
+            if cnt > cur['peak']:
+                cur['peak'] = cnt
+                cur['peak_date'] = d_fmt
+            climax_by_tag[tag] = cur
+    climax_tags = [{'tag': t, 'days': n, 'peak': v['peak'], 'peak_date': v['peak_date']}
+                   for t, v in climax_by_tag.items() if v['peak'] > 8]
+    climax_tags.sort(key=lambda x: (-x['peak'], x['tag']))
+
+    # 3) 2连板晋级观察：今日 lianban==2 且非重启
+    two_board_tags = []
+    for tag, stocks in today_by_tag.items():
+        two = [s for s in stocks if _lb(s) == 2 and not s.get('is_restart')]
+        if not two:
+            continue
+        two.sort(key=lambda s: s.get('name', '') or '')
+        two_board_tags.append({
+            'tag': tag,
+            'stocks': [{'name': s.get('name', '') or '', 'code': s.get('code', '') or '',
+                        'lianban': _lb(s), 'is_restart': False} for s in two],
+        })
+
+    # 4) 重启起2波：今日 is_restart
+    restart_tags = []
+    for tag, stocks in today_by_tag.items():
+        rs = [s for s in stocks if s.get('is_restart')]
+        if not rs:
+            continue
+        rs.sort(key=lambda s: s.get('name', '') or '')
+        restart_tags.append({
+            'tag': tag,
+            'stocks': [{'name': s.get('name', '') or '', 'code': s.get('code', '') or '',
+                        'lianban': _lb(s), 'is_restart': True} for s in rs],
+        })
+
+    # 5) 今日最高板（lianban>=2）
+    highest = None
+    for s in today_stocks.values():
+        if s['lianban'] >= 2 and (highest is None or s['lianban'] > highest['lianban']):
+            highest = {'name': s['name'], 'code': s['code'], 'lianban': s['lianban'], 'tag': s['tag']}
+
+    # 6) 断板预警：昨日有 lianban>=2、今日该题材无 lianban>=2（列出昨日连板股）
+    broken_tags = []
+    if len(recent_fmt) >= 2:
+        prev_date = recent_fmt[-2]
+        prev_stocks_by_tag = {}
+        for tag, date_map in (stocks_by_tag or {}).items():
+            lb2 = [s for s in (date_map.get(prev_date) or []) if _lb(s) >= 2]
+            if lb2:
+                lb2.sort(key=lambda s: (-_lb(s), s.get('name', '') or ''))
+                prev_stocks_by_tag[tag] = lb2
+        for tag, stocks in prev_stocks_by_tag.items():
+            today_has_lb2 = any(_lb(s) >= 2 for s in (today_by_tag.get(tag) or []))
+            if not today_has_lb2:
+                broken_tags.append({
+                    'tag': tag,
+                    'prev_top': max(_lb(s) for s in stocks),
+                    'stocks': [{'name': s.get('name', '') or '', 'code': s.get('code', '') or '',
+                                'lianban': _lb(s), 'is_restart': bool(s.get('is_restart')),
+                                'is_gem': bool(s.get('is_gem'))} for s in stocks],
+                })
+        broken_tags.sort(key=lambda x: -x['prev_top'])
+
+    # 7) 明日预期（预埋，pending）+ 昨日验证（次日盘中/收盘实时）
+    latest_ymd = latest_date.replace('-', '')
+    next_ymd = None
+    nxt = [d for d in _trading_days if d > latest_ymd]
+    if nxt:
+        next_ymd = nxt[0]
+    next_date = f"{next_ymd[:4]}-{next_ymd[4:6]}-{next_ymd[6:]}" if next_ymd else None
+    prev_date = recent_fmt[-2] if len(recent_fmt) >= 2 else None
+
+    expectations = []
+    if next_ymd:
+        for g in _kpl_group_expectations(latest_date, stocks_by_tag):
+            expectations.append({
+                'tag': g['tag'],
+                'stocks': g['stocks'],
+                'max_lb': g['max_lb'],
+                'top': g['top'],
+                'types': g['types'],
+                'next_date': next_date,
+                'expect_text': _kpl_expect_text(g, latest_date),
+                'expect_parts': _kpl_expect_parts(g, latest_date),
+            })
+
+    verification = None
+    if prev_date:
+        today_has = _kpl_is_zt_date_present(latest_ymd)
+        intraday_latest = (latest_date == datetime.now().strftime('%Y-%m-%d')) and _is_trading_hours()
+        if today_has or intraday_latest:
+            items = []
+            for g in _kpl_group_expectations(prev_date, stocks_by_tag):
+                items.append(_kpl_verify_expectation(g, prev_date, latest_date, stocks_by_tag))
+            verification = {
+                'prev_date': prev_date,
+                'today_date': latest_date,
+                'next_date': next_date,
+                'items': items,
+            }
+
+    return {
+        'latest_date': latest_date,
+        'today_ladders': today_ladders,
+        'climax_tags': climax_tags,
+        'two_board_tags': two_board_tags,
+        'restart_tags': restart_tags,
+        'highest': highest,
+        'broken_tags': broken_tags,
+        'today_total': len(today_stocks),
+        'today_tags': len(today_by_tag),
+        'expectations': expectations,
+        'verification': verification,
+        'prev_date': prev_date,
+        'next_date': next_date,
+    }
 
 
 def _kpl_analyze_rows(q, date_start=None, date_end=None, no_st=None, strict=None, lianban_filter=None):
@@ -5271,14 +5795,193 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
     text-align: center; min-width: 44px;
 }
 .lt-trajectory-col-header:first-child { min-width: 28px; }
-.lt-trajectory-cell {
-    text-align: center; padding: 2px 6px !important;
+td.lt-trajectory-cell {
+    text-align: left; padding: 2px 6px !important;
     background: rgba(0,212,255,0.05); color: #4fc3f7; font-size: 0.85em;
+    white-space: normal !important; vertical-align: top; min-width: 96px;
 }
 .lt-trajectory-cell-empty {
     text-align: center; color: #333;
 }
 .lt-trajectory-cell .lt-count { opacity: 0.7; font-size: 0.85em; margin-left: 1px; }
+/* 格子内连板股票 chips */
+.lt-cell-stocks { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 3px; }
+.lt-cell-stock {
+    display: inline-block; padding: 1px 5px; margin: 0;
+    background: rgba(6,182,212,0.18); color: #a5f3fc;
+    border: 1px solid rgba(34,211,238,0.35); border-radius: 4px;
+    font-size: 0.82em; line-height: 1.5; cursor: pointer;
+    white-space: nowrap;
+}
+.lt-cell-stock:hover { background: rgba(6,182,212,0.35); color: #fff; box-shadow: 0 0 6px rgba(34,211,238,0.4); }
+.lt-cell-stock b { color: #ffd700; font-weight: 700; }
+/* 重启：青色渐变实心 + 青色虚线边框（对齐龙头接力重启样式） */
+.lt-cell-stock-restart { background: linear-gradient(135deg, #155e75, #06b6d4); border: 1px dashed #22d3ee; }
+.lt-restart-mark { font-size: 0.78em; font-weight: 700; color: #ecfeff; background: rgba(34,211,238,0.28); border-radius: 3px; padding: 0 3px; margin-left: 2px; }
+/* 连板数配色 chips（无绿色，复用 KPL 盘面配色）：1黄 / 2橙 / 3红 / 4紫 / 5+深红金 */
+.lt-cell-stock { position: relative; }
+.lt-cell-stock.lt-lb-1 { background: linear-gradient(135deg, #b45309, #facc15); border: 1px solid #facc15; color: #fff; }
+.lt-cell-stock.lt-lb-2 { background: linear-gradient(135deg, #c2410c, #fb923c); border: 1px solid #fb923c; color: #fff; }
+.lt-cell-stock.lt-lb-3 { background: linear-gradient(135deg, #b91c1c, #ef4444); border: 1px solid #ef4444; color: #fff; }
+.lt-cell-stock.lt-lb-4 { background: linear-gradient(135deg, #6b21a8, #a855f7); border: 1px solid #a855f7; color: #fff; }
+.lt-cell-stock.lt-lb-high { background: linear-gradient(135deg, #9f1239, #facc15); border: 1px solid #fde047; color: #fff; }
+.lt-cell-stock.lt-lb-1 b, .lt-cell-stock.lt-lb-2 b, .lt-cell-stock.lt-lb-3 b, .lt-cell-stock.lt-lb-4 b, .lt-cell-stock.lt-lb-high b { color: #ffd700; }
+/* 最新交易日列：chip 外框 conic 跑马灯环（复用全局 --lb-angle / lb-border-marquee，不覆盖现有 border，重启虚线边框保留） */
+.lt-cell-stock.lt-latest::after {
+    content: '';
+    position: absolute;
+    inset: -2px;
+    border-radius: 6px;
+    padding: 2px;
+    background: conic-gradient(from var(--lb-angle), #22d3ee, #facc15, #fb923c, #e879f9, #22d3ee);
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask-composite: exclude;
+    animation: lb-border-marquee 1.2s linear infinite;
+    pointer-events: none;
+    z-index: 1;
+}
+/* 连板总结与预期（无绿色）：顶部结论条 + 今日结论/明日预期 两栏 */
+.lt-summary { margin-top: 12px; }
+.lt-summary-title { font-size: 0.9em; color: #ffd700; margin: 4px 0 8px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+/* 顶部结论条：最高板 + 今日统计 */
+.lt-sum-head { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; background: rgba(15,52,96,0.22); border: 1px solid #1e3a5f; border-radius: 12px; padding: 8px 12px; margin-bottom: 10px; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); box-shadow: 0 2px 12px rgba(0,0,0,0.15); }
+.lt-sum-head-item { display: flex; align-items: center; gap: 6px; font-size: 0.85em; color: #cbd5e1; flex-wrap: wrap; }
+.lt-sum-label { color: #94a3b8; font-weight: 600; }
+.lt-sum-big { color: #ffd700; font-size: 1.08em; font-weight: 700; }
+/* 两栏：今日结论 | 明日预期 */
+.lt-sum-cols { display: flex; flex-wrap: wrap; gap: 10px; }
+.lt-sum-col { flex: 1 1 360px; min-width: 300px; }
+.lt-sum-col-title { font-size: 0.85em; font-weight: 700; color: #ffd700; margin: 2px 0 6px; }
+.lt-sum-card { background: rgba(15,52,96,0.22); border: 1px solid #1e3a5f; border-radius: 12px; padding: 8px 10px; margin-bottom: 8px; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); box-shadow: 0 2px 12px rgba(0,0,0,0.15); }
+.lt-sum-card-title { font-size: 0.82em; font-weight: 700; color: #ffd700; margin-bottom: 6px; }
+.lt-sum-card.hot { border-color: rgba(239,68,68,0.5); }
+.lt-sum-card.hot .lt-sum-card-title { color: #f87171; }
+.lt-sum-card.watch { border-color: rgba(34,211,238,0.5); }
+.lt-sum-card.watch .lt-sum-card-title { color: #22d3ee; }
+.lt-sum-card.wave { border-color: rgba(255,215,0,0.5); }
+.lt-sum-card.broken { border-color: rgba(192,132,252,0.5); }
+.lt-sum-card.broken .lt-sum-card-title { color: #c084fc; }
+.lt-sum-row { font-size: 0.8em; color: #cbd5e1; margin: 3px 0; line-height: 1.7; display: flex; align-items: center; flex-wrap: wrap; gap: 3px; }
+.lt-sum-tag { color: #ffd700; font-weight: 600; }
+.lt-sum-broken { color: #c084fc; }
+.lt-sum-note { font-size: 0.74em; color: #94a3b8; margin-top: 8px; }
+.lt-sum-card .lt-cell-stock { margin-right: 3px; }
+/* 连板总结与预期 → 验证（Session 18）：预期卡 + 验证卡 + 机会/候选 */
+.lt-sum-card.expect { border-color: rgba(251,191,36,0.5); }
+.lt-sum-card.expect .lt-sum-card-title { color: #fbbf24; }
+.lt-sum-card.verify { border-color: rgba(96,165,250,0.5); }
+.lt-sum-card.verify .lt-sum-card-title { color: #60a5fa; }
+.lt-expect-top { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; font-size: 0.8em; }
+.lt-expect-text { font-size: 0.74em; color: #cbd5e1; margin: 2px 0 0 2px; line-height: 1.5; }
+.lt-verify-wait { color: #94a3b8; background: rgba(148,163,184,.08); border: 1px dashed rgba(148,163,184,.4); border-radius: 9px; padding: 0 6px; font-size: 0.72em; }
+.lt-expect-reflow { color: #22d3ee; font-size: 0.74em; }
+.lt-sum-empty { font-size: 0.78em; color: #64748b; padding: 4px 0; }
+.lt-vf-item { margin: 5px 0; padding: 5px 8px; background: rgba(15,52,96,0.15); border: 1px solid rgba(30,58,95,0.6); border-radius: 8px; }
+.lt-vf-arrow { color: #64748b; margin: 0 2px; }
+.lt-vf-status { font-size: 0.76em; border-radius: 9px; padding: 1px 7px; font-weight: 600; }
+.lt-vf-ok { color: #fde68a; background: rgba(250,204,21,.12); border: 1px solid rgba(250,204,21,.4); }
+.lt-vf-keep { color: #a5f3fc; background: rgba(34,211,238,.1); border: 1px solid rgba(34,211,238,.35); }
+.lt-vf-broken { color: #c4b5fd; background: rgba(168,85,247,.12); border: 1px solid rgba(168,85,247,.4); }
+.lt-heat { font-size: 0.74em; color: #94a3b8; }
+.lt-heat-up { color: #f87171; font-weight: 600; }
+.lt-heat-down { color: #94a3b8; }
+.lt-heat-flat { color: #22d3ee; }
+.lt-opp { font-size: 0.74em; color: #bfdbfe; background: rgba(37,99,235,0.12); border-left: 2px solid rgba(96,165,250,0.6); padding: 2px 6px; margin: 3px 0; border-radius: 4px; line-height: 1.5; }
+.lt-cand-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.lt-cand-chip { font-size: 0.7em; color: #e2e8f0; background: rgba(30,64,175,0.25); border: 1px solid rgba(96,165,250,0.35); border-radius: 9px; padding: 1px 6px; }
+.lt-cand-chip b { color: #93c5fd; }
+.lt-cand-chip i { font-style: normal; color: #64748b; }
+/* 连板总结与预期 优化（Session 19）：预期分条 + 观察股 + 断板股票 + 高潮单日峰值 */
+.lt-expect-item { margin: 4px 0; padding: 5px 8px; background: rgba(251,191,36,0.06); border: 1px solid rgba(251,191,36,0.25); border-radius: 8px; }
+.lt-expect-top { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; font-size: 0.8em; }
+.lt-expect-line { font-size: 0.74em; line-height: 1.6; margin: 1px 0 0 2px; }
+.lt-expect-line.up { color: #fca5a5; }
+.lt-expect-line.warn { color: #e2e8f0; }
+.lt-expect-line.reflow { color: #22d3ee; }
+.lt-observe-row { margin-top: 4px; align-items: center; }
+.lt-observe-label { font-size: 0.7em; color: #fbbf24; font-weight: 600; }
+.lt-observe-chip { font-size: 0.7em; color: #fde68a; background: rgba(251,191,36,0.08); border: 1px dashed rgba(251,191,36,0.4); border-radius: 9px; padding: 1px 6px; }
+.lt-observe-chip i { font-style: normal; color: #94a3b8; }
+.lt-observe-chip b { color: #22d3ee; font-weight: 600; }
+.lt-broken-label { color: #c4b5fd; }
+.lt-sum-broken .lt-cell-stock { border: 1px dashed rgba(248,113,113,0.75); }
+.lt-broken-mark { display: inline-block; font-size: 0.68em; font-weight: 700; color: #fecaca; background: rgba(239,68,68,0.22); border: 1px solid rgba(248,113,113,0.55); border-radius: 8px; padding: 0 4px; margin-left: 2px; }
+/* 市场总龙头竞争格局结构图（Session 21）：今日总龙头 → 明日分歧竞争 → 梯队 → 新竞2板 + 情绪标注 */
+.lt-leader-map { margin-bottom: 10px; background: rgba(15,52,96,0.25); border: 1px solid rgba(255,215,0,0.3); border-radius: 12px; padding: 8px 10px; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); box-shadow: 0 2px 12px rgba(0,0,0,0.15); }
+.lt-leader-map-title { font-size: 0.85em; font-weight: 700; color: #ffd700; margin-bottom: 6px; }
+.lt-leader-crown { background: linear-gradient(135deg, rgba(255,215,0,0.14), rgba(255,215,0,0.03)); border: 1px solid rgba(255,215,0,0.4); border-radius: 10px; padding: 6px 8px; }
+.lt-leader-crown-label { font-size: 0.75em; color: #fde68a; font-weight: 700; }
+.lt-leader-crown-stock { display: flex; align-items: center; gap: 6px; margin: 4px 0; flex-wrap: wrap; }
+.lt-leader-crown-stock .lt-cell-stock { font-size: 0.98em; padding: 3px 10px; }
+.lt-leader-note { font-size: 0.74em; color: #cbd5e1; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.lt-leader-scen { margin-top: 4px; }
+.lt-scn { font-size: 0.76em; line-height: 1.6; padding: 1px 6px; border-radius: 4px; margin: 2px 0; }
+.lt-scn.up { color: #fca5a5; border-left: 2px solid rgba(248,113,113,0.6); background: rgba(239,68,68,0.06); }
+.lt-scn.warn { color: #cbd5e1; border-left: 2px solid rgba(148,163,184,0.5); background: rgba(148,163,184,0.06); }
+.lt-leader-compete { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.lt-compete-col { flex: 1 1 300px; min-width: 260px; border-radius: 10px; padding: 6px 8px; }
+.lt-compete-col.relay { border: 1px solid rgba(34,211,238,0.4); background: rgba(34,211,238,0.05); }
+.lt-compete-col.cross { border: 1px solid rgba(168,85,247,0.45); background: rgba(168,85,247,0.05); }
+.lt-compete-title { font-size: 0.78em; font-weight: 700; margin-bottom: 4px; }
+.lt-compete-col.relay .lt-compete-title { color: #22d3ee; }
+.lt-compete-col.cross .lt-compete-title { color: #c084fc; }
+.lt-compete-row { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin: 3px 0; }
+.lt-compete-scn { font-size: 0.72em; color: #94a3b8; }
+.lt-compete-empty { font-size: 0.74em; color: #64748b; padding: 2px 0; }
+.lt-leader-tiers { margin-top: 8px; }
+.lt-tier-row { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin: 3px 0; padding: 3px 6px; background: rgba(15,52,96,0.15); border-radius: 8px; }
+.lt-tier-label { font-size: 0.76em; font-weight: 700; color: #ffd700; min-width: 118px; white-space: nowrap; }
+.lt-tier-item { display: inline-flex; align-items: center; gap: 4px; }
+.lt-tier-scn { font-size: 0.72em; color: #94a3b8; margin-left: auto; }
+.lt-leader-new2 { margin-top: 8px; background: rgba(251,191,36,0.07); border: 1px dashed rgba(251,191,36,0.45); border-radius: 10px; padding: 6px 8px; }
+.lt-leader-new2-title { font-size: 0.78em; font-weight: 700; color: #fbbf24; margin-bottom: 4px; }
+.lt-leader-new2-body { display: flex; flex-wrap: wrap; gap: 4px; }
+.lt-new2-item { display: inline-flex; align-items: center; gap: 4px; }
+.lt-leader-new2-scn { font-size: 0.72em; color: #94a3b8; margin-top: 4px; }
+/* 次日实时监控 · 涨停触发建议（Session 22）：毛玻璃金边框卡 + 角色分组 + 涨停 chip 跑马灯环 */
+.lt-watch-card { margin-bottom: 10px; background: linear-gradient(135deg, rgba(15,52,96,0.28), rgba(15,52,96,0.12)); border: 1px solid rgba(255,215,0,0.4); border-radius: 12px; padding: 8px 10px; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); box-shadow: 0 2px 12px rgba(0,0,0,0.15); }
+.lt-watch-title { font-size: 0.85em; font-weight: 700; color: #ffd700; display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.lt-watch-status { font-size: 0.72em; font-weight: 600; color: #94a3b8; background: rgba(148,163,184,0.12); border: 1px solid rgba(148,163,184,0.3); border-radius: 9px; padding: 1px 8px; }
+.lt-watch-status.live { color: #22d3ee; border-color: rgba(34,211,238,0.5); background: rgba(34,211,238,0.08); }
+.lt-watch-refresh { margin-left: auto; background: rgba(255,215,0,0.1); color: #fde68a; border: 1px solid rgba(255,215,0,0.4); border-radius: 8px; font-size: 0.72em; padding: 1px 8px; cursor: pointer; }
+.lt-watch-refresh:hover { background: rgba(255,215,0,0.25); }
+.lt-watch-alerts { display: flex; flex-direction: column; gap: 3px; margin: 6px 0; padding: 6px 8px; border-radius: 10px; background: linear-gradient(135deg, rgba(239,68,68,0.12), rgba(251,191,36,0.06)); border: 1px solid rgba(248,113,113,0.5); }
+.lt-watch-alert-head { font-size: 0.78em; font-weight: 700; color: #fecaca; margin-bottom: 2px; }
+.lt-watch-alert { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 0.78em; color: #fde68a; border-left: 3px solid rgba(248,113,113,0.8); background: rgba(239,68,68,0.06); border-radius: 6px; padding: 2px 8px; }
+.lt-watch-alert-stock { font-weight: 600; color: #fecaca; }
+.lt-watch-alert-stock b { color: #ffd700; }
+.lt-watch-alert-lb { color: #fbbf24; }
+.lt-watch-alert-tag { color: #fbbf24; }
+.lt-watch-alert-pct { color: #fca5a5; font-weight: 700; }
+.lt-watch-alert-role { font-size: 0.7em; color: #c4b5fd; background: rgba(168,85,247,0.12); border: 1px solid rgba(168,85,247,0.4); border-radius: 8px; padding: 0 6px; }
+.lt-watch-alert-txt { color: #e2e8f0; }
+.lt-watch-groups { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.lt-watch-group { display: flex; align-items: flex-start; gap: 6px; padding: 4px 6px; border-radius: 9px; background: rgba(15,52,96,0.12); }
+.lt-watch-group[data-role="leader"] { border-left: 3px solid #ffd700; background: rgba(255,215,0,0.06); }
+.lt-watch-group[data-role="relay"] { border-left: 3px solid #22d3ee; }
+.lt-watch-group[data-role="cross"] { border-left: 3px solid #a855f7; }
+.lt-watch-group[data-role="tiers"] { border-left: 3px solid #fb923c; }
+.lt-watch-group[data-role="new2"] { border-left: 3px solid #fbbf24; }
+.lt-watch-group[data-role="broken"] { border-left: 3px solid #f87171; }
+.lt-watch-group[data-role="restart"] { border-left: 3px solid #22d3ee; }
+.lt-watch-group[data-role="buzhang"] { border-left: 3px solid #38bdf8; }
+.lt-watch-group[data-role="ladder"] { border-left: 3px solid #c084fc; }
+.lt-watch-role { flex: 0 0 auto; font-size: 0.72em; font-weight: 700; color: #fde68a; min-width: 78px; padding-top: 3px; }
+.lt-watch-chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.lt-watch-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 0.74em; background: rgba(30,41,59,0.6); border: 1px solid rgba(148,163,184,0.35); border-radius: 9px; padding: 1px 7px; white-space: nowrap; }
+.lt-watch-chip.zt { border: 1px solid transparent; background: linear-gradient(135deg, rgba(239,68,68,0.25), rgba(255,215,0,0.18)); box-shadow: 0 0 8px rgba(248,113,113,0.35); position: relative; }
+.lt-watch-chip.zt::after { content: ''; position: absolute; inset: -2px; border-radius: 11px; padding: 1.5px; background: conic-gradient(from var(--lb-angle), transparent, rgba(248,113,113,0.9), rgba(255,215,0,0.9), transparent); -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); -webkit-mask-composite: xor; mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); mask-composite: exclude; animation: lb-border-marquee 1.2s linear infinite; z-index: 0; pointer-events: none; }
+.lt-watch-chip.zt > * { position: relative; z-index: 1; }
+.lt-watch-name { color: #e2e8f0; font-weight: 600; }
+.lt-watch-chip.zt .lt-watch-name { color: #fff; }
+.lt-watch-lb { color: #fbbf24; font-weight: 700; }
+.lt-watch-tag { color: #fde68a; font-size: 0.92em; }
+.lt-watch-pct { font-size: 0.92em; font-weight: 700; min-width: 52px; text-align: right; }
+.lt-watch-pct.up { color: #fca5a5; }
+.lt-watch-pct.flat { color: #94a3b8; }
+.lt-watch-pct.down { color: #60a5fa; }
 /* 连板序号标记 - 暖色渐变背景 + 圆角标签 */
 .lt-marker {
     display: inline-flex; align-items: center; justify-content: center;
@@ -5421,6 +6124,16 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 .tst-stock .pct { font-size: 0.72em; }
 .tst-stock .pct.up { color: #ff6b6b; }
 .tst-stock .pct.down { color: #4fc3f7; }
+/* 主板/创业板·科创板 分目录 + 不同颜色（区分标识） */
+.tst-board-group { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; padding: 1px 4px; margin: 1px 0; border-radius: 6px; }
+.tst-board-group.tst-board-main { border-left: 2px solid #60a5fa; background: rgba(37,99,235,0.05); }
+.tst-board-group.tst-board-gem { border-left: 2px solid #facc15; background: rgba(250,204,21,0.04); }
+.tst-board-label { font-size: 0.7em; font-weight: 700; border-radius: 8px; padding: 0 5px; white-space: nowrap; }
+.tst-board-label.tst-board-main { color: #93c5fd; background: rgba(37,99,235,0.16); border: 1px solid rgba(96,165,250,0.4); }
+.tst-board-label.tst-board-gem { color: #fde68a; background: rgba(250,204,21,0.13); border: 1px solid rgba(250,204,21,0.4); }
+.tst-board-badge { font-size: 0.62em; font-weight: 700; border-radius: 3px; padding: 0 3px; line-height: 1.5; }
+.tst-board-badge.tst-board-main { color: #dbeafe; background: #2563eb; border: 1px solid rgba(255,255,255,0.35); }
+.tst-board-badge.tst-board-gem { color: #422006; background: #facc15; border: 1px solid rgba(255,255,255,0.35); }
 /* 层级配色：TOP题材风向 排名渐变（r1金 → r5蓝，越高板越靠金） */
 .tst-cat.tst-r1 .tst-cat-label { color: #ffd700; }
 .tst-cat.tst-r2 .tst-cat-label { color: #ff8a65; }
@@ -12389,7 +13102,7 @@ function loadThemeWind() {
 
         // Section 1: 🔥 连板股涨停原因标签轨迹
         html += '<div class="rt-section lt-trajectory-section" id="twLtTrajectoryLbSection">';
-        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ff8a65;">\U0001F525 连板股涨停原因标签轨迹 <span class="count-badge">近20日</span></h3>';
+        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ff8a65;">\U0001F525 连板股涨停原因标签轨迹 <span class="count-badge">近20日</span> <span class="rt-refresh-icon" onclick="manualRefreshTrajectory()" title="刷新轨迹数据">\u21bb</span><button class="rt-auto-refresh-btn" id="twLbTrajectoryAutoBtn" onclick="toggleThemeTrajectoryAutoRefresh()">\u23f1 自动刷新 1分钟</button></h3>';
         html += '<div id="twLtTrajectoryLbBody">';
         if (lbTrajectory && lbTrajectory.dates && lbTrajectory.dates.length > 0) {
             html += renderLadderLianbanTagTrajectory(lbTrajectory);
@@ -12458,6 +13171,10 @@ function manualRefreshTrajectory() {
             if (body && data && data.dates && data.dates.length > 0) {
                 body.innerHTML = renderLadderLianbanTagTrajectory(data);
             }
+            var twBody = document.getElementById('twLtTrajectoryLbBody');
+            if (twBody && data && data.dates && data.dates.length > 0) {
+                twBody.innerHTML = renderLadderLianbanTagTrajectory(data);
+            }
         })
         .catch(function(e) {
             console.error('刷新连板轨迹失败:', e);
@@ -12468,6 +13185,10 @@ function manualRefreshTrajectory() {
             var body = document.getElementById('ltTrajectoryBody');
             if (body && data && data.dates && data.dates.length > 0) {
                 body.innerHTML = renderLadderTagTrajectory(data);
+            }
+            var twBody = document.getElementById('twLtTrajectoryBody');
+            if (twBody && data && data.dates && data.dates.length > 0) {
+                twBody.innerHTML = renderLadderTagTrajectory(data);
             }
         })
         .catch(function(e) {
@@ -13144,11 +13865,15 @@ function renderLadderTagTrajectory(data) {
     return html;
 }
 
+// 连板轨迹格子内股票导航列表（追加式存储，绝对索引跨tab/刷新不失效）
+var _ltTrajectoryStockNavs = [];
+
 // 渲染连板股涨停原因标签轨迹矩阵（只统计连板 >= 2，断板重置序号）
 function renderLadderLianbanTagTrajectory(data) {
     if (!data || !data.dates || data.dates.length === 0 || !data.freq_by_tag) {
         return '<div class="empty" style="padding:15px;color:#666;font-size:0.82em;">暂无轨迹数据</div>';
     }
+    _ltTrajectoryStockNavs = [];   // 每次渲染重置，随自动刷新重渲染避免数组无限增长
     var EXCLUDE_TAGS = ['ST', '并购重组', 'ST摘帽', '实控人变更', '业绩预亏', '风险提示'];
     function shouldExclude(tag) {
         for (var ei = 0; ei < EXCLUDE_TAGS.length; ei++) {
@@ -13161,6 +13886,7 @@ function renderLadderLianbanTagTrajectory(data) {
     dates.reverse();
     var freqByTag = data.freq_by_tag || {};
     var tagTotals = data.tag_totals || {};
+    var stocksByTag = data.stocks_by_tag || {};
     var sortedTags = Object.keys(tagTotals).filter(function(t) {
         return !shouldExclude(t);
     }).sort(function(a, b) {
@@ -13208,6 +13934,31 @@ function renderLadderLianbanTagTrajectory(data) {
                 html += '<span class="lt-marker">' + marker + '</span>';
                 var tagLabel = cnt > 1 ? tag.slice(0, 4) + '(+' + cnt + ')' : tag.slice(0, 4);
                 html += _kplEsc(tagLabel);
+                // 格子内列出该题材当日的连板股票（服务端已按连板数降序）
+                var cellStocks = (stocksByTag[tag] && stocksByTag[tag][d]) || [];
+                if (cellStocks.length > 0) {
+                    var navIdx = _ltTrajectoryStockNavs.length;
+                    var navList = [];
+                    for (var si = 0; si < cellStocks.length; si++) {
+                        navList.push({name: cellStocks[si].name || '', code: cellStocks[si].code || ''});
+                    }
+                    _ltTrajectoryStockNavs.push(navList);
+                    html += '<div class="lt-cell-stocks">';
+                    for (var si = 0; si < cellStocks.length; si++) {
+                        var s = cellStocks[si];
+                        var sName = (s.name || '').replace(/'/g, '');
+                        var sCode = s.code || '';
+                        if (!sName || !sCode) continue;
+                        var latestCol = (d === dates[0]);   // dates 已 reverse，[0] 即最新交易日
+                        var lbCls = s.is_restart ? 'lt-cell-stock-restart'
+                                 : (s.lianban >= 5 ? 'lt-lb-high'
+                                 : 'lt-lb-' + (s.lianban >= 2 ? s.lianban : 1));
+                        var chipCls = 'lt-cell-stock ' + lbCls + (latestCol ? ' lt-latest' : '');
+                        var restartMark = s.is_restart ? ' <i class="lt-restart-mark">重启</i>' : '';
+                        html += '<span class="' + chipCls + '" title="' + _kplEsc(sName) + '" onclick="event.stopPropagation();openDsStockFromRhythm(\\x27' + sName + '\\x27, \\x27' + sCode + '\\x27, \\x27\\x27, _ltTrajectoryStockNavs[' + navIdx + '], ' + si + ')">' + _kplEsc(sName) + ' <b>' + s.lianban + '板</b>' + restartMark + '</span>';
+                    }
+                    html += '</div>';
+                }
                 html += '</td>';
             } else {
                 html += '<td class="lt-trajectory-cell-empty">-</td>';
@@ -13216,6 +13967,637 @@ function renderLadderLianbanTagTrajectory(data) {
         html += '</tr>';
     });
     html += '</table></div>';
+    html += _ltRenderTrajectorySummary(data.summary);
+    // 延迟到 DOM 更新后启动监控轮询（两 tab 共用渲染器，天然覆盖全文档 chip）
+    setTimeout(function() { _ltWatchStartPoll(); }, 300);
+    return html;
+}
+
+// 连板总结卡片：非可点击彩色 chip（复用矩阵 chip 板数配色类）
+function _ltChip(x) {
+    if (!x) return '';
+    var lb = x.lianban || 1;
+    var lbCls = x.is_restart ? 'lt-cell-stock-restart'
+             : (lb >= 5 ? 'lt-lb-high'
+             : 'lt-lb-' + (lb >= 2 ? lb : 1));
+    var restartMark = x.is_restart ? ' <i class="lt-restart-mark">重启</i>' : '';
+    return '<span class="lt-cell-stock ' + lbCls + '" style="cursor:default;">' + _kplEsc(x.name || '') + ' <b>' + lb + '板</b>' + restartMark + '</span>';
+}
+
+// 市场总龙头竞争格局数据计算（纯数据，供结构图渲染与监控卡复用同一份分组）
+function _ltLeaderMapData(s) {
+    if (!s || !s.today_ladders || !s.today_ladders.length) return null;
+    var ladders = s.today_ladders;
+    // 跨题材按板数分组（只取连板股 lb>=2，重启首板不在梯队不参与）
+    var byLb = {};
+    for (var li = 0; li < ladders.length; li++) {
+        var ld = ladders[li];
+        for (var sj = 0; sj < ld.stocks.length; sj++) {
+            var st = ld.stocks[sj];
+            var lb = st.lianban;
+            if (lb < 2) continue;
+            (byLb[lb] = byLb[lb] || []).push({
+                name: st.name, code: st.code, lianban: lb, tag: ld.tag,
+                is_restart: !!st.is_restart, is_gem: !!st.is_gem
+            });
+        }
+    }
+    var levels = Object.keys(byLb).map(Number).sort(function(a, b) { return b - a; });
+    if (!levels.length) return null;
+    var leaderLb = levels[0];
+    var leader = byLb[leaderLb][0];
+    var leaderTheme = null;
+    for (var li2 = 0; li2 < ladders.length; li2++) {
+        if (ladders[li2].tag === leader.tag) { leaderTheme = ladders[li2]; break; }
+    }
+    // 同题材接力：龙头同题材低板连板股
+    var relay = [];
+    if (leaderTheme) {
+        for (var rj = 0; rj < leaderTheme.stocks.length; rj++) {
+            var rs = leaderTheme.stocks[rj];
+            if (rs.lianban < leaderLb) relay.push(rs);
+        }
+    }
+    // 其他题材晋级：各其他题材最高板（参与接任竞争，取最高板前 TOP5；补 tag 字段）
+    var cross = [];
+    for (var cj = 0; cj < ladders.length; cj++) {
+        var cd = ladders[cj];
+        if (cd.tag === leader.tag) continue;
+        if (cd.stocks.length) {
+            cross.push({
+                name: cd.stocks[0].name, code: cd.stocks[0].code, lianban: cd.stocks[0].lianban,
+                is_restart: !!cd.stocks[0].is_restart, is_gem: !!cd.stocks[0].is_gem, tag: cd.tag
+            });
+        }
+    }
+    cross.sort(function(a, b) { return b.lianban - a.lianban; });
+    // 梯队（除龙头板数与2板；2板归新竞2板；龙头同题材低板已在"同题材接力"不再重复）
+    var tiers = [];
+    for (var k = 1; k < levels.length; k++) {
+        var lv = levels[k];
+        if (lv <= 2) continue;
+        var tierStocks = [];
+        for (var ts2 = 0; ts2 < (byLb[lv] || []).length; ts2++) {
+            if (byLb[lv][ts2].tag === leader.tag) continue;
+            tierStocks.push(byLb[lv][ts2]);
+        }
+        if (tierStocks.length) tiers.push({lb: lv, stocks: tierStocks});
+    }
+    var new2 = [];
+    for (var n2 = 0; n2 < (byLb[2] || []).length; n2++) {
+        if (byLb[2][n2].tag === leader.tag) continue;
+        new2.push(byLb[2][n2]);
+    }
+    return {ladders: ladders, byLb: byLb, levels: levels, leaderLb: leaderLb, leader: leader,
+            leaderTheme: leaderTheme, relay: relay, cross: cross, tiers: tiers, new2: new2};
+}
+
+// 市场总龙头竞争格局结构图：今日总龙头 + 明日分歧竞争（同题材接力/其他题材晋级）+ 梯队 + 新竞2板 + 情绪标注
+function _ltRenderLeaderMap(s) {
+    var d = _ltLeaderMapData(s);
+    if (!d) return '';
+    var ladders = d.ladders;
+    var byLb = d.byLb;
+    var levels = d.levels;
+    var leaderLb = d.leaderLb;
+    var leader = d.leader;
+    var relay = d.relay;
+    var cross = d.cross;
+    var tiers = d.tiers;
+    var new2 = d.new2;
+
+    var h = '';
+    h += '<div class="lt-leader-map">';
+    h += '<div class="lt-leader-map-title">👑 市场总龙头竞争格局 <span class="rs-src-note">' + _kplEsc(s.latest_date || '') + '</span></div>';
+
+    // 1) 今日总龙头
+    h += '<div class="lt-leader-crown">';
+    h += '<div class="lt-leader-crown-label">今日市场总龙头</div>';
+    h += '<div class="lt-leader-crown-stock">' + _ltChip(leader) + '<span class="lt-sum-tag">「' + _kplEsc(leader.tag) + '」</span></div>';
+    if (byLb[leaderLb].length > 1) {
+        h += '<div class="lt-leader-note">并列最高板：';
+        for (var cl = 1; cl < byLb[leaderLb].length; cl++) {
+            h += _ltChip(byLb[leaderLb][cl]) + '<span class="lt-sum-tag">「' + _kplEsc(byLb[leaderLb][cl].tag) + '」</span>';
+        }
+        h += '</div>';
+    }
+    h += '<div class="lt-leader-scen">';
+    h += '<div class="lt-scn up">▲ 明日晋级' + (leaderLb + 1) + '板 → 情绪升温，题材「' + _kplEsc(leader.tag) + '」或推动板块高潮</div>';
+    h += '<div class="lt-scn warn">▼ 明日断板/分歧 → 进入总龙头竞争格局（下）</div>';
+    h += '</div>';
+    h += '</div>';
+
+    // 2) 龙头分歧 → 竞争格局：同题材接力 | 其他题材晋级
+    h += '<div class="lt-leader-compete">';
+    h += '<div class="lt-compete-col relay"><div class="lt-compete-title">🔄 同题材接力 · 板块延续</div>';
+    if (relay.length) {
+        for (var rr = 0; rr < relay.length; rr++) {
+            var rk = relay[rr];
+            h += '<div class="lt-compete-row">' + _ltChip(rk) + '<span class="lt-compete-scn">晋级' + (rk.lianban + 1) + '板 → 接力接任，题材情绪维持</span></div>';
+        }
+    } else {
+        h += '<div class="lt-compete-empty">无同题材低板连板股</div>';
+    }
+    h += '</div>';
+    h += '<div class="lt-compete-col cross"><div class="lt-compete-title">⚔ 其他题材晋级 · 题材切换/轮动</div>';
+    if (cross.length) {
+        for (var cc = 0; cc < cross.length; cc++) {
+            var ck = cross[cc];
+            var cscn = ck.lianban >= leaderLb
+                ? '并列最高板，直接竞争总龙头'
+                : '晋级' + (ck.lianban + 1) + '板 → 可接任总龙头，题材切换';
+            h += '<div class="lt-compete-row">' + _ltChip(ck) + '<span class="lt-sum-tag">「' + _kplEsc(ck.tag) + '」</span><span class="lt-compete-scn">' + cscn + '</span></div>';
+        }
+    } else {
+        h += '<div class="lt-compete-empty">无其他题材连板</div>';
+    }
+    h += '</div>';
+    h += '</div>';
+
+    // 3) 第二/第三梯队竞争
+    if (tiers.length) {
+        var tierNames = ['🥈 第二梯队', '🥉 第三梯队', '4️⃣ 第四梯队', '5️⃣ 第五梯队', '6️⃣ 第六梯队'];
+        h += '<div class="lt-leader-tiers">';
+        for (var tj = 0; tj < tiers.length; tj++) {
+            var t = tiers[tj];
+            var tName = tierNames[tj] || ('第' + (tj + 2) + '梯队');
+            h += '<div class="lt-tier-row"><span class="lt-tier-label">' + tName + ' · ' + t.lb + '板</span>';
+            for (var ts = 0; ts < t.stocks.length; ts++) {
+                var tk = t.stocks[ts];
+                h += '<span class="lt-tier-item">' + _ltChip(tk) + '<span class="lt-sum-tag">「' + _kplEsc(tk.tag) + '」</span></span>';
+            }
+            h += '<span class="lt-tier-scn">晋级' + (t.lb + 1) + '板 → 梯队上移、进入总龙头竞争；断板 → 梯队空缺</span>';
+            h += '</div>';
+        }
+        h += '</div>';
+    }
+
+    // 4) 新竞2板（后续机会持续关注）
+    if (new2.length) {
+        h += '<div class="lt-leader-new2">';
+        h += '<div class="lt-leader-new2-title">🌱 新竞2板 · 后续机会持续关注</div>';
+        h += '<div class="lt-leader-new2-body">';
+        for (var n2 = 0; n2 < new2.length; n2++) {
+            var nk = new2[n2];
+            h += '<span class="lt-new2-item">' + _ltChip(nk) + '<span class="lt-sum-tag">「' + _kplEsc(nk.tag) + '」</span></span>';
+        }
+        h += '</div>';
+        h += '<div class="lt-leader-new2-scn">明日晋级3板 → 题材崛起机会；断板 → 淘汰。持续跟踪连板卡位</div>';
+        h += '</div>';
+    }
+
+    h += '</div>';
+    return h;
+}
+
+// ===== 次日实时监控 · 涨停触发建议（Session 22）=====
+var _ltWatchTimer = null;
+var _ltWatchInterval = 30000;          // 30s 轮询
+var _ltWatchAlerted = {};              // code -> true（已提示过的涨停，去重；回落后重置可再提示）
+var _ltWatchRoleOrder = ['leader', 'relay', 'cross', 'tiers', 'new2', 'broken', 'restart', 'buzhang', 'ladder'];
+var _ltWatchRoleLabel = {
+    leader: '👑 总龙头', relay: '🔄 同题材接力', cross: '⚔ 其他题材晋级', tiers: '🪜 梯队',
+    new2: '🌱 新竞2板', broken: '💔 断板反弹', restart: '💥 重启回流', buzhang: '🎯 补涨候选', ladder: '🔗 连板延续'
+};
+
+function _ltBuildWatchMonitor(s) {
+    var items = [];
+    var roleSeen = {};    // 按角色组内去重（同一股票可出现在不同角色组，组内不重复）
+    var allSeen = {};     // 全局已收录（仅预期源用：非以上角色的 lb>=2 股票才落"连板延续"）
+    function _add(name, code, tag, lianban, role, leaderTag) {
+        if (!code) return;
+        var seen = roleSeen[role] = roleSeen[role] || {};
+        if (seen[code]) return;
+        seen[code] = true;
+        allSeen[code] = true;
+        items.push({name: name || '', code: code, tag: tag || '', lianban: lianban || 0,
+                    role: role || 'ladder', leaderTag: leaderTag || ''});
+    }
+    if (!s) return items;
+    // 结构图角色（复用 _ltLeaderMapData 同源分组，保证监控角色与结构图一致；
+    // 交叉重叠股票可在多个角色组各出现一次，与结构图双归属语义一致）
+    var d = _ltLeaderMapData(s);
+    if (d) {
+        var ldStocks = d.byLb[d.leaderLb] || [];   // 总龙头（含并列最高板）
+        for (var li = 0; li < ldStocks.length; li++) {
+            _add(ldStocks[li].name, ldStocks[li].code, ldStocks[li].tag, ldStocks[li].lianban, 'leader');
+        }
+        for (var ri = 0; ri < (d.relay || []).length; ri++) {   // 同题材接力
+            var r = d.relay[ri];
+            _add(r.name, r.code, r.tag || d.leader.tag, r.lianban, 'relay', d.leader.tag);
+        }
+        for (var ci = 0; ci < (d.cross || []).length; ci++) {   // 其他题材晋级
+            var c = d.cross[ci];
+            _add(c.name, c.code, c.tag, c.lianban, 'cross');
+        }
+        for (var tj = 0; tj < (d.tiers || []).length; tj++) {   // 梯队（展平）
+            var t = d.tiers[tj];
+            for (var tsj = 0; tsj < (t.stocks || []).length; tsj++) {
+                var tk = t.stocks[tsj];
+                _add(tk.name, tk.code, tk.tag, tk.lianban, 'tiers');
+            }
+        }
+        for (var nj = 0; nj < (d.new2 || []).length; nj++) {   // 新竞2板
+            _add(d.new2[nj].name, d.new2[nj].code, d.new2[nj].tag, d.new2[nj].lianban, 'new2');
+        }
+    }
+    // 断板反弹：昨日连板今日断板
+    for (var bi = 0; bi < (s.broken_tags || []).length; bi++) {
+        var bt = s.broken_tags[bi];
+        for (var bsj = 0; bsj < (bt.stocks || []).length; bsj++) {
+            var bs = bt.stocks[bsj];
+            _add(bs.name, bs.code, bt.tag, bs.lianban, 'broken');
+        }
+    }
+    // 重启回流
+    for (var rti = 0; rti < (s.restart_tags || []).length; rti++) {
+        var rt = s.restart_tags[rti];
+        for (var rsj = 0; rsj < (rt.stocks || []).length; rsj++) {
+            var rs2 = rt.stocks[rsj];
+            _add(rs2.name, rs2.code, rt.tag, rs2.lianban, 'restart');
+        }
+    }
+    // 验证候选股：角色按 candidate.role（补涨/反弹关注/回流候选/龙头跟踪）
+    var v = s.verification;
+    if (v && v.items) {
+        for (var vi = 0; vi < v.items.length; vi++) {
+            var it = v.items[vi];
+            for (var cj = 0; cj < (it.candidates || []).length; cj++) {
+                var cd = it.candidates[cj];
+                var role = cd.role === '反弹关注' ? 'broken'
+                         : (cd.role === '回流候选' ? 'restart'
+                         : (cd.role === '龙头跟踪' ? 'ladder' : 'buzhang'));
+                _add(cd.name, cd.code, it.tag, cd.lianban || 0, role);
+            }
+        }
+    }
+    // 预期中的连板股（仅补"非以上角色"的 lb>=2 或重启股，避免重复打标）
+    for (var ei = 0; ei < (s.expectations || []).length; ei++) {
+        var ex = s.expectations[ei];
+        for (var esj = 0; esj < (ex.stocks || []).length; esj++) {
+            var es = ex.stocks[esj];
+            if ((es.lianban || 0) < 2 && !es.is_restart) continue;
+            if (allSeen[es.code]) continue;
+            _add(es.name, es.code, ex.tag, es.lianban, es.is_restart ? 'restart' : 'ladder');
+        }
+    }
+    // 排序：角色顺序 → 板数降序 → 名称
+    var order = _ltWatchRoleOrder;
+    items.sort(function(a, b) {
+        var oa = order.indexOf(a.role), ob = order.indexOf(b.role);
+        if (oa !== ob) return oa - ob;
+        if (b.lianban !== a.lianban) return b.lianban - a.lianban;
+        return (a.name < b.name ? -1 : (a.name > b.name ? 1 : 0));
+    });
+    return items;
+}
+
+function _ltRenderWatchMonitor(s) {
+    if (!s) return '';
+    var items = _ltBuildWatchMonitor(s);
+    if (!items.length) return '';
+    var now = new Date();
+    var beijingHour = (now.getUTCHours() + 8) % 24;
+    var totalMin = beijingHour * 60 + now.getUTCMinutes();
+    var trading = (totalMin >= 565 && totalMin < 900);
+    var statusTxt = trading ? '盘中实时'
+                   : ('⏳ 待 ' + _kplEsc(s.next_date || '明日') + ' 开盘实时监控');
+    var html = '<div class="lt-watch-card">';
+    html += '<div class="lt-watch-title">📡 次日实时监控 · 涨停触发建议';
+    html += '<span class="lt-watch-status' + (trading ? ' live' : '') + '" data-next="' + _kplEsc(s.next_date || '') + '">' + statusTxt + '</span>';
+    html += '<button class="lt-watch-refresh" onclick="_ltWatchPoll(true)" title="手动刷新实时行情">⟳</button>';
+    html += '</div>';
+    html += '<div class="lt-watch-alerts"></div>';
+    var groups = {};
+    for (var i = 0; i < items.length; i++) {
+        var role = items[i].role;
+        (groups[role] = groups[role] || []).push(items[i]);
+    }
+    html += '<div class="lt-watch-groups">';
+    for (var gi = 0; gi < _ltWatchRoleOrder.length; gi++) {
+        var r = _ltWatchRoleOrder[gi];
+        var list = groups[r];
+        if (!list || !list.length) continue;
+        html += '<div class="lt-watch-group" data-role="' + r + '">';
+        html += '<span class="lt-watch-role">' + _ltWatchRoleLabel[r] + '</span>';
+        html += '<div class="lt-watch-chips">';
+        for (var j = 0; j < list.length; j++) {
+            var it = list[j];
+            var lbTxt = it.lianban >= 1 ? '<b class="lt-watch-lb">' + it.lianban + '板</b>' : '';
+            var tagTxt = it.tag ? '<span class="lt-watch-tag">「' + _kplEsc(it.tag) + '」</span>' : '';
+            html += '<span class="lt-watch-chip" data-code="' + it.code + '" data-name="' + _kplEsc(it.name) + '" data-tag="' + _kplEsc(it.tag) + '" data-role="' + it.role + '" data-lb="' + it.lianban + '" title="' + _kplEsc(it.name) + ' ' + _ltWatchRoleLabel[it.role] + '">';
+            html += '<span class="lt-watch-name">' + _kplEsc(it.name) + '</span>' + lbTxt + tagTxt;
+            html += '<span class="lt-watch-pct" data-code="' + it.code + '">--</span>';
+            html += '</span>';
+        }
+        html += '</div></div>';
+    }
+    html += '</div>';
+    html += '</div>';
+    return html;
+}
+
+function _ltWatchSuggestion(it) {
+    var tag = it.tag || '';
+    var leaderTag = it.leaderTag || tag;
+    switch (it.role) {
+        case 'leader': return '总龙头晋级 → 「' + tag + '」情绪升温，关注板块低吸/追涨及对应ETF、创业板/科创板套利';
+        case 'relay': return '接力确认 → 总龙头「' + leaderTag + '」板块延续，关注同题材补涨';
+        case 'cross': return '题材切换 → 「' + tag + '」或成新主线，关注板块发酵与卡位';
+        case 'tiers': return '梯队晋级 → 进入总龙头竞争，关注高度拓展';
+        case 'new2': return '新竞2板晋级3板 → 「' + tag + '」题材崛起，持续关注连板卡位';
+        case 'broken': return '断板股回封 → 板块回流信号，关注二波/低吸';
+        case 'restart': return '重启晋级 → 板块回流确认，关注二波机会';
+        case 'buzhang': return '补涨/回流确认 → 关注「' + tag + '」板块联动';
+        default: return '连板延续 → 关注「' + tag + '」题材强度';
+    }
+}
+
+function _ltPctCls(p) {
+    if (p > 0.05) return 'up';
+    if (p < -0.05) return 'down';
+    return 'flat';
+}
+
+function _ltWatchRenderAlerts(res) {
+    var alertsEls = document.querySelectorAll('.lt-watch-alerts');
+    var chips = document.querySelectorAll('.lt-watch-chip[data-code].zt');
+    var items = [];
+    var seen = {};
+    for (var i = 0; i < chips.length; i++) {
+        var chip = chips[i];
+        var code = chip.getAttribute('data-code');
+        if (!code || seen[code]) continue;
+        seen[code] = true;
+        var q = (res && res[code]) || {};
+        var pctTxt = (typeof q.change_pct === 'number')
+            ? ((q.change_pct >= 0 ? '+' : '') + q.change_pct.toFixed(2) + '%')
+            : '涨停';
+        items.push({
+            code: code,
+            name: chip.getAttribute('data-name') || '',
+            tag: chip.getAttribute('data-tag') || '',
+            role: chip.getAttribute('data-role') || 'ladder',
+            lb: parseInt(chip.getAttribute('data-lb') || '0', 10) || 0,
+            pct: pctTxt
+        });
+    }
+    var html = '';
+    if (items.length) {
+        html += '<div class="lt-watch-alert-head">⚡ 涨停触发建议</div>';
+        for (var j = 0; j < items.length; j++) {
+            var it = items[j];
+            html += '<div class="lt-watch-alert" data-code="' + it.code + '">';
+            html += '<span class="lt-watch-alert-stock"><b>' + _kplEsc(it.name) + '</b>' + (it.lb >= 1 ? ' <span class="lt-watch-alert-lb">' + it.lb + '板</span>' : '') + ' <span class="lt-watch-alert-tag">「' + _kplEsc(it.tag) + '」</span> <span class="lt-watch-alert-pct">' + it.pct + '</span></span>';
+            html += '<span class="lt-watch-alert-role">' + _ltWatchRoleLabel[it.role] + '</span>';
+            html += '<span class="lt-watch-alert-txt">' + _kplEsc(_ltWatchSuggestion(it)) + '</span>';
+            html += '</div>';
+        }
+    }
+    for (var ai = 0; ai < alertsEls.length; ai++) alertsEls[ai].innerHTML = html;
+}
+
+function _ltWatchPoll(manual) {
+    var chips = document.querySelectorAll('.lt-watch-chip[data-code]');
+    var codes = [];
+    for (var i = 0; i < chips.length; i++) {
+        var c = chips[i].getAttribute('data-code');
+        if (c && codes.indexOf(c) === -1) codes.push(c);
+    }
+    var now = new Date();
+    var beijingHour = (now.getUTCHours() + 8) % 24;
+    var totalMin = beijingHour * 60 + now.getUTCMinutes();
+    var trading = (totalMin >= 565 && totalMin < 900);
+    var statusEls = document.querySelectorAll('.lt-watch-status');
+    if (!trading) {
+        for (var si = 0; si < statusEls.length; si++) {
+            var nd = statusEls[si].getAttribute('data-next') || '明日';
+            statusEls[si].innerHTML = '⏳ 待 ' + nd + ' 开盘实时监控';
+            statusEls[si].classList.remove('live');
+        }
+        return;
+    }
+    for (var si2 = 0; si2 < statusEls.length; si2++) {
+        var hh = now.getHours(), mm = now.getMinutes(), ss = now.getSeconds();
+        statusEls[si2].innerHTML = '盘中实时 · ' + (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm + ':' + (ss < 10 ? '0' : '') + ss;
+        statusEls[si2].classList.add('live');
+    }
+    if (!codes.length) return;
+    fetch('/api/spot_quotes?codes=' + codes.join(',') + '&_t=' + Date.now())
+        .then(function(r) { return r.json(); })
+        .then(function(res) {
+            if (!res || typeof res !== 'object') return;
+            var newAlerted = [];
+            for (var ci = 0; ci < codes.length; ci++) {
+                var q = res[codes[ci]];
+                if (!q || typeof q.change_pct !== 'number') continue;
+                var pctEls = document.querySelectorAll('.lt-watch-pct[data-code="' + codes[ci] + '"]');
+                for (var pi = 0; pi < pctEls.length; pi++) {
+                    pctEls[pi].className = 'lt-watch-pct ' + _ltPctCls(q.change_pct);
+                    pctEls[pi].innerHTML = (q.change_pct >= 0 ? '+' : '') + q.change_pct.toFixed(2) + '%';
+                }
+                var chipEls = document.querySelectorAll('.lt-watch-chip[data-code="' + codes[ci] + '"]');
+                for (var cj = 0; cj < chipEls.length; cj++) {
+                    if (q.limit_up) {
+                        chipEls[cj].classList.add('zt');
+                        if (!_ltWatchAlerted[codes[ci]]) {
+                            _ltWatchAlerted[codes[ci]] = true;
+                            newAlerted.push(codes[ci]);
+                        }
+                    } else {
+                        chipEls[cj].classList.remove('zt');
+                        delete _ltWatchAlerted[codes[ci]];
+                    }
+                }
+            }
+            _ltWatchRenderAlerts(res);
+            if (newAlerted.length) {
+                var names = [];
+                for (var ni = 0; ni < newAlerted.length; ni++) {
+                    var nmEl = document.querySelector('.lt-watch-chip[data-code="' + newAlerted[ni] + '"] .lt-watch-name');
+                    names.push(nmEl ? nmEl.textContent : newAlerted[ni]);
+                }
+                showToast('⚡ 监控到 ' + newAlerted.length + ' 只涨停：' + names.join('、'), 'info');
+            }
+        })
+        .catch(function(e) { console.error('监控行情轮询失败:', e); });
+}
+
+function _ltWatchStartPoll() {
+    if (_ltWatchTimer) clearInterval(_ltWatchTimer);
+    _ltWatchTimer = setInterval(function() { _ltWatchPoll(false); }, _ltWatchInterval);
+    _ltWatchPoll(false);
+}
+
+// 连板总结与预期结构化卡片（降级：summary 缺失返回空串不报错）
+function _ltRenderTrajectorySummary(s) {
+    if (!s) return '';
+    var EXCLUDE_TAGS = ['ST', '并购重组', 'ST摘帽', '实控人变更', '业绩预亏', '风险提示'];
+    function shouldExclude(tag) {
+        for (var ei = 0; ei < EXCLUDE_TAGS.length; ei++) {
+            if (tag.indexOf(EXCLUDE_TAGS[ei]) >= 0) return true;
+        }
+        return false;
+    }
+    var html = '<div class="lt-summary">';
+    html += '<div class="lt-summary-title">📝 连板情绪与预期验证 <span class="rs-src-note">' + (s.latest_date || '') + '</span></div>';
+
+    // ===== 顶部结论条：最高板 + 今日统计（一眼结论） =====
+    var headParts = [];
+    if (s.highest) {
+        headParts.push('<div class="lt-sum-head-item"><span class="lt-sum-label">🏆 最高板</span><span class="lt-sum-tag">「' + _kplEsc(s.highest.tag || '') + '」</span>' + _ltChip(s.highest) + '</div>');
+    }
+    if (s.today_total) {
+        headParts.push('<div class="lt-sum-head-item"><span class="lt-sum-label">📊 今日</span><b class="lt-sum-big">' + s.today_total + '</b> 只连板+重启 / <b class="lt-sum-big">' + s.today_tags + '</b> 题材</div>');
+    }
+    if (headParts.length) {
+        html += '<div class="lt-sum-head">' + headParts.join('') + '</div>';
+    }
+
+    // ===== 市场总龙头竞争格局结构图（今日状态 + 明日变化 + 情绪标注） =====
+    html += _ltRenderLeaderMap(s);
+
+    // ===== 次日实时监控 · 涨停触发建议（全宽卡，盘中轮询 Sina 实时行情） =====
+    html += _ltRenderWatchMonitor(s);
+
+    html += '<div class="lt-sum-cols">';
+
+    // ===== 左栏：今日连板梯队 · 明日预期 =====
+    html += '<div class="lt-sum-col">';
+    html += '<div class="lt-sum-col-title">📌 今日连板梯队 · 明日预期</div>';
+
+    // 1) 今日连板梯队（同题材全部板 chip 放一起）
+    var ladders = [];
+    for (var ti = 0; ti < (s.today_ladders || []).length; ti++) {
+        if (!shouldExclude(s.today_ladders[ti].tag)) ladders.push(s.today_ladders[ti]);
+    }
+    if (ladders.length) {
+        html += '<div class="lt-sum-card"><div class="lt-sum-card-title">🏆 今日连板梯队</div>';
+        for (var li = 0; li < ladders.length; li++) {
+            var ld = ladders[li];
+            html += '<div class="lt-sum-row"><span class="lt-sum-tag">「' + _kplEsc(ld.tag) + '」</span>';
+            for (var sj = 0; sj < ld.stocks.length; sj++) html += _ltChip(ld.stocks[sj]);
+            html += '</div>';
+        }
+        html += '</div>';
+    }
+
+    // 2) 明日预期（预埋，待次日验证）——镜像验证卡：分条预期 + 观察股 chips
+    html += '<div class="lt-sum-card expect">';
+    html += '<div class="lt-sum-card-title">🔮 明日预期' + (s.next_date ? ' → ' + _kplEsc(s.next_date) : '') + '</div>';
+    var exps = [];
+    for (var ei = 0; ei < (s.expectations || []).length; ei++) {
+        if (!shouldExclude(s.expectations[ei].tag)) exps.push(s.expectations[ei]);
+    }
+    if (exps.length) {
+        for (var ej = 0; ej < exps.length; ej++) {
+            var ex = exps[ej];
+            var reflowMark = (ex.types && ex.types.indexOf('restart') >= 0) ? ' <span class="lt-expect-reflow">🔄 回流</span>' : '';
+            html += '<div class="lt-expect-item">';
+            html += '<div class="lt-expect-top"><span class="lt-sum-tag">「' + _kplEsc(ex.tag) + '」</span>' + _ltChip(ex.top) + '<span class="lt-verify-wait">待验证</span>' + reflowMark + '</div>';
+            var parts = ex.expect_parts || [];
+            if (parts.length) {
+                for (var pj = 0; pj < parts.length; pj++) {
+                    var pt = parts[pj];
+                    var pCls = pt.kind === 'advance' ? 'lt-expect-line up'
+                            : (pt.kind === 'break' ? 'lt-expect-line warn' : 'lt-expect-line reflow');
+                    var pMark = pt.kind === 'advance' ? '▲' : (pt.kind === 'break' ? '▼' : '🔄');
+                    html += '<div class="' + pCls + '">' + pMark + ' ' + _kplEsc(pt.text || '') + '</div>';
+                }
+            } else {
+                html += '<div class="lt-expect-text">' + _kplEsc(ex.expect_text || '') + '</div>';
+            }
+            // 明日观察：同题材全部连板+重启股（镜像验证卡候选行）
+            html += '<div class="lt-cand-row lt-observe-row"><span class="lt-observe-label">明日观察</span>';
+            for (var oj = 0; oj < (ex.stocks || []).length; oj++) {
+                var os = ex.stocks[oj];
+                html += '<span class="lt-observe-chip">' + _kplEsc(os.name || '') + ' <i>' + (os.lianban || 1) + '板</i>' + (os.is_restart ? ' <b>重启</b>' : '') + '</span>';
+            }
+            html += '</div>';
+            html += '</div>';
+        }
+    } else {
+        html += '<div class="lt-sum-empty">今日无 2 连板及以上题材（无预埋预期）</div>';
+    }
+    html += '</div>';
+
+    // 3) 断板预警（列出连板后今日断板的股票）
+    var brokens = [];
+    for (var bi = 0; bi < (s.broken_tags || []).length; bi++) {
+        if (!shouldExclude(s.broken_tags[bi].tag)) brokens.push(s.broken_tags[bi]);
+    }
+    if (brokens.length) {
+        html += '<div class="lt-sum-card broken"><div class="lt-sum-card-title">💔 断板预警</div>';
+        for (var ki = 0; ki < brokens.length; ki++) {
+            var bk = brokens[ki];
+            html += '<div class="lt-sum-row lt-sum-broken"><span class="lt-sum-tag">「' + _kplEsc(bk.tag) + '」</span><span class="lt-broken-label">昨' + bk.prev_top + '连板今断</span>';
+            for (var bsj = 0; bsj < (bk.stocks || []).length; bsj++) {
+                html += _ltChip(bk.stocks[bsj]);
+                html += '<span class="lt-broken-mark">断</span>';
+            }
+            html += '</div>';
+        }
+        html += '</div>';
+    }
+    html += '</div>';
+
+    // ===== 右栏：昨日预期验证 · 机会建议 =====
+    html += '<div class="lt-sum-col">';
+    html += '<div class="lt-sum-col-title">✅ 昨日预期验证 · 机会建议</div>';
+
+    // 4) 验证结果 + 机会建议 + 候选股
+    var v = s.verification;
+    html += '<div class="lt-sum-card verify">';
+    html += '<div class="lt-sum-card-title">✅ 验证' + (v ? '：' + _kplEsc(v.prev_date || '') + ' → ' + _kplEsc(v.today_date || '') : (s.next_date ? '：待 ' + _kplEsc(s.next_date) : '')) + '</div>';
+    if (v && v.items && v.items.length) {
+        for (var vi = 0; vi < v.items.length; vi++) {
+            var it = v.items[vi];
+            if (shouldExclude(it.tag)) continue;
+            var stCls = it.top_status === '晋级' ? 'lt-vf-ok' : (it.top_status === '续板' ? 'lt-vf-keep' : 'lt-vf-broken');
+            var stTxt = it.top_status === '晋级' ? '✓晋级' + (it.top_new_lb || 0) + '板'
+                     : (it.top_status === '续板' ? '✓续板' + (it.top_new_lb || 0) + '板' : '✗断板');
+            var heatTxt = it.heat === 'up' ? '<span class="lt-heat-up">↑升温</span>'
+                       : (it.heat === 'down' ? '<span class="lt-heat-down">↓降温</span>' : '<span class="lt-heat-flat">→持平</span>');
+            html += '<div class="lt-vf-item">';
+            html += '<div class="lt-sum-row"><span class="lt-sum-tag">「' + _kplEsc(it.tag) + '」</span>' + _ltChip(it.prev_top) + '<span class="lt-vf-arrow">→</span><span class="lt-vf-status ' + stCls + '">' + stTxt + '</span> <span class="lt-heat">' + (it.prev_zt || 0) + '家 → ' + (it.today_zt || 0) + '家 ' + heatTxt + '</span></div>';
+            html += '<div class="lt-opp">' + _kplEsc(it.verdict || '') + '：' + _kplEsc(it.opportunity || '') + '</div>';
+            var cands = it.candidates || [];
+            if (cands.length) {
+                html += '<div class="lt-cand-row">';
+                for (var cj = 0; cj < cands.length; cj++) {
+                    html += '<span class="lt-cand-chip"><b>' + _kplEsc(cands[cj].role || '') + '</b> ' + _kplEsc(cands[cj].name || '') + ' <i>' + _kplEsc(cands[cj].code || '') + '</i></span>';
+                }
+                html += '</div>';
+            }
+            html += '</div>';
+        }
+    } else {
+        html += '<div class="lt-sum-empty">⏳ 待 ' + _kplEsc(s.next_date || '明日') + ' 数据实时验证</div>';
+    }
+    html += '</div>';
+
+    // 5) 板块高潮风险：近N日单日涨停峰值（最多 TOP5）
+    var climaxes = [];
+    for (var ci = 0; ci < (s.climax_tags || []).length; ci++) {
+        if (!shouldExclude(s.climax_tags[ci].tag)) climaxes.push(s.climax_tags[ci]);
+    }
+    if (climaxes.length) {
+        html += '<div class="lt-sum-card hot"><div class="lt-sum-card-title">⚠ 板块高潮风险</div>';
+        for (var cj2 = 0; cj2 < climaxes.length; cj2++) {
+            var ct = climaxes[cj2];
+            var peakDate = (ct.peak_date || '').slice(5);
+            html += '<div class="lt-sum-row"><span class="lt-sum-tag">「' + _kplEsc(ct.tag) + '」</span> 近' + ct.days + '日单日最高 <b class="lt-sum-big">' + ct.peak + '</b> 只（' + _kplEsc(peakDate) + '），注意分歧</div>';
+        }
+        html += '</div>';
+    }
+    html += '</div>';
+
+    html += '</div>';
+
+    // 页脚一句话（替代逐行重复的 ETF/套利提示）
+    html += '<div class="lt-sum-note">* 晋级/重启题材，可关注对应 ETF 及创业板、科创板套利机会；次日盘中实时自动验证</div>';
+
+    html += '</div>';
     return html;
 }
 
@@ -13313,24 +14695,32 @@ function renderThemeStructureTree(data) {
         h += '</div>';
         h += '<div class="tst-tree-body">';
         // 根：最高连板（排名1=金色）
-        h += '<div class="tst-cat tst-r1"><div class="tst-cat-label">\u8fde\u677f\u5929\u68af\u00b7' + t.max_lianban + '\u8fde\u677f</div><div class="tst-cat-stocks">' + _tstRenderStocks(t.root) + '</div></div>';
+        h += '<div class="tst-cat tst-r1"><div class="tst-cat-label">\u8fde\u677f\u5929\u68af\u00b7' + t.max_lianban + '\u8fde\u677f</div><div class="tst-cat-stocks">' + _tstRenderBoardGroups(t.root) + '</div></div>';
         for (var b = 0; b < t.tiers.length; b++) {
             // 梯队排名：越高板越靠金（r1金 → r5蓝），对应 TOP题材风向 排名1=金
             var rank = Math.min(5, t.max_lianban - t.tiers[b].board + 1);
-            h += '<div class="tst-cat tst-r' + rank + '"><div class="tst-cat-label">' + t.tiers[b].board + '\u8fde\u677f</div><div class="tst-cat-stocks">' + _tstRenderStocks(t.tiers[b].stocks) + '</div></div>';
+            h += '<div class="tst-cat tst-r' + rank + '"><div class="tst-cat-label">' + t.tiers[b].board + '\u8fde\u677f</div><div class="tst-cat-stocks">' + _tstRenderBoardGroups(t.tiers[b].stocks) + '</div></div>';
         }
-        if (t.shouban.length) h += '<div class="tst-cat tst-shouban"><div class="tst-cat-label">\u4eca\u65e5\u9996\u677f</div><div class="tst-cat-stocks">' + _tstRenderStocks(t.shouban) + '</div></div>';
+        if (t.shouban.length) h += '<div class="tst-cat tst-shouban"><div class="tst-cat-label">\u4eca\u65e5\u9996\u677f</div><div class="tst-cat-stocks">' + _tstRenderBoardGroups(t.shouban) + '</div></div>';
         // 历史分支（默认展开，点击树头可收起）
         if (hasHist) {
             h += '<div class="tst-hist">';
-            h += '<div class="tst-cat"><div class="tst-cat-label">\u65ad\u677f\uff08\u8fd120\u4e2a\u4ea4\u6613\u65e5\u5386\u53f2\u8fde\u677f\uff09 <span class="tst-cat-count">' + t.broken.length + '</span></div><div class="tst-cat-stocks">' + _tstRenderStocks(t.broken) + '</div></div>';
-            h += '<div class="tst-cat"><div class="tst-cat-label">\u8fd120\u4e2a\u4ea4\u6613\u65e5\u6da8\u505c\u8fc7 <span class="tst-cat-count">' + t.zt20.length + '</span></div><div class="tst-cat-stocks">' + _tstRenderStocks(t.zt20) + '</div></div>';
-            h += '<div class="tst-cat"><div class="tst-cat-label">\u8fd1100\u4e2a\u4ea4\u6613\u65e5\u540c\u6807\u7b7e <span class="tst-cat-count">' + t.zt100.length + '</span></div><div class="tst-cat-stocks">' + _tstRenderStocks(t.zt100) + '</div></div>';
+            h += '<div class="tst-cat"><div class="tst-cat-label">\u65ad\u677f\uff08\u8fd120\u4e2a\u4ea4\u6613\u65e5\u5386\u53f2\u8fde\u677f\uff09 <span class="tst-cat-count">' + t.broken.length + '</span></div><div class="tst-cat-stocks">' + _tstRenderBoardGroups(t.broken) + '</div></div>';
+            h += '<div class="tst-cat"><div class="tst-cat-label">\u8fd120\u4e2a\u4ea4\u6613\u65e5\u6da8\u505c\u8fc7 <span class="tst-cat-count">' + t.zt20.length + '</span></div><div class="tst-cat-stocks">' + _tstRenderBoardGroups(t.zt20) + '</div></div>';
+            h += '<div class="tst-cat"><div class="tst-cat-label">\u8fd1100\u4e2a\u4ea4\u6613\u65e5\u540c\u6807\u7b7e <span class="tst-cat-count">' + t.zt100.length + '</span></div><div class="tst-cat-stocks">' + _tstRenderBoardGroups(t.zt100) + '</div></div>';
             h += '</div>';  // .tst-hist 默认展开（点击树头收起）
         }
         h += '</div></div>';  // body, tree
     }
     return h;
+}
+
+// 板块归属：code → 'gem'（创业板/科创板 30/68 前缀）| 'main'（主板）
+function _tstBoardOf(code) {
+    if (!code) return 'main';
+    if (code.indexOf('300') === 0 || code.indexOf('301') === 0) return 'gem';
+    if (code.indexOf('688') === 0 || code.indexOf('689') === 0) return 'gem';
+    return 'main';
 }
 
 function _tstRenderStocks(stocks) {
@@ -13344,10 +14734,27 @@ function _tstRenderStocks(stocks) {
         var cls = 'tst-stock';
         if (s.lianban >= 5) cls += ' tst-high';   // 5板+：旋转彩环边框
         var altTag = s.primary_tag ? '<span class="tst-alt-tag">' + _kplEsc(s.primary_tag) + '</span>' : '';
+        // 主板/创业板·科创板 标识（区分标识开）
+        var board = _tstBoardOf(s.code);
+        var boardBadge = '<span class="tst-board-badge tst-board-' + board + '">' + (board === 'gem' ? '\u521b\u00b7\u79d1' : '\u4e3b') + '</span>';
         h += '<span class="' + cls + '" data-code="' + (s.code || '') + '" data-name="' + ((s.name || '').replace(/'/g, '')) + '" onclick="_tstOpenStock(this)">' +
+             boardBadge +
              '<span class="name">' + _kplEsc(s.name) + '</span>' + lbTag + altTag +
              '<span class="pct ' + pc + '">' + (pct > 0 ? '+' : '') + pct.toFixed(2) + '%</span></span>';
     }
+    return h;
+}
+
+// 板块分目录渲染：同分类内 主板/创业板·科创板 各成目录 + 不同颜色
+function _tstRenderBoardGroups(stocks) {
+    var main = [], gem = [];
+    for (var i = 0; i < (stocks || []).length; i++) {
+        var s = stocks[i];
+        if (_tstBoardOf(s.code) === 'gem') gem.push(s); else main.push(s);
+    }
+    var h = '';
+    if (main.length) h += '<div class="tst-board-group tst-board-main"><span class="tst-board-label">\u4e3b\u677f</span>' + _tstRenderStocks(main) + '</div>';
+    if (gem.length) h += '<div class="tst-board-group tst-board-gem"><span class="tst-board-label">\u521b\u4e1a\u677f\u00b7\u79d1\u521b\u677f</span>' + _tstRenderStocks(gem) + '</div>';
     return h;
 }
 
@@ -13434,6 +14841,66 @@ function toggleThemeTreeAutoRefresh() {
             manualRefreshThemeTree(false);   // 盘中自动触发（走缓存 30s TTL）
         }
         updateThemeTreeBtn();
+    }, 1000);
+}
+
+// 题材风向连板轨迹自动刷新（复刻结构树自动刷新模式）
+var _themeTrajAutoTimer = null;
+var _themeTrajAutoCountdown = null;
+var _themeTrajAutoRemaining = 0;
+var _themeTrajAutoActive = false;
+var _THEME_TRAJ_AUTO_INTERVAL = 60;   // 秒，可调
+
+function toggleThemeTrajectoryAutoRefresh() {
+    var btn = document.getElementById('twLbTrajectoryAutoBtn');
+    if (!btn) return;
+    if (_themeTrajAutoActive) {
+        clearInterval(_themeTrajAutoTimer); clearInterval(_themeTrajAutoCountdown);
+        _themeTrajAutoActive = false; _themeTrajAutoTimer = null; _themeTrajAutoCountdown = null;
+        btn.innerHTML = '\u23f1 \u81ea\u52a8\u5237\u65b0 1\u5206\u949f';
+        btn.classList.remove('active');
+        showToast('\u5df2\u505c\u6b62\u8fde\u677f\u8f68\u8ff9\u81ea\u52a8\u5237\u65b0', 'info');
+        return;
+    }
+    var now = new Date();
+    var beijingHour = (now.getUTCHours() + 8) % 24;
+    var totalMin = beijingHour * 60 + now.getUTCMinutes();
+    if (totalMin < 565 || totalMin >= 900) {
+        showToast('\u23f0 \u975e\u4ea4\u6613\u65f6\u6bb5 (9:25~15:00)\uff0c\u81ea\u52a8\u5237\u65b0\u4e0d\u53ef\u7528', 'warning');
+        return;
+    }
+    _themeTrajAutoActive = true;
+    _themeTrajAutoRemaining = _THEME_TRAJ_AUTO_INTERVAL;
+    btn.classList.add('active');
+    function updateTrajBtn() {
+        var m = Math.floor(_themeTrajAutoRemaining / 60);
+        var s = _themeTrajAutoRemaining % 60;
+        btn.innerHTML = '<span class="rt-pulse-dot"></span> \u81ea\u52a8\u5237\u65b0 (' + m + ':' + (s < 10 ? '0' : '') + s + ')';
+    }
+    updateTrajBtn();
+    _themeTrajAutoCountdown = setInterval(function() {
+        _themeTrajAutoRemaining--;
+        if (_themeTrajAutoRemaining <= 0) {
+            var n = new Date();
+            var h = (n.getUTCHours() + 8) % 24;
+            var tot = h * 60 + n.getUTCMinutes();
+            if (tot < 565 || tot >= 900) {   // 过交易时段自动停
+                clearInterval(_themeTrajAutoTimer); clearInterval(_themeTrajAutoCountdown);
+                _themeTrajAutoActive = false; _themeTrajAutoTimer = null; _themeTrajAutoCountdown = null;
+                btn.innerHTML = '\u23f1 \u81ea\u52a8\u5237\u65b0 1\u5206\u949f';
+                btn.classList.remove('active');
+                showToast('\u23f0 \u5df2\u8fc7\u4ea4\u6613\u65f6\u6bb5\uff0c\u81ea\u52a8\u5237\u65b0\u5df2\u505c\u6b62', 'info');
+                return;
+            }
+            if (currentTab !== 'themewind') {   // 不在题材风向tab则跳过本次刷新，避免后台空转
+                _themeTrajAutoRemaining = _THEME_TRAJ_AUTO_INTERVAL;
+                updateTrajBtn();
+                return;
+            }
+            _themeTrajAutoRemaining = _THEME_TRAJ_AUTO_INTERVAL;
+            manualRefreshTrajectory();   // 盘中自动触发（走缓存 120s TTL）
+        }
+        updateTrajBtn();
     }, 1000);
 }
 
@@ -22411,6 +23878,89 @@ def _get_sina_prefix(code):
         return 'sh'
     return 'sz'
 
+
+def _limit_pct_for(code, name):
+    """计算涨跌幅限制：ST/S 类 5%，创业板(300/301)/科创板(688/689) 20%，主板 10%。"""
+    name = (name or '').upper()
+    if name and ('ST' in name or name.startswith('S')):
+        return 5.0
+    if code.startswith('300') or code.startswith('301') or code.startswith('688') or code.startswith('689'):
+        return 20.0
+    return 10.0
+
+
+def _spot_quotes_for_codes(codes):
+    """Sina 实时行情批量获取（30s 内存缓存）。
+    返回 {code: {'name','price','prev_close','change_pct','limit_pct','limit_up','board'}}。
+    非交易时段也返回（前端自行控制轮询）；失败静默跳过。"""
+    if not codes:
+        return {}
+    codes = sorted({c.strip() for c in codes if c.strip()})
+    if not codes:
+        return {}
+    key = 'spot_quotes:' + ','.join(codes)
+    cached = _get_cached(key, ttl=30)
+    if cached is not None:
+        return cached
+    import requests as _req
+    snap = _kpl_today_zt_snapshot()
+    result = {}
+    batch_size = 50
+    for batch_start in range(0, len(codes), batch_size):
+        batch = codes[batch_start:batch_start + batch_size]
+        symbols = ','.join([_get_sina_prefix(c) + c for c in batch])
+        url = f'https://hq.sinajs.cn/list={symbols}'
+        try:
+            r = _req.get(url, timeout=15, headers={
+                'Referer': 'https://finance.sina.com.cn',
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
+            })
+            if r.status_code != 200:
+                continue
+            for line in r.text.strip().split('\n'):
+                line = line.strip()
+                if not line or not line.startswith('var hq_str_'):
+                    continue
+                # 格式: var hq_str_sh600000="name,open,prev_close,current,high,low,..."
+                try:
+                    content = line[line.index('"') + 1:line.rindex('"')]
+                except ValueError:
+                    continue
+                parts = content.split(',')
+                if len(parts) < 4:
+                    continue
+                scode = line.split('_')[2].split('=')[0]
+                raw_code = scode[2:] if len(scode) > 2 else scode
+                if raw_code not in codes:
+                    continue
+                name = parts[0]
+                try:
+                    prev_close = float(parts[2]) if parts[2] else 0.0
+                    current = float(parts[3]) if parts[3] else 0.0
+                except (ValueError, IndexError):
+                    continue
+                if prev_close <= 0:
+                    continue
+                change_pct = (current - prev_close) / prev_close * 100.0
+                limit_pct = _limit_pct_for(raw_code, name)
+                board = 'gem' if (raw_code.startswith('300') or raw_code.startswith('301') or
+                                  raw_code.startswith('688') or raw_code.startswith('689')) else 'main'
+                limit_up = (change_pct >= limit_pct - 0.1) or (raw_code in snap)
+                result[raw_code] = {
+                    'name': name,
+                    'price': round(current, 2),
+                    'prev_close': round(prev_close, 2),
+                    'change_pct': round(change_pct, 2),
+                    'limit_pct': limit_pct,
+                    'limit_up': bool(limit_up),
+                    'board': board,
+                }
+        except Exception:
+            continue
+    _set_cache(key, result)
+    return result
+
+
 def _check_yangbaoyin(spot_data):
     """检测反转：昨天阴线下跌，今天阳线(现价>开盘价)
     使用Sina实时行情，每日快照(data/etf_daily_open.json)保存今日开盘价，
@@ -22768,6 +24318,13 @@ class Handler(BaseHTTPRequestHandler):
                         except Exception:
                             continue
                 _set_cache(cache_key, result)
+            self._respond_json(result, cors_headers)
+
+        elif path == '/api/spot_quotes':
+            codes = [c.strip() for c in query.get('codes', [''])[0].split(',') if c.strip()]
+            result = dict(_spot_quotes_for_codes(codes)) if codes else {}
+            result['trading'] = _is_trading_hours()
+            result['ts'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             self._respond_json(result, cors_headers)
 
         elif path == '/api/kpl_gem_strong_rise':
@@ -23148,7 +24705,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/ladder_trajectory_lianban':
             n = int(query.get('n', ['20'])[0])
             cache_key = 'ladder_trajectory_lianban_' + str(n)
-            result = _get_cached(cache_key, ttl=120)
+            result = _get_cached(cache_key, ttl=60 if _is_trading_hours() else 300)
             if result is None:
                 _kpl_ensure_loaded()
                 today_ymd = datetime.now().strftime('%Y%m%d')
@@ -23156,35 +24713,68 @@ class Handler(BaseHTTPRequestHandler):
                 recent = recent[-n:] if len(recent) >= n else recent
                 recent_fmt = [d[:4]+'-'+d[4:6]+'-'+d[6:] for d in recent]
                 freq_by_tag = {}
+                stocks_by_tag = {}
+                # 先按股票去重：同一天同股只算一次（修正重复计数），同时收集股票明细
                 for d_fmt in recent_fmt:
                     day_rows = _kpl_rows_by_date.get(d_fmt, [])
+                    code_info = {}   # code -> {tag, lb, name, is_restart}
                     for r in day_rows:
                         sc = r.get('stock_code', '')
                         if not sc:
                             continue
-                        # 只统计连板 >= 2 的股票
-                        if _kpl_compute_lianban(sc, d_fmt) < 2:
-                            continue
+                        if sc in code_info:
+                            continue  # 同一天同股去重
                         tag = (r.get('reason_tag', '') or '').strip()
                         if not tag:
                             continue
+                        lb = _kpl_compute_lianban(sc, d_fmt)
+                        is_restart = (lb < 2 and _kpl_is_restart(sc, d_fmt))
+                        if lb < 2 and not is_restart:
+                            continue  # 孤立首板（非重启）不进入连板轨迹
+                        code_info[sc] = {
+                            'tag': tag,
+                            'lb': lb,
+                            'name': r.get('stock_name', '') or '',
+                            'is_restart': is_restart,
+                        }
+                    for sc, info in code_info.items():
+                        tag = info['tag']
                         if tag not in freq_by_tag:
                             freq_by_tag[tag] = {}
                         freq_by_tag[tag][d_fmt] = freq_by_tag[tag].get(d_fmt, 0) + 1
-                # 盘中补充今日实时涨停数据（连板版只统计 lianban >= 2）
-                _inject_today_zt_to_trajectory(recent_fmt, freq_by_tag, min_lianban=2)
+                        if tag not in stocks_by_tag:
+                            stocks_by_tag[tag] = {}
+                        is_gem = (sc[:3] in ('300', '301') or sc[:3] in ('688', '689'))
+                        stocks_by_tag[tag].setdefault(d_fmt, []).append({
+                            'code': sc,
+                            'name': info['name'],
+                            'lianban': info['lb'],
+                            'is_restart': info['is_restart'],
+                            'is_gem': is_gem,
+                        })
+                # 盘中补充今日实时涨停数据（连板版只统计 lianban >= 2，注入股票明细）
+                _inject_today_zt_to_trajectory(recent_fmt, freq_by_tag, min_lianban=2, stocks_by_tag=stocks_by_tag)
+                # 每个 (tag,date) 的股票列表按连板数降序、名称升序
+                for tag, date_map in stocks_by_tag.items():
+                    for d_fmt, slist in date_map.items():
+                        slist.sort(key=lambda s: (-s['lianban'], s['name']))
                 tag_totals = {}
                 for tag, date_counts in freq_by_tag.items():
                     total = sum(date_counts.values())
                     tag_totals[tag] = total
                 sorted_tags = sorted(tag_totals.keys(), key=lambda t: -tag_totals[t])
                 sorted_freq = {}
+                sorted_stocks = {}
                 for tag in sorted_tags:
                     sorted_freq[tag] = freq_by_tag[tag]
+                    if tag in stocks_by_tag:
+                        sorted_stocks[tag] = stocks_by_tag[tag]
                 result = {
                     'dates': recent_fmt,
                     'freq_by_tag': sorted_freq,
                     'tag_totals': tag_totals,
+                    'stocks_by_tag': sorted_stocks,
+                    'summary': _build_trajectory_summary(recent_fmt, sorted_freq, sorted_stocks),
                 }
                 _set_cache(cache_key, result)
             self._respond_json(result, cors_headers)
