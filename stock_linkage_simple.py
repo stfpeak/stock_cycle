@@ -23890,7 +23890,8 @@ def _limit_pct_for(code, name):
 
 
 def _spot_quotes_for_codes(codes):
-    """Sina 实时行情批量获取（30s 内存缓存）。
+    """实时行情批量获取（30s 内存缓存）。
+    Sina 为主源（云主机 IP 被 Sina 403 时自动回退腾讯 qt.gtimg.cn）。
     返回 {code: {'name','price','prev_close','change_pct','limit_pct','limit_up','board'}}。
     非交易时段也返回（前端自行控制轮询）；失败静默跳过。"""
     if not codes:
@@ -23957,7 +23958,73 @@ def _spot_quotes_for_codes(codes):
                 }
         except Exception:
             continue
+    # 腾讯回退：Sina 失败/被拦截时补齐缺失代码
+    missing = [c for c in codes if c not in result]
+    if missing:
+        result.update(_tencent_quotes_for_codes(missing, snap))
     _set_cache(key, result)
+    return result
+
+
+def _tencent_quotes_for_codes(codes, snap=None):
+    """腾讯实时行情批量获取（qt.gtimg.cn），作为 Sina 403/失败时的回退源。
+    返回 {code: {'name','price','prev_close','change_pct','limit_pct','limit_up','board'}}。"""
+    if not codes:
+        return {}
+    import requests as _req
+    if snap is None:
+        snap = _kpl_today_zt_snapshot()
+    result = {}
+    batch_size = 50
+    for batch_start in range(0, len(codes), batch_size):
+        batch = codes[batch_start:batch_start + batch_size]
+        symbols = ','.join([_get_sina_prefix(c) + c for c in batch])
+        url = f'https://qt.gtimg.cn/q={symbols}'
+        try:
+            r = _req.get(url, timeout=15, headers={
+                'Referer': 'https://gu.qq.com',
+                'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'
+            })
+            if r.status_code != 200:
+                continue
+            for line in r.text.strip().split('\n'):
+                line = line.strip()
+                if not line.startswith('v_'):
+                    continue
+                try:
+                    content = line[line.index('"') + 1:line.rindex('"')]
+                except ValueError:
+                    continue
+                parts = content.split('~')
+                if len(parts) < 5:
+                    continue
+                code = parts[2].strip()
+                if not code or code not in codes:
+                    continue
+                name = parts[1].strip()
+                try:
+                    current = float(parts[3]) if parts[3] else 0.0
+                    prev_close = float(parts[4]) if parts[4] else 0.0
+                except (ValueError, IndexError):
+                    continue
+                if prev_close <= 0:
+                    continue
+                change_pct = (current - prev_close) / prev_close * 100.0
+                limit_pct = _limit_pct_for(code, name)
+                board = 'gem' if (code.startswith('300') or code.startswith('301') or
+                                  code.startswith('688') or code.startswith('689')) else 'main'
+                limit_up = (change_pct >= limit_pct - 0.1) or (code in snap)
+                result[code] = {
+                    'name': name,
+                    'price': round(current, 2),
+                    'prev_close': round(prev_close, 2),
+                    'change_pct': round(change_pct, 2),
+                    'limit_pct': limit_pct,
+                    'limit_up': bool(limit_up),
+                    'board': board,
+                }
+        except Exception:
+            continue
     return result
 
 
