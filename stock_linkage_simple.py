@@ -120,6 +120,13 @@ SNIPER_EXCLUDE_TAGS = {'并购重组', '股权转让', '实控人变更', '借�
 _KPL_TOP_TAGS_CACHE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'kpl_top_tags_cache.json')
 _KPL_TOP_TAGS_CACHE_TTL = 300    # 5分钟文件缓存生命周期
 _kpl_top_tags_cache_timestamp = 0  # 上次成功写入时间戳
+# ===== 弹性套利 · 创/科补涨池（Session 23） =====
+_ELASTIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'elastic_arbitrage')
+_elastic_lock = threading.Lock()
+_elastic_kw_cache = {}          # keyword → {'gem': set, 'star': set, 'main': set} 题材成分股反查缓存（跨天清空）
+_ELASTIC_VERSION = 1            # 磁盘数据格式版本，递增使旧缓存自动失效重算
+_ELASTIC_MEMBER_CAP = 12        # 每组（创/科）成员展示上限
+_ELASTIC_CARD_CAP = 30          # 连板股卡上限
 
 def _fetch_jiuyan_posts(existing_items=None, existing_urls=None):
     """从韭研公社 study_publish 抓取最新帖子，去重合并，返回 (merged_items, new_count)
@@ -2749,6 +2756,304 @@ def _kpl_get_all_stock_codes_for_keyword(keyword):
                     if code:
                         matched.add(code)
     return list(matched)
+
+
+# ===== 弹性套利 · 创/科补涨池（Session 23） =====
+def _elastic_path(date_fmt):
+    """弹性套利磁盘文件路径：data/elastic_arbitrage/YYYY-MM-DD.json"""
+    return os.path.join(_ELASTIC_DIR, date_fmt + '.json')
+
+
+def _elastic_load(date_fmt):
+    """读取磁盘持久化数据，文件缺失/损坏返回 None"""
+    try:
+        p = _elastic_path(date_fmt)
+        if os.path.exists(p):
+            with open(p, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return None
+
+
+def _elastic_save(date_fmt, data):
+    """原子写盘（tmp + os.replace），持锁防并发"""
+    try:
+        with _elastic_lock:
+            os.makedirs(_ELASTIC_DIR, exist_ok=True)
+            p = _elastic_path(date_fmt)
+            tmp = p + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False)
+            os.replace(tmp, p)
+    except Exception as e:
+        print(f'[弹性套利] 落盘失败 {date_fmt}: {e}')
+
+
+def _elastic_stock_name(code, fallback=''):
+    """解析股票名称：调用方兜底 → finder 名称映射 → KPL 最新记录"""
+    if fallback:
+        return fallback
+    try:
+        n = finder.get_stock_name(code)
+        if n and n != code:
+            return n
+    except Exception:
+        pass
+    rows = _kpl_rows_by_stock.get(code, [])
+    if rows:
+        for r in sorted(rows, key=lambda x: x.get('date', ''), reverse=True):
+            nm = (r.get('stock_name', '') or '').strip()
+            if nm:
+                return nm
+    return code
+
+
+def _elastic_member_codes_for_keyword(keyword):
+    """题材成分股三源合并反查：同花顺概念 + KPL reason_index 全量 + KPL concepts 直扫。
+    按 _kpl_board_of_code 分创/科/主。结果按 keyword 内存缓存（跨天清空）。"""
+    empty = {'gem': set(), 'star': set(), 'main': set()}
+    if not keyword:
+        return empty
+    if keyword in _elastic_kw_cache:
+        return _elastic_kw_cache[keyword]
+    codes = set()
+    try:
+        codes.update(finder.get_concept_stocks(keyword))
+    except Exception:
+        pass
+    try:
+        codes.update(_kpl_get_all_stock_codes_for_keyword(keyword))
+    except Exception:
+        pass
+    for recs in _kpl_day_cache.values():
+        for r in recs:
+            cs = (r.get('concepts', '') or '')
+            if keyword in [c.strip() for c in cs.split('、') if c.strip()]:
+                c = r.get('stock_code', '')
+                if c:
+                    codes.add(c)
+    gem, star, main = set(), set(), set()
+    for c in codes:
+        b = _kpl_board_of_code(c)
+        if b == '创':
+            gem.add(c)
+        elif b == '科':
+            star.add(c)
+        else:
+            main.add(c)
+    result = {'gem': gem, 'star': star, 'main': main}
+    _elastic_kw_cache[keyword] = result
+    return result
+
+
+def _elastic_zt20_map(window_date, target_keywords):
+    """近20交易日窗口内，各 target_keyword 题材下涨停过的股票集合。返回 {keyword: set(code)}"""
+    out = {}
+    for kw in target_keywords:
+        out[kw] = set()
+    if not _trading_days:
+        return out
+    window_ymd = window_date.replace('-', '')
+    days = [d for d in _trading_days if d <= window_ymd]
+    days = days[-20:] if len(days) >= 20 else days
+    day_fmts = [d[:4] + '-' + d[4:6] + '-' + d[6:] for d in days]
+    for d_fmt in day_fmts:
+        for r in _kpl_rows_by_date.get(d_fmt, []):
+            sc = r.get('stock_code', '')
+            if not sc:
+                continue
+            tokens = set(_split_reason_tag((r.get('reason_tag', '') or '').strip(), r.get('reason_brief', '') or ''))
+            cs = (r.get('concepts', '') or '')
+            for c in cs.split('、'):
+                c = c.strip()
+                if c:
+                    tokens.add(c)
+            for kw in target_keywords:
+                if kw in tokens:
+                    out[kw].add(sc)
+    return out
+
+
+def _elastic_is_st(name):
+    """判断股票名称是否为 ST/退市股（套利候选剔除）"""
+    nm = (name or '').strip()
+    return nm.startswith('*ST') or nm.startswith('ST') or '退' in nm
+
+
+def _elastic_build_card_members(code, tags, zt20, today_zt_codes):
+    """按卡 tags 合并反查成员，分创/科，zt_20d 优先排序截断。返回 {'gem': [...], 'star': [...]}"""
+    gem_set = set()
+    star_set = set()
+    zt_flags = {}   # code → True(近20日涨停过)
+    for kw in tags:
+        kw_res = _elastic_member_codes_for_keyword(kw)
+        kw_zt20 = zt20.get(kw, set())
+        for c in kw_res['gem']:
+            if c == code:
+                continue
+            gem_set.add(c)
+            if c in kw_zt20:
+                zt_flags[c] = True
+        for c in kw_res['star']:
+            if c == code:
+                continue
+            star_set.add(c)
+            if c in kw_zt20:
+                zt_flags[c] = True
+
+    def _mk(codes_set):
+        out = []
+        for c in codes_set:
+            nm = _elastic_stock_name(c)
+            if _elastic_is_st(nm):
+                continue
+            out.append({
+                'code': c,
+                'name': nm,
+                'zt_20d': bool(zt_flags.get(c, False)),
+                'today_zt': c in today_zt_codes,
+            })
+        out.sort(key=lambda e: (-e['zt_20d'], -e['today_zt'], e['name']))
+        return out[:_ELASTIC_MEMBER_CAP]
+
+    return {'gem': _mk(gem_set), 'star': _mk(star_set)}
+
+
+def _elastic_all_codes(cards):
+    """收集连板股 + 全部成员 code 列表（供 spot_quotes 轮询）"""
+    codes = []
+    for c in cards:
+        codes.append(c['code'])
+        for m in c.get('gem', []):
+            codes.append(m['code'])
+        for m in c.get('star', []):
+            codes.append(m['code'])
+    return sorted(set(codes))
+
+
+def _elastic_build_preset(date_fmt):
+    """收盘预生成：当日连板>=2 拆题材反查创/科成分股。
+    与连板轨迹口径一致用 _kpl_compute_lianban，同股多行去重，跨 tags 合并成员。"""
+    _kpl_ensure_loaded()
+    rows = _kpl_rows_by_date.get(date_fmt, [])
+    today_zt_codes = {r.get('stock_code', '') for r in rows if r.get('stock_code', '')}
+    cards = []
+    seen = set()
+    for r in rows:
+        sc = r.get('stock_code', '')
+        if not sc or sc in seen:
+            continue
+        lb = _kpl_compute_lianban(sc, date_fmt)
+        if lb < 2:
+            continue
+        tag = (r.get('reason_tag', '') or '').strip()
+        brief = r.get('reason_brief', '') or ''
+        tags = [t for t in _split_reason_tag(tag, brief) if t and t != '未分类']
+        if not tags:
+            continue
+        seen.add(sc)
+        cards.append({
+            'code': sc,
+            'name': (r.get('stock_name', '') or '') or _elastic_stock_name(sc),
+            'lianban': lb,
+            'main_tag': tag,
+            'reason_brief': brief,
+            'tags': tags,
+            'live_added': False,
+        })
+    # 跨卡合并 zt20 单遍扫描（避免逐卡重复扫窗口）
+    all_tags = set()
+    for c in cards:
+        for t in c['tags']:
+            all_tags.add(t)
+    zt20 = _elastic_zt20_map(date_fmt, all_tags)
+    for c in cards:
+        m = _elastic_build_card_members(c['code'], c['tags'], zt20, today_zt_codes)
+        c['gem'] = m['gem']
+        c['star'] = m['star']
+    cards.sort(key=lambda c: (-c['lianban'], c['name']))
+    cards = cards[:_ELASTIC_CARD_CAP]
+    return {
+        'version': _ELASTIC_VERSION,
+        'date': date_fmt,
+        'trading': _is_trading_hours(),
+        'fallback': False,
+        'live_added': 0,
+        'cards': cards,
+        'codes': _elastic_all_codes(cards),
+    }
+
+
+def _elastic_build_live(data):
+    """盘中动态：新晋2板/晋级连板追加卡片（live_added）+ 既有成员 today_zt 更新 + 增量写回。"""
+    if not _is_trading_hours():
+        data['trading'] = False
+        return data
+    data['trading'] = True
+    snap = _kpl_today_zt_snapshot()
+    if not snap:
+        data['fallback'] = True
+        return data
+    data['fallback'] = False
+    existing = {c['code'] for c in data.get('cards', [])}
+    new_cards = []
+    all_tags = set()
+    for c in data.get('cards', []):
+        for t in c.get('tags', []):
+            all_tags.add(t)
+    for code, info in snap.items():
+        if info.get('lianban', 0) < 2 or code in existing:
+            continue
+        tag, brief = _kpl_resolve_tag(code)
+        tags = [t for t in _split_reason_tag(tag, brief) if t and t != '未分类']
+        if not tags:
+            continue
+        existing.add(code)
+        all_tags.update(tags)
+        new_cards.append({
+            'code': code,
+            'name': info.get('name', '') or _elastic_stock_name(code),
+            'lianban': info.get('lianban', 2),
+            'main_tag': tag,
+            'reason_brief': brief,
+            'tags': tags,
+            'live_added': True,
+        })
+    if new_cards:
+        zt20 = _elastic_zt20_map(data.get('date', ''), all_tags)
+        snap_codes = set(snap.keys())
+        for c in new_cards:
+            m = _elastic_build_card_members(c['code'], c['tags'], zt20, snap_codes)
+            c['gem'] = m['gem']
+            c['star'] = m['star']
+        data['cards'].extend(new_cards)
+        data['live_added'] = int(data.get('live_added', 0)) + len(new_cards)
+        data['cards'].sort(key=lambda c: (-c['lianban'], c['name']))
+        data['cards'] = data['cards'][:_ELASTIC_CARD_CAP]
+        data['codes'] = _elastic_all_codes(data['cards'])
+    # 既有卡片成员 today_zt 更新为实时池命中（新卡已在 snap_codes 下计算）
+    for c in data.get('cards', []):
+        for m in c.get('gem', []) + c.get('star', []):
+            m['today_zt'] = m['code'] in snap
+    if new_cards:
+        _elastic_save(data.get('date', ''), data)
+    return data
+
+
+def _elastic_ensure_preset():
+    """KPL 数据更新后：清题材缓存 + 目标日期文件缺失/过期则重建 + 失效内存缓存。"""
+    global _elastic_kw_cache
+    _elastic_kw_cache = {}
+    _kpl_ensure_loaded()
+    if not _kpl_day_files:
+        return
+    date_fmt = _kpl_day_files[-1].replace('.json', '')
+    disk = _elastic_load(date_fmt)
+    if disk is None or disk.get('version') != _ELASTIC_VERSION:
+        disk = _elastic_build_preset(date_fmt)
+        _elastic_save(date_fmt, disk)
+    _invalidate_cache(prefix='elastic_arbitrage')
 
 
 def _kpl_reload_indices():
@@ -5982,6 +6287,38 @@ td.lt-trajectory-cell {
 .lt-watch-pct.up { color: #fca5a5; }
 .lt-watch-pct.flat { color: #94a3b8; }
 .lt-watch-pct.down { color: #60a5fa; }
+/* 弹性套利 · 创/科补涨池（Session 23）：毛玻璃卡 + 创/科板块徽标 + ★ zt20 + 涨停高亮 */
+.ea-section { margin-bottom: 10px; }
+.ea-loading { padding: 12px; text-align: center; color: #888; font-size: 0.82em; }
+.ea-card { background: linear-gradient(135deg, rgba(15,52,96,0.28), rgba(15,52,96,0.12)); border: 1px solid rgba(34,211,238,0.35); border-radius: 12px; padding: 8px 10px; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); box-shadow: 0 2px 12px rgba(0,0,0,0.15); }
+.ea-title { font-size: 0.85em; font-weight: 700; color: #22d3ee; display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.ea-date { color: #94a3b8; font-size: 0.78em; font-weight: 600; }
+.ea-status { font-size: 0.72em; font-weight: 600; color: #94a3b8; background: rgba(148,163,184,0.12); border: 1px solid rgba(148,163,184,0.3); border-radius: 9px; padding: 1px 8px; }
+.ea-status.live { color: #22d3ee; border-color: rgba(34,211,238,0.5); background: rgba(34,211,238,0.08); }
+.ea-empty { font-size: 0.76em; color: #94a3b8; padding: 6px 0; }
+.ea-card-row { margin-top: 6px; border-radius: 10px; background: rgba(15,52,96,0.14); padding: 5px 8px; }
+.ea-card-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 0.8em; }
+.ea-stock { font-weight: 700; color: #fff; }
+.ea-tag { color: #fde68a; font-size: 0.86em; }
+.ea-live-mark { font-size: 0.7em; color: #22d3ee; background: rgba(34,211,238,0.1); border: 1px solid rgba(34,211,238,0.45); border-radius: 8px; padding: 0 5px; }
+.ea-board { display: flex; align-items: flex-start; gap: 6px; margin-top: 5px; flex-wrap: wrap; }
+.ea-board-badge { flex: 0 0 auto; font-size: 0.7em; font-weight: 700; border-radius: 8px; padding: 1px 7px; margin-top: 1px; }
+.ea-board-badge.gem { color: #22d3ee; background: rgba(34,211,238,0.1); border: 1px solid rgba(34,211,238,0.45); }
+.ea-board-badge.star { color: #60a5fa; background: rgba(96,165,250,0.1); border: 1px solid rgba(96,165,250,0.45); }
+.ea-board-empty { font-size: 0.74em; color: #64748b; padding-top: 3px; }
+.ea-chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.ea-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 0.74em; background: rgba(30,41,59,0.6); border: 1px solid rgba(148,163,184,0.35); border-radius: 8px; padding: 1px 6px; white-space: nowrap; }
+.ea-chip.ea-hidden { display: none; }
+.ea-chip.zt { border: 1px solid transparent; background: linear-gradient(135deg, rgba(239,68,68,0.25), rgba(255,215,0,0.18)); box-shadow: 0 0 8px rgba(248,113,113,0.35); }
+.ea-chip.zt .ea-chip-zt { color: #fecaca; }
+.ea-z20 { color: #ffd700; font-size: 0.9em; }
+.ea-chip-zt { color: #f87171; font-size: 0.72em; font-weight: 700; background: rgba(248,113,113,0.15); border: 1px solid rgba(248,113,113,0.5); border-radius: 6px; padding: 0 3px; }
+.ea-more { background: rgba(34,211,238,0.08); color: #7dd3fc; border: 1px dashed rgba(34,211,238,0.45); border-radius: 8px; font-size: 0.7em; padding: 0 7px; cursor: pointer; }
+.ea-more:hover { background: rgba(34,211,238,0.2); }
+.ea-pct { font-size: 0.9em; font-weight: 700; min-width: 46px; text-align: right; color: #94a3b8; }
+.ea-pct.up { color: #ef4444; }
+.ea-pct.flat { color: #94a3b8; }
+.ea-pct.down { color: #22c55e; }
 /* 连板序号标记 - 暖色渐变背景 + 圆角标签 */
 .lt-marker {
     display: inline-flex; align-items: center; justify-content: center;
@@ -13968,8 +14305,8 @@ function renderLadderLianbanTagTrajectory(data) {
     });
     html += '</table></div>';
     html += _ltRenderTrajectorySummary(data.summary);
-    // 延迟到 DOM 更新后启动监控轮询（两 tab 共用渲染器，天然覆盖全文档 chip）
-    setTimeout(function() { _ltWatchStartPoll(); }, 300);
+    // 延迟到 DOM 更新后启动监控轮询 + 弹性套利加载（两 tab 共用渲染器，天然覆盖全文档 chip）
+    setTimeout(function() { _ltWatchStartPoll(); _eaLoad(); }, 300);
     return html;
 }
 
@@ -14429,6 +14766,153 @@ function _ltWatchStartPoll() {
     _ltWatchPoll(false);
 }
 
+// ===== 弹性套利 · 创/科补涨池（Session 23）：连板晋级/新晋2板题材下创/科补涨候选 =====
+var _eaTimer = null;
+var _eaInterval = 30000;             // 30s 轮询
+var _eaMemberShow = 8;               // 每组默认显示条数，超出折叠「展开全部」
+
+function renderElasticArbitrage(data) {
+    if (!data || !data.cards || !data.cards.length) {
+        return '<div class="ea-card"><div class="ea-title">⚡ 弹性套利 · 创/科补涨池 <span class="ea-date"></span><span class="ea-status">暂无数据</span></div><div class="ea-empty">暂无连板晋级股可供套利</div></div>';
+    }
+    var now = new Date();
+    var beijingHour = (now.getUTCHours() + 8) % 24;
+    var totalMin = beijingHour * 60 + now.getUTCMinutes();
+    var trading = (totalMin >= 565 && totalMin < 900);
+    var statusTxt = trading ? '盘中实时' : '⏳ 待开盘';
+    var html = '<div class="ea-card">';
+    html += '<div class="ea-title">⚡ 弹性套利 · 创/科补涨池 <span class="ea-date">' + _kplEsc(data.date || '') + '</span>';
+    html += '<span class="ea-status' + (trading ? ' live' : '') + '">' + statusTxt + '</span>';
+    html += '</div>';
+    for (var i = 0; i < data.cards.length; i++) {
+        html += _eaRenderCard(data.cards[i], i);
+    }
+    html += '</div>';
+    return html;
+}
+
+function _eaRenderCard(card, rowIdx) {
+    var lbCls = card.lianban >= 5 ? 'lt-lb-high' : 'lt-lb-' + (card.lianban >= 2 ? card.lianban : 1);
+    var lbTxt = '<b class="lt-watch-lb">' + card.lianban + '板</b>';
+    var tagTxt = '';
+    for (var t = 0; t < (card.tags || []).length; t++) {
+        tagTxt += '<span class="ea-tag">「' + _kplEsc(card.tags[t]) + '」</span>';
+    }
+    var liveMark = card.live_added ? '<span class="ea-live-mark">盘中新晋</span>' : '';
+    var html = '<div class="ea-card-row" data-row="' + rowIdx + '">';
+    html += '<div class="ea-card-head"><span class="ea-stock lt-cell-stock ' + lbCls + '" title="' + _kplEsc(card.name) + ' ' + card.lianban + '板">' + _kplEsc(card.name) + '</span>' + lbTxt + tagTxt + liveMark;
+    html += '<span class="ea-pct" data-code="' + card.code + '">--</span>';
+    html += '</div>';
+    html += _eaRenderBoard(card.gem, 'gem', rowIdx);
+    html += _eaRenderBoard(card.star, 'star', rowIdx);
+    html += '</div>';
+    return html;
+}
+
+function _eaChip(m, hidden) {
+    var starMark = m.zt_20d ? '<span class="ea-z20" title="近20日涨停过">★</span>' : '';
+    var ztMark = m.today_zt ? '<span class="ea-chip-zt" title="今日涨停">板</span>' : '';
+    return '<span class="ea-chip' + (hidden ? ' ea-hidden' : '') + '" data-code="' + m.code + '" title="' + _kplEsc(m.name) + (m.zt_20d ? ' 近20日涨停' : '') + (m.today_zt ? ' 今日涨停' : '') + '">' + starMark + _kplEsc(m.name) + ztMark + '<span class="ea-pct" data-code="' + m.code + '">--</span></span>';
+}
+
+function _eaRenderBoard(members, board, rowIdx) {
+    if (!members || !members.length) {
+        return '<div class="ea-board"><span class="ea-board-badge ' + board + '">' + (board === 'gem' ? '创业板' : '科创板') + '</span><span class="ea-board-empty">该题材暂无' + (board === 'gem' ? '创业板' : '科创板') + '成分股</span></div>';
+    }
+    var html = '<div class="ea-board"><span class="ea-board-badge ' + board + '">' + (board === 'gem' ? '创业板' : '科创板') + '</span>';
+    html += '<div class="ea-chips" data-board="' + rowIdx + '-' + board + '">';
+    var SHOW = _eaMemberShow;
+    for (var i = 0; i < members.length; i++) {
+        html += _eaChip(members[i], i >= SHOW);
+    }
+    if (members.length > SHOW) {
+        html += '<button class="ea-more" data-board="' + rowIdx + '-' + board + '" data-exp="0" onclick="_eaToggleExpand(this)">展开全部</button>';
+    }
+    html += '</div></div>';
+    return html;
+}
+
+function _eaToggleExpand(btn) {
+    var boardSel = btn.getAttribute('data-board');
+    var expanded = btn.getAttribute('data-exp') === '1';
+    var chipsEls = document.querySelectorAll('.ea-chips[data-board="' + boardSel + '"]');
+    for (var ci = 0; ci < chipsEls.length; ci++) {
+        var hidden = chipsEls[ci].querySelectorAll('.ea-chip.ea-hidden');
+        for (var hi = 0; hi < hidden.length; hi++) {
+            hidden[hi].style.display = expanded ? 'none' : 'inline-flex';
+        }
+    }
+    var btns = document.querySelectorAll('.ea-more[data-board="' + boardSel + '"]');
+    for (var bi = 0; bi < btns.length; bi++) {
+        btns[bi].innerHTML = expanded ? '展开全部' : '收起';
+        btns[bi].setAttribute('data-exp', expanded ? '0' : '1');
+    }
+}
+
+function _eaLoad() {
+    fetch('/api/elastic_arbitrage?_t=' + Date.now())
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var html = renderElasticArbitrage(data);
+            var sections = document.querySelectorAll('.ea-section');
+            for (var i = 0; i < sections.length; i++) sections[i].innerHTML = html;
+            _eaStartPoll();
+        })
+        .catch(function(e) { console.error('弹性套利加载失败:', e); });
+}
+
+function _eaStartPoll() {
+    if (_eaTimer) clearInterval(_eaTimer);
+    _eaTimer = setInterval(function() { _eaPoll(false); }, _eaInterval);
+    _eaPoll(false);
+}
+
+function _eaPoll(manual) {
+    var now = new Date();
+    var beijingHour = (now.getUTCHours() + 8) % 24;
+    var totalMin = beijingHour * 60 + now.getUTCMinutes();
+    var trading = (totalMin >= 565 && totalMin < 900);
+    var statusEls = document.querySelectorAll('.ea-status');
+    if (!trading) {
+        for (var si = 0; si < statusEls.length; si++) {
+            statusEls[si].innerHTML = '⏳ 待开盘';
+            statusEls[si].classList.remove('live');
+        }
+        return;
+    }
+    for (var si2 = 0; si2 < statusEls.length; si2++) {
+        statusEls[si2].innerHTML = '盘中实时';
+        statusEls[si2].classList.add('live');
+    }
+    var pctEls = document.querySelectorAll('.ea-pct[data-code]');
+    var codes = [];
+    for (var i = 0; i < pctEls.length; i++) {
+        var c = pctEls[i].getAttribute('data-code');
+        if (c && codes.indexOf(c) === -1) codes.push(c);
+    }
+    if (!codes.length) return;
+    fetch('/api/spot_quotes?codes=' + codes.join(',') + '&_t=' + Date.now())
+        .then(function(r) { return r.json(); })
+        .then(function(res) {
+            if (!res || typeof res !== 'object') return;
+            for (var ci = 0; ci < codes.length; ci++) {
+                var q = res[codes[ci]];
+                if (!q || typeof q.change_pct !== 'number') continue;
+                var els = document.querySelectorAll('.ea-pct[data-code="' + codes[ci] + '"]');
+                for (var pi = 0; pi < els.length; pi++) {
+                    els[pi].className = 'ea-pct ' + _ltPctCls(q.change_pct);
+                    els[pi].innerHTML = (q.change_pct >= 0 ? '+' : '') + q.change_pct.toFixed(2) + '%';
+                }
+                var chipEls = document.querySelectorAll('.ea-chip[data-code="' + codes[ci] + '"]');
+                for (var cj = 0; cj < chipEls.length; cj++) {
+                    if (q.limit_up) chipEls[cj].classList.add('zt');
+                    else chipEls[cj].classList.remove('zt');
+                }
+            }
+        })
+        .catch(function(e) { console.error('弹性套利行情轮询失败:', e); });
+}
+
 // 连板总结与预期结构化卡片（降级：summary 缺失返回空串不报错）
 function _ltRenderTrajectorySummary(s) {
     if (!s) return '';
@@ -14459,6 +14943,9 @@ function _ltRenderTrajectorySummary(s) {
 
     // ===== 次日实时监控 · 涨停触发建议（全宽卡，盘中轮询 Sina 实时行情） =====
     html += _ltRenderWatchMonitor(s);
+
+    // ===== 弹性套利 · 创/科补涨池（Session 23，_eaLoad 异步填充，两 tab 共用类选择器） =====
+    html += '<div class="ea-section"><div class="ea-loading">加载弹性套利...</div></div>';
 
     html += '<div class="lt-sum-cols">';
 
@@ -24846,6 +25333,27 @@ class Handler(BaseHTTPRequestHandler):
                 _set_cache(cache_key, result)
             self._respond_json(result, cors_headers)
 
+        elif path == '/api/elastic_arbitrage':
+            # 弹性套利 · 创/科补涨池：连板晋级/新晋2板拆题材反查创/科成分股
+            no_cache = query.get('no_cache', ['0'])[0].strip() == '1'
+            _kpl_ensure_loaded()
+            date_fmt = _kpl_day_files[-1].replace('.json', '') if _kpl_day_files else datetime.now().strftime('%Y-%m-%d')
+            cache_key = 'elastic_arbitrage:' + date_fmt
+            result = None
+            if not no_cache:
+                ttl = 30 if _is_trading_hours() else 300   # 盘中30s / 非盘300s
+                result = _get_cached(cache_key, ttl=ttl)
+            if result is None:
+                disk = _elastic_load(date_fmt)
+                if disk is None or disk.get('version') != _ELASTIC_VERSION:
+                    disk = _elastic_build_preset(date_fmt)
+                    _elastic_save(date_fmt, disk)
+                result = dict(disk)
+                if _is_trading_hours():
+                    result = _elastic_build_live(result)
+                _set_cache(cache_key, result)
+            self._respond_json(result, cors_headers)
+
         elif path == '/api/top_theme_trajectory':
             n = int(query.get('n', ['20'])[0])
             cache_key = 'top_theme_trajectory_' + str(n)
@@ -25698,6 +26206,7 @@ class Handler(BaseHTTPRequestHandler):
                                 _kpl_rows_by_stock = {}
                                 print(f'  [KPL更新] 完成: 拉取 {fetched}/{len(missing_to_fetch)} 天, 共缺{total_missing}天')
                                 _kpl_search_cache_clear()
+                                _elastic_ensure_preset()
                         except Exception as e:
                             import traceback
                             print(f'  [KPL更新] 失败: {e}')
@@ -25718,6 +26227,7 @@ class Handler(BaseHTTPRequestHandler):
             _invalidate_cache(prefix='review_archive')
             _invalidate_cache(prefix='kpl_search:')
             _kpl_search_cache_clear()
+            _elastic_ensure_preset()
             self._respond_json({'ok': True, 'files_count': len(_kpl_day_files)}, cors_headers)
 
         elif path == '/api/kpl_race_data':
