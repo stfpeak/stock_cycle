@@ -6290,15 +6290,19 @@ td.lt-trajectory-cell {
 /* 弹性套利 · 创/科补涨池（Session 23）：毛玻璃卡 + 创/科板块徽标 + ★ zt20 + 涨停高亮 */
 .ea-section { margin-bottom: 10px; }
 .ea-loading { padding: 12px; text-align: center; color: #888; font-size: 0.82em; }
-.ea-card { background: linear-gradient(135deg, rgba(15,52,96,0.28), rgba(15,52,96,0.12)); border: 1px solid rgba(34,211,238,0.35); border-radius: 12px; padding: 8px 10px; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); box-shadow: 0 2px 12px rgba(0,0,0,0.15); }
+.ea-card { background: linear-gradient(135deg, rgba(15,52,96,0.28), rgba(15,52,96,0.12)); border: 1px solid rgba(34,211,238,0.35); border-radius: 12px; padding: 8px 10px; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); box-shadow: 0 2px 12px rgba(0,0,0,0.15); display: flex; flex-direction: column; }
+.ea-card-row { margin-top: 6px; border-radius: 10px; background: rgba(15,52,96,0.14); padding: 5px 8px; order: 10; position: relative; }
+/* 晋级/新晋卡：置顶（order 0）+ 金色边框高亮（无跑马灯动画） */
+.ea-card-row.ea-promo { order: 0; border: 1px solid rgba(255,215,0,0.55); background: linear-gradient(135deg, rgba(255,215,0,0.08), rgba(239,68,68,0.08), rgba(255,215,0,0.08)); box-shadow: 0 0 10px rgba(255,215,0,0.25); }
 .ea-title { font-size: 0.85em; font-weight: 700; color: #22d3ee; display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
 .ea-date { color: #94a3b8; font-size: 0.78em; font-weight: 600; }
 .ea-status { font-size: 0.72em; font-weight: 600; color: #94a3b8; background: rgba(148,163,184,0.12); border: 1px solid rgba(148,163,184,0.3); border-radius: 9px; padding: 1px 8px; }
 .ea-status.live { color: #22d3ee; border-color: rgba(34,211,238,0.5); background: rgba(34,211,238,0.08); }
 .ea-empty { font-size: 0.76em; color: #94a3b8; padding: 6px 0; }
-.ea-card-row { margin-top: 6px; border-radius: 10px; background: rgba(15,52,96,0.14); padding: 5px 8px; }
 .ea-card-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 0.8em; }
-.ea-stock { font-weight: 700; color: #fff; }
+.ea-stock { font-weight: 700; color: #fff; cursor: pointer; }
+.ea-stock:hover { color: #ffd700; text-shadow: 0 0 8px rgba(255,215,0,0.5); }
+.ea-stock.zt { border: 1px solid #ef4444; box-shadow: 0 0 8px rgba(248,113,113,0.5); }
 .ea-tag { color: #fde68a; font-size: 0.86em; }
 .ea-live-mark { font-size: 0.7em; color: #22d3ee; background: rgba(34,211,238,0.1); border: 1px solid rgba(34,211,238,0.45); border-radius: 8px; padding: 0 5px; }
 .ea-board { display: flex; align-items: flex-start; gap: 6px; margin-top: 5px; flex-wrap: wrap; }
@@ -6308,13 +6312,11 @@ td.lt-trajectory-cell {
 .ea-board-empty { font-size: 0.74em; color: #64748b; padding-top: 3px; }
 .ea-chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .ea-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 0.74em; background: rgba(30,41,59,0.6); border: 1px solid rgba(148,163,184,0.35); border-radius: 8px; padding: 1px 6px; white-space: nowrap; }
-.ea-chip.ea-hidden { display: none; }
-.ea-chip.zt { border: 1px solid transparent; background: linear-gradient(135deg, rgba(239,68,68,0.25), rgba(255,215,0,0.18)); box-shadow: 0 0 8px rgba(248,113,113,0.35); }
+.ea-chip.zt { border: 1px solid #ef4444; background: linear-gradient(135deg, rgba(239,68,68,0.25), rgba(255,215,0,0.18)); box-shadow: 0 0 8px rgba(248,113,113,0.35); }
 .ea-chip.zt .ea-chip-zt { color: #fecaca; }
 .ea-z20 { color: #ffd700; font-size: 0.9em; }
 .ea-chip-zt { color: #f87171; font-size: 0.72em; font-weight: 700; background: rgba(248,113,113,0.15); border: 1px solid rgba(248,113,113,0.5); border-radius: 6px; padding: 0 3px; }
-.ea-more { background: rgba(34,211,238,0.08); color: #7dd3fc; border: 1px dashed rgba(34,211,238,0.45); border-radius: 8px; font-size: 0.7em; padding: 0 7px; cursor: pointer; }
-.ea-more:hover { background: rgba(34,211,238,0.2); }
+.ea-zt-badge { color: #fff; font-size: 0.66em; font-weight: 800; background: linear-gradient(135deg, #ef4444, #dc2626); border-radius: 5px; padding: 0 4px; box-shadow: 0 0 6px rgba(239,68,68,0.6); }
 .ea-pct { font-size: 0.9em; font-weight: 700; min-width: 46px; text-align: right; color: #94a3b8; }
 .ea-pct.up { color: #ef4444; }
 .ea-pct.flat { color: #94a3b8; }
@@ -14769,7 +14771,9 @@ function _ltWatchStartPoll() {
 // ===== 弹性套利 · 创/科补涨池（Session 23）：连板晋级/新晋2板题材下创/科补涨候选 =====
 var _eaTimer = null;
 var _eaInterval = 30000;             // 30s 轮询
-var _eaMemberShow = 8;               // 每组默认显示条数，超出折叠「展开全部」
+var _eaCardsFp = '';                 // 卡片结构指纹（检测盘中新晋2板）
+var _eaNavAll = [];                  // 全部可弹框股票（连板股 + 成员），供弹框导航
+var _eaNavIdx = {};                  // code → _eaNavAll 索引
 
 function renderElasticArbitrage(data) {
     if (!data || !data.cards || !data.cards.length) {
@@ -14779,40 +14783,108 @@ function renderElasticArbitrage(data) {
     var beijingHour = (now.getUTCHours() + 8) % 24;
     var totalMin = beijingHour * 60 + now.getUTCMinutes();
     var trading = (totalMin >= 565 && totalMin < 900);
-    var statusTxt = trading ? '盘中实时' : '⏳ 待开盘';
+    var statusTxt = trading ? '盘中实时' : '📊 最新收盘';
+    // 构建全部可弹框股票导航列表（连板股 + 创/科成员，供弹框左右切换）
+    _eaNavAll = [];
+    _eaNavIdx = {};
+    function addNav(code, name) {
+        if (_eaNavIdx[code] === undefined) {
+            _eaNavIdx[code] = _eaNavAll.length;
+            _eaNavAll.push({ code: code, name: name });
+        }
+    }
+    for (var a = 0; a < data.cards.length; a++) {
+        var ac = data.cards[a];
+        addNav(ac.code, ac.name);
+        for (var m1 = 0; m1 < (ac.gem || []).length; m1++) addNav(ac.gem[m1].code, ac.gem[m1].name);
+        for (var m2 = 0; m2 < (ac.star || []).length; m2++) addNav(ac.star[m2].code, ac.star[m2].name);
+    }
+    // 同题材卡相邻 + 板块高（lianban）的在上
+    var sorted = _eaSortCards(data.cards);
     var html = '<div class="ea-card">';
     html += '<div class="ea-title">⚡ 弹性套利 · 创/科补涨池 <span class="ea-date">' + _kplEsc(data.date || '') + '</span>';
     html += '<span class="ea-status' + (trading ? ' live' : '') + '">' + statusTxt + '</span>';
     html += '</div>';
-    for (var i = 0; i < data.cards.length; i++) {
-        html += _eaRenderCard(data.cards[i], i);
+    for (var i = 0; i < sorted.length; i++) {
+        html += _eaRenderCard(sorted[i], i);
     }
     html += '</div>';
     return html;
 }
 
+// tags 是否有交集（同题材判定）
+function _eaTagsIntersect(a, b) {
+    if (!a || !b || !a.length || !b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+        for (var j = 0; j < b.length; j++) {
+            if (a[i] === b[j]) return true;
+        }
+    }
+    return false;
+}
+
+// 集群排序：同题材卡相邻（tags 交集），组内/组间均按 lianban 降序、名称升序
+function _eaSortCards(cards) {
+    var clusters = [];
+    for (var i = 0; i < cards.length; i++) {
+        var card = cards[i];
+        var placed = false;
+        for (var c = 0; c < clusters.length; c++) {
+            if (_eaTagsIntersect(clusters[c].tags, card.tags)) {
+                clusters[c].cards.push(card);
+                for (var t2 = 0; t2 < (card.tags || []).length; t2++) {
+                    if (clusters[c].tags.indexOf(card.tags[t2]) === -1) clusters[c].tags.push(card.tags[t2]);
+                }
+                placed = true;
+                break;
+            }
+        }
+        if (!placed) clusters.push({ tags: (card.tags || []).slice(), cards: [card] });
+    }
+    for (var c2 = 0; c2 < clusters.length; c2++) {
+        clusters[c2].cards.sort(function(x, y) {
+            if (y.lianban !== x.lianban) return y.lianban - x.lianban;
+            return (x.name < y.name ? -1 : x.name > y.name ? 1 : 0);
+        });
+    }
+    clusters.sort(function(a, b) {
+        var maxA = 0, maxB = 0;
+        for (var i2 = 0; i2 < a.cards.length; i2++) if (a.cards[i2].lianban > maxA) maxA = a.cards[i2].lianban;
+        for (var i3 = 0; i3 < b.cards.length; i3++) if (b.cards[i3].lianban > maxB) maxB = b.cards[i3].lianban;
+        if (maxB !== maxA) return maxB - maxA;
+        return (a.cards[0].name < b.cards[0].name ? -1 : a.cards[0].name > b.cards[0].name ? 1 : 0);
+    });
+    var out = [];
+    for (var c3 = 0; c3 < clusters.length; c3++) {
+        for (var c4 = 0; c4 < clusters[c3].cards.length; c4++) out.push(clusters[c3].cards[c4]);
+    }
+    return out;
+}
+
+// 渲染单张连板股卡：头行（连板股名称 + N板 + 题材 tags + 涨幅）+ 创业板/科创板两组
 function _eaRenderCard(card, rowIdx) {
     var lbCls = card.lianban >= 5 ? 'lt-lb-high' : 'lt-lb-' + (card.lianban >= 2 ? card.lianban : 1);
-    var lbTxt = '<b class="lt-watch-lb">' + card.lianban + '板</b>';
+    var navIdx = (_eaNavIdx[card.code] !== undefined) ? _eaNavIdx[card.code] : -1;
     var tagTxt = '';
     for (var t = 0; t < (card.tags || []).length; t++) {
         tagTxt += '<span class="ea-tag">「' + _kplEsc(card.tags[t]) + '」</span>';
     }
     var liveMark = card.live_added ? '<span class="ea-live-mark">盘中新晋</span>' : '';
-    var html = '<div class="ea-card-row" data-row="' + rowIdx + '">';
-    html += '<div class="ea-card-head"><span class="ea-stock lt-cell-stock ' + lbCls + '" title="' + _kplEsc(card.name) + ' ' + card.lianban + '板">' + _kplEsc(card.name) + '</span>' + lbTxt + tagTxt + liveMark;
-    html += '<span class="ea-pct" data-code="' + card.code + '">--</span>';
-    html += '</div>';
+    var html = '<div class="ea-card-row" data-code="' + card.code + '" data-row="' + rowIdx + '">';
+    html += '<div class="ea-card-head"><span class="ea-stock lt-cell-stock ' + lbCls + '" title="点击查看 ' + _kplEsc(card.name) + ' ' + card.lianban + '板详情" onclick="event.stopPropagation();openDsStockFromRhythm(\\x27' + _kplEsc(card.name) + '\\x27,\\x27' + card.code + '\\x27,\\x27\\x27,_eaNavAll,' + navIdx + ')">' + _kplEsc(card.name) + '</span>';
+    html += '<b class="lt-watch-lb">' + card.lianban + '板</b>' + tagTxt + liveMark;
+    html += '<span class="ea-pct" data-code="' + card.code + '">--</span></div>';
     html += _eaRenderBoard(card.gem, 'gem', rowIdx);
     html += _eaRenderBoard(card.star, 'star', rowIdx);
     html += '</div>';
     return html;
 }
 
-function _eaChip(m, hidden) {
+function _eaChip(m) {
     var starMark = m.zt_20d ? '<span class="ea-z20" title="近20日涨停过">★</span>' : '';
     var ztMark = m.today_zt ? '<span class="ea-chip-zt" title="今日涨停">板</span>' : '';
-    return '<span class="ea-chip' + (hidden ? ' ea-hidden' : '') + '" data-code="' + m.code + '" title="' + _kplEsc(m.name) + (m.zt_20d ? ' 近20日涨停' : '') + (m.today_zt ? ' 今日涨停' : '') + '">' + starMark + _kplEsc(m.name) + ztMark + '<span class="ea-pct" data-code="' + m.code + '">--</span></span>';
+    var navIdx = (_eaNavIdx[m.code] !== undefined) ? _eaNavIdx[m.code] : -1;
+    return '<span class="ea-chip" data-code="' + m.code + '" title="点击查看 ' + _kplEsc(m.name) + ' 详情" onclick="event.stopPropagation();openDsStockFromRhythm(\\x27' + _kplEsc(m.name) + '\\x27,\\x27' + m.code + '\\x27,\\x27\\x27,_eaNavAll,' + navIdx + ')">' + starMark + _kplEsc(m.name) + ztMark + '<span class="ea-pct" data-code="' + m.code + '">--</span></span>';
 }
 
 function _eaRenderBoard(members, board, rowIdx) {
@@ -14821,32 +14893,12 @@ function _eaRenderBoard(members, board, rowIdx) {
     }
     var html = '<div class="ea-board"><span class="ea-board-badge ' + board + '">' + (board === 'gem' ? '创业板' : '科创板') + '</span>';
     html += '<div class="ea-chips" data-board="' + rowIdx + '-' + board + '">';
-    var SHOW = _eaMemberShow;
+    // 默认全量显示（服务端每组已截断至 12），无折叠
     for (var i = 0; i < members.length; i++) {
-        html += _eaChip(members[i], i >= SHOW);
-    }
-    if (members.length > SHOW) {
-        html += '<button class="ea-more" data-board="' + rowIdx + '-' + board + '" data-exp="0" onclick="_eaToggleExpand(this)">展开全部</button>';
+        html += _eaChip(members[i]);
     }
     html += '</div></div>';
     return html;
-}
-
-function _eaToggleExpand(btn) {
-    var boardSel = btn.getAttribute('data-board');
-    var expanded = btn.getAttribute('data-exp') === '1';
-    var chipsEls = document.querySelectorAll('.ea-chips[data-board="' + boardSel + '"]');
-    for (var ci = 0; ci < chipsEls.length; ci++) {
-        var hidden = chipsEls[ci].querySelectorAll('.ea-chip.ea-hidden');
-        for (var hi = 0; hi < hidden.length; hi++) {
-            hidden[hi].style.display = expanded ? 'none' : 'inline-flex';
-        }
-    }
-    var btns = document.querySelectorAll('.ea-more[data-board="' + boardSel + '"]');
-    for (var bi = 0; bi < btns.length; bi++) {
-        btns[bi].innerHTML = expanded ? '展开全部' : '收起';
-        btns[bi].setAttribute('data-exp', expanded ? '0' : '1');
-    }
 }
 
 function _eaLoad() {
@@ -14873,44 +14925,100 @@ function _eaPoll(manual) {
     var totalMin = beijingHour * 60 + now.getUTCMinutes();
     var trading = (totalMin >= 565 && totalMin < 900);
     var statusEls = document.querySelectorAll('.ea-status');
-    if (!trading) {
-        for (var si = 0; si < statusEls.length; si++) {
-            statusEls[si].innerHTML = '⏳ 待开盘';
-            statusEls[si].classList.remove('live');
-        }
-        return;
+    var statusTxt = trading ? '盘中实时' : '📊 最新收盘';
+    for (var si = 0; si < statusEls.length; si++) {
+        statusEls[si].innerHTML = statusTxt;
+        if (trading) statusEls[si].classList.add('live');
+        else statusEls[si].classList.remove('live');
     }
-    for (var si2 = 0; si2 < statusEls.length; si2++) {
-        statusEls[si2].innerHTML = '盘中实时';
-        statusEls[si2].classList.add('live');
-    }
+    // 非交易时段也拉行情，显示最新交易日收盘涨幅（后端 spot_quotes 非盘也返回，缓存 300s）
     var pctEls = document.querySelectorAll('.ea-pct[data-code]');
     var codes = [];
     for (var i = 0; i < pctEls.length; i++) {
         var c = pctEls[i].getAttribute('data-code');
         if (c && codes.indexOf(c) === -1) codes.push(c);
     }
-    if (!codes.length) return;
-    fetch('/api/spot_quotes?codes=' + codes.join(',') + '&_t=' + Date.now())
+    var qPromise = fetch('/api/spot_quotes?codes=' + codes.join(',') + '&_t=' + Date.now())
         .then(function(r) { return r.json(); })
-        .then(function(res) {
-            if (!res || typeof res !== 'object') return;
-            for (var ci = 0; ci < codes.length; ci++) {
-                var q = res[codes[ci]];
-                if (!q || typeof q.change_pct !== 'number') continue;
-                var els = document.querySelectorAll('.ea-pct[data-code="' + codes[ci] + '"]');
-                for (var pi = 0; pi < els.length; pi++) {
-                    els[pi].className = 'ea-pct ' + _ltPctCls(q.change_pct);
-                    els[pi].innerHTML = (q.change_pct >= 0 ? '+' : '') + q.change_pct.toFixed(2) + '%';
+        .catch(function() { return {}; });
+    // 并行拉弹性套利结构：检测盘中新晋2板（后端 30s 缓存，交易时段 live 增量）
+    var eaPromise = fetch('/api/elastic_arbitrage?_t=' + Date.now())
+        .then(function(r) { return r.json(); })
+        .catch(function() { return null; });
+    Promise.all([qPromise, eaPromise]).then(function(resArr) {
+        var res = resArr[0] || {};
+        _eaApplyQuotes(res, codes);
+        var data = resArr[1];
+        if (!data || !data.cards) return;
+        var fp = data.cards.map(function(c) { return c.code + (c.live_added ? ':L' : ''); }).join('|');
+        if (fp !== _eaCardsFp) {
+            _eaCardsFp = fp;
+            var html = renderElasticArbitrage(data);
+            var sections = document.querySelectorAll('.ea-section');
+            for (var s2 = 0; s2 < sections.length; s2++) sections[s2].innerHTML = html;
+            // 重渲染后 pct 回到 '--'，用本轮行情立即回填
+            _eaApplyQuotes(res, codes);
+        }
+    });
+}
+
+// 应用一轮行情到 pct / 涨停角标 / 连板股晋级置顶 / 成员按涨幅排序
+function _eaApplyQuotes(res, codes) {
+    if (!res || typeof res !== 'object') return;
+    for (var ci = 0; ci < codes.length; ci++) {
+        var q = res[codes[ci]];
+        if (!q || typeof q.change_pct !== 'number') continue;
+        var code = codes[ci];
+        var els = document.querySelectorAll('.ea-pct[data-code="' + code + '"]');
+        for (var pi = 0; pi < els.length; pi++) {
+            els[pi].className = 'ea-pct ' + _ltPctCls(q.change_pct);
+            els[pi].innerHTML = (q.change_pct >= 0 ? '+' : '') + q.change_pct.toFixed(2) + '%';
+        }
+        // 成员 chip 涨停角标（.ea-chip 专属，带 .ea-zt-badge「涨停」）
+        var chipEls = document.querySelectorAll('.ea-chip[data-code="' + code + '"]');
+        for (var cj = 0; cj < chipEls.length; cj++) {
+            if (q.limit_up) {
+                chipEls[cj].classList.add('zt');
+                if (!chipEls[cj].querySelector('.ea-zt-badge')) {
+                    var zb = document.createElement('b');
+                    zb.className = 'ea-zt-badge';
+                    zb.innerHTML = '涨停';
+                    var pctSpan = chipEls[cj].querySelector('.ea-pct');
+                    chipEls[cj].insertBefore(zb, pctSpan);
                 }
-                var chipEls = document.querySelectorAll('.ea-chip[data-code="' + codes[ci] + '"]');
-                for (var cj = 0; cj < chipEls.length; cj++) {
-                    if (q.limit_up) chipEls[cj].classList.add('zt');
-                    else chipEls[cj].classList.remove('zt');
-                }
+            } else {
+                chipEls[cj].classList.remove('zt');
+                var zb2 = chipEls[cj].querySelector('.ea-zt-badge');
+                if (zb2) zb2.parentNode.removeChild(zb2);
             }
-        })
-        .catch(function(e) { console.error('弹性套利行情轮询失败:', e); });
+        }
+        // 连板股卡头行：今日涨停 → 名称高亮 + 卡置顶（order 0）；未涨停移除
+        var rowEls = document.querySelectorAll('.ea-card-row[data-code="' + code + '"]');
+        for (var ri = 0; ri < rowEls.length; ri++) {
+            var stEl = rowEls[ri].querySelector('.ea-stock');
+            if (q.limit_up) {
+                if (stEl) stEl.classList.add('zt');
+                rowEls[ri].classList.add('ea-promo');
+            } else {
+                if (stEl) stEl.classList.remove('zt');
+                rowEls[ri].classList.remove('ea-promo');
+            }
+        }
+    }
+    // 成员按涨幅从高到低从左到右排序（每组 .ea-chips）
+    var boardEls = document.querySelectorAll('.ea-chips[data-board]');
+    for (var bi = 0; bi < boardEls.length; bi++) {
+        var chips = Array.prototype.slice.call(boardEls[bi].querySelectorAll('.ea-chip'));
+        if (chips.length < 2) continue;
+        chips.sort(function(a, b) {
+            var qa = res[a.getAttribute('data-code')];
+            var qb = res[b.getAttribute('data-code')];
+            var pa = (qa && typeof qa.change_pct === 'number') ? qa.change_pct : -99999;
+            var pb = (qb && typeof qb.change_pct === 'number') ? qb.change_pct : -99999;
+            return pb - pa;
+        });
+        for (var c2 = 0; c2 < chips.length; c2++) boardEls[bi].appendChild(chips[c2]);
+    }
 }
 
 // 连板总结与预期结构化卡片（降级：summary 缺失返回空串不报错）
