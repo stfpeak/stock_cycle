@@ -16023,7 +16023,7 @@ function renderThemeWindStrength(sectorData, twsData) {
         return h;
     }
     for (var i = 0; i < twsData.plates.length; i++) {
-        h += _twsRenderPlateTree(twsData.plates[i]);
+        h += _twsRenderPlateTree(twsData.plates[i], i < 3);   // 默认只展开前三，其余折叠手动展开
     }
     return h;
 }
@@ -16303,9 +16303,10 @@ function _twsPlateNorm(s) {
 
 // 单板块细分题材卡片：原点(板块名) → 细分题材网格卡 → 主板/创业板/科创板三列
 // 自主题（细分名=板块名）作为全宽「帽子」排第一（_twsRenderSubTheme(isMain=true)）
-function _twsRenderPlateTree(p) {
+function _twsRenderPlateTree(p, expanded) {
+    var open = expanded !== false;   // 默认展开；前三展开，其余折叠（手动点击展开）
     var h = '<div class="tws-tree" data-plate="' + _kplEsc(p.plate_name) + '">';
-    h += '<div class="tws-root" onclick="toggleTwsPlate(this)"><span class="tws-root-arrow">▼</span>📁 ' + _kplEsc(p.plate_name) + ' <span class="tws-root-meta">强度 ' + (p.stock_count != null ? p.stock_count : '--') + '</span></div>';
+    h += '<div class="tws-root" onclick="toggleTwsPlate(this)"><span class="tws-root-arrow">' + (open ? '▼' : '▶') + '</span>📁 ' + _kplEsc(p.plate_name) + ' <span class="tws-root-meta">强度 ' + (p.stock_count != null ? p.stock_count : '--') + '</span></div>';
     if (!p.themes || !p.themes.length) {
         h += '<div class="tws-empty">今日无 reason_tag=商业航天 的涨停股</div>';
         h += '</div>';
@@ -16321,7 +16322,7 @@ function _twsRenderPlateTree(p) {
             others.push(p.themes[i]);
         }
     }
-    h += '<div class="tws-subthemes">';
+    h += '<div class="tws-subthemes"' + (open ? '' : ' style="display:none"') + '>';
     if (mainTheme) h += _twsRenderSubTheme(mainTheme, true);   // 帽子：全宽三列详情卡
     for (var j = 0; j < others.length; j++) h += _twsRenderSubTheme(others[j], false);
     h += '</div></div>';
