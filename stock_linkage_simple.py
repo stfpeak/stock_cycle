@@ -1753,7 +1753,7 @@ def _kpl_search_cache_load(cache_key):
     if not os.path.exists(path): return None
     try:
         entry = json.load(open(path, 'r', encoding='utf-8'))
-        if entry.get('version', 0) < 7:
+        if entry.get('version', 0) < 8:
             return None
         return entry.get('data')
     except:
@@ -1763,7 +1763,7 @@ def _kpl_search_cache_save(cache_key, data):
     os.makedirs(_KPL_SEARCH_CACHE_DIR, exist_ok=True)
     path = os.path.join(_KPL_SEARCH_CACHE_DIR, f"{cache_key}.json")
     try:
-        json.dump({'data': data, 'timestamp': time.time(), 'version': 7},
+        json.dump({'data': data, 'timestamp': time.time(), 'version': 8},
                   open(path, 'w', encoding='utf-8'), ensure_ascii=False)
     except Exception as e:
         print(f"[KPL搜索缓存] 写入失败: {e}")
@@ -1787,11 +1787,13 @@ def _kpl_resolve_latest_zt_date(date_end=None):
     return td[-1]
 
 
-def _kpl_backfill_chain(results, q):
+def _kpl_backfill_chain(results, q, date_start=None):
     """连板链条补齐：为命中 2板/3板 的股票，补齐链条上缺失的日期（首板等），
     使涨停节奏/龙头接力能看到完整的 首板→2板→3板 晋级过程。
     只做向后回溯（首板日期早于命中日期），不改动已有记录。
     返回：补齐后的新列表（在原结果基础上追加 _backfilled 条目，按日期降序）。"""
+    # 搜索窗口下界（YYYYMMDD）；补齐链条不得早于窗口起点，防越界补齐
+    date_start_ymd = (date_start or '').replace('-', '') or None
     if not results:
         return results
     # 已存在 (stock_code, YYYYMMDD) 集合，用于判重
@@ -1820,6 +1822,8 @@ def _kpl_backfill_chain(results, q):
         curr = rd
         # 从命中日向前补齐链条：curr(N板) → 前一日(N-1板) → … → 首板(1板)
         while pos >= 1 and curr:
+            if date_start_ymd and curr < date_start_ymd:
+                break
             key = (sc, curr)
             if key not in existing:
                 d_fmt = f"{curr[:4]}-{curr[4:6]}-{curr[6:]}"
@@ -1855,7 +1859,7 @@ def _kpl_full_search(q, date_start, date_end, no_st, strict, gem_extra=True, lia
         result_codes = list(set(r.get('stock_code', '') for r in result.get('results', []) if r.get('stock_code')))
         all_linked = _kpl_get_all_stock_codes_for_keyword(q)
         all_codes = list(set(result_codes + all_linked))
-        strong_rise = _kpl_get_gem_strong_rise(all_codes) if all_codes else {}
+        strong_rise = _kpl_get_gem_strong_rise(all_codes, date_start=date_start, date_end=date_end) if all_codes else {}
         if strong_rise:
             new_entries = []
             for code, sr_entries in strong_rise.items():
@@ -1933,11 +1937,11 @@ def _kpl_full_search(q, date_start, date_end, no_st, strict, gem_extra=True, lia
     # 连板链条补齐：为命中2板/3板的股票补齐链条缺失日期（首板等），让涨停节奏/龙头接力看到完整晋级
     try:
         _orig_hits = result.get('total_hits', len(result.get('results', [])))
-        result['results'] = _kpl_backfill_chain(result.get('results', []), q)
+        result['results'] = _kpl_backfill_chain(result.get('results', []), q, date_start=date_start)
         _kw = result.get('kw_results')
         if _kw:
             for _k in list(_kw.keys()):
-                _kw[_k] = _kpl_backfill_chain(_kw[_k], _k)
+                _kw[_k] = _kpl_backfill_chain(_kw[_k], _k, date_start=date_start)
         # 命中数保持为关键词匹配数（补齐的链条日不算新命中）
         result['total_hits'] = _orig_hits
     except Exception as e:
@@ -3210,18 +3214,29 @@ def _build_review_archive():
     return {'latest_date': latest_date, 'dates': dates, 'days': days, 'latest': latest}
 
 
-def _kpl_get_gem_strong_rise(stock_codes, lookback=20):
-    """查询创业板/科创板股票近N个交易日涨幅>10%的强涨交易日"""
+def _kpl_get_gem_strong_rise(stock_codes, lookback=20, date_start=None, date_end=None):
+    """查询创业板/科创板股票近N个交易日涨幅>10%的强涨交易日。
+    date_start/date_end 给出时按搜索窗口限定强涨日期；缺省保持原最近 lookback 交易日逻辑。"""
     if not stock_codes:
         return {}
     gem_codes = [c for c in stock_codes if c.startswith('30') or c.startswith('68') or c.startswith('300') or c.startswith('301') or c.startswith('688') or c.startswith('689')]
     if not gem_codes:
         return {}
     kline_max = _get_kline_max_date()
-    td = [d for d in _trading_days if d <= kline_max]
-    start_idx = max(0, len(td) - lookback - 5)
-    start_date = td[start_idx]
-    start_date_str = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
+    if date_start:
+        ds_clean = str(date_start).replace('-', '')
+        start_date_str = f"{ds_clean[:4]}-{ds_clean[4:6]}-{ds_clean[6:]}"
+    else:
+        td = [d for d in _trading_days if d <= kline_max]
+        start_idx = max(0, len(td) - lookback - 5)
+        start_date = td[start_idx]
+        start_date_str = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}"
+    if date_end:
+        de_clean = str(date_end).replace('-', '')
+        end_date_str = f"{de_clean[:4]}-{de_clean[4:6]}-{de_clean[6:]}"
+    else:
+        # kline_max 为 YYYYMMDD；转成 YYYY-MM-DD 作上界 = DB 最大日期，trade_date <= 为 no-op
+        end_date_str = f"{kline_max[:4]}-{kline_max[4:6]}-{kline_max[6:]}" if kline_max else ''
     db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
     result = {}
     try:
@@ -3233,10 +3248,11 @@ def _kpl_get_gem_strong_rise(stock_codes, lookback=20):
             FROM kline_daily
             WHERE stock_code IN ({placeholders})
             AND trade_date >= ?
+            AND trade_date <= ?
             AND change_pct > 10
             AND change_pct < 19.5
             ORDER BY stock_code, trade_date DESC
-        """, gem_codes + [start_date_str])
+        """, gem_codes + [start_date_str, end_date_str])
         rows = cursor.fetchall()
         conn.close()
         for code, date, pct in rows:
