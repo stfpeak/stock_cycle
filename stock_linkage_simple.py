@@ -124,7 +124,7 @@ _kpl_top_tags_cache_timestamp = 0  # 上次成功写入时间戳
 _ELASTIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'elastic_arbitrage')
 _elastic_lock = threading.Lock()
 _elastic_kw_cache = {}          # keyword → {'gem': set, 'star': set, 'main': set} 题材成分股反查缓存（跨天清空）
-_ELASTIC_VERSION = 1            # 磁盘数据格式版本，递增使旧缓存自动失效重算
+_ELASTIC_VERSION = 2            # 磁盘数据格式版本，递增使旧缓存自动失效重算（v2: tags去泛概念 + groups按题材分组）
 _ELASTIC_MEMBER_CAP = 12        # 每组（创/科）成员展示上限
 _ELASTIC_CARD_CAP = 30          # 连板股卡上限
 
@@ -2544,11 +2544,8 @@ def _build_theme_wind_strength(top_n=10):
         plate_name = p.get('plate_name') or p.get('name') or ''
         if not plate_name:
             continue
-        if plate_name == '商业航天':
-            matched = [s for s in zt_stocks if (s.get('reason_tag') or '') == '商业航天']
-        else:
-            matched = [s for s in zt_stocks if _plate_match_score(plate_name, s['tokens']) >= 60]
-        if not matched and plate_name != '商业航天':
+        matched = [s for s in zt_stocks if _plate_match_score(plate_name, s['tokens']) >= 60]
+        if not matched:
             continue
         plate_themes.append({'plate': p, 'plate_name': plate_name, 'matched': matched})
 
@@ -3404,43 +3401,38 @@ def _elastic_is_st(name):
     return nm.startswith('*ST') or nm.startswith('ST') or '退' in nm
 
 
-def _elastic_build_card_members(code, tags, zt20, today_zt_codes):
-    """按卡 tags 合并反查成员，分创/科，zt_20d 优先排序截断。返回 {'gem': [...], 'star': [...]}"""
-    gem_set = set()
-    star_set = set()
-    zt_flags = {}   # code → True(近20日涨停过)
+def _elastic_mk_members(codes_set, zt20_set, today_zt_codes):
+    """按单个题材的成员 code 集 + 该题材 zt20 命中集构建成员列表：ST 过滤 + zt_20d/today_zt 排序 + 截断。"""
+    out = []
+    for c in codes_set:
+        nm = _elastic_stock_name(c)
+        if _elastic_is_st(nm):
+            continue
+        out.append({
+            'code': c,
+            'name': nm,
+            'zt_20d': bool(c in zt20_set),
+            'today_zt': c in today_zt_codes,
+        })
+    out.sort(key=lambda e: (-e['zt_20d'], -e['today_zt'], e['name']))
+    return out[:_ELASTIC_MEMBER_CAP]
+
+
+def _elastic_build_card_groups(code, tags, zt20, today_zt_codes):
+    """逐题材分组：每 tag 独立反查创/科成员并归因该 tag 的 zt20，双空组保留（前端空态提示）。
+    返回 [{'tag': t, 'gem': [...], 'star': [...]}]"""
+    groups = []
     for kw in tags:
         kw_res = _elastic_member_codes_for_keyword(kw)
         kw_zt20 = zt20.get(kw, set())
-        for c in kw_res['gem']:
-            if c == code:
-                continue
-            gem_set.add(c)
-            if c in kw_zt20:
-                zt_flags[c] = True
-        for c in kw_res['star']:
-            if c == code:
-                continue
-            star_set.add(c)
-            if c in kw_zt20:
-                zt_flags[c] = True
-
-    def _mk(codes_set):
-        out = []
-        for c in codes_set:
-            nm = _elastic_stock_name(c)
-            if _elastic_is_st(nm):
-                continue
-            out.append({
-                'code': c,
-                'name': nm,
-                'zt_20d': bool(zt_flags.get(c, False)),
-                'today_zt': c in today_zt_codes,
-            })
-        out.sort(key=lambda e: (-e['zt_20d'], -e['today_zt'], e['name']))
-        return out[:_ELASTIC_MEMBER_CAP]
-
-    return {'gem': _mk(gem_set), 'star': _mk(star_set)}
+        gem_set = {c for c in kw_res['gem'] if c != code}
+        star_set = {c for c in kw_res['star'] if c != code}
+        groups.append({
+            'tag': kw,
+            'gem': _elastic_mk_members(gem_set, kw_zt20, today_zt_codes),
+            'star': _elastic_mk_members(star_set, kw_zt20, today_zt_codes),
+        })
+    return groups
 
 
 def _elastic_all_codes(cards):
@@ -3448,10 +3440,11 @@ def _elastic_all_codes(cards):
     codes = []
     for c in cards:
         codes.append(c['code'])
-        for m in c.get('gem', []):
-            codes.append(m['code'])
-        for m in c.get('star', []):
-            codes.append(m['code'])
+        for g in c.get('groups', []):
+            for m in g.get('gem', []):
+                codes.append(m['code'])
+            for m in g.get('star', []):
+                codes.append(m['code'])
     return sorted(set(codes))
 
 
@@ -3472,7 +3465,7 @@ def _elastic_build_preset(date_fmt):
             continue
         tag = (r.get('reason_tag', '') or '').strip()
         brief = r.get('reason_brief', '') or ''
-        tags = [t for t in _split_reason_tag(tag, brief) if t and t != '未分类']
+        tags = [t for t in _split_reason_tag(tag, brief) if t and not _tws_is_generic_tag(t)]
         if not tags:
             continue
         seen.add(sc)
@@ -3492,9 +3485,7 @@ def _elastic_build_preset(date_fmt):
             all_tags.add(t)
     zt20 = _elastic_zt20_map(date_fmt, all_tags)
     for c in cards:
-        m = _elastic_build_card_members(c['code'], c['tags'], zt20, today_zt_codes)
-        c['gem'] = m['gem']
-        c['star'] = m['star']
+        c['groups'] = _elastic_build_card_groups(c['code'], c['tags'], zt20, today_zt_codes)
     cards.sort(key=lambda c: (-c['lianban'], c['name']))
     cards = cards[:_ELASTIC_CARD_CAP]
     return {
@@ -3529,7 +3520,7 @@ def _elastic_build_live(data):
         if info.get('lianban', 0) < 2 or code in existing:
             continue
         tag, brief = _kpl_resolve_tag(code)
-        tags = [t for t in _split_reason_tag(tag, brief) if t and t != '未分类']
+        tags = [t for t in _split_reason_tag(tag, brief) if t and not _tws_is_generic_tag(t)]
         if not tags:
             continue
         existing.add(code)
@@ -3547,9 +3538,7 @@ def _elastic_build_live(data):
         zt20 = _elastic_zt20_map(data.get('date', ''), all_tags)
         snap_codes = set(snap.keys())
         for c in new_cards:
-            m = _elastic_build_card_members(c['code'], c['tags'], zt20, snap_codes)
-            c['gem'] = m['gem']
-            c['star'] = m['star']
+            c['groups'] = _elastic_build_card_groups(c['code'], c['tags'], zt20, snap_codes)
         data['cards'].extend(new_cards)
         data['live_added'] = int(data.get('live_added', 0)) + len(new_cards)
         data['cards'].sort(key=lambda c: (-c['lianban'], c['name']))
@@ -3557,8 +3546,9 @@ def _elastic_build_live(data):
         data['codes'] = _elastic_all_codes(data['cards'])
     # 既有卡片成员 today_zt 更新为实时池命中（新卡已在 snap_codes 下计算）
     for c in data.get('cards', []):
-        for m in c.get('gem', []) + c.get('star', []):
-            m['today_zt'] = m['code'] in snap
+        for g in c.get('groups', []):
+            for m in g.get('gem', []) + g.get('star', []):
+                m['today_zt'] = m['code'] in snap
     if new_cards:
         _elastic_save(data.get('date', ''), data)
     return data
@@ -6844,6 +6834,8 @@ td.lt-trajectory-cell {
 .ea-pct.up { color: #ef4444; }
 .ea-pct.flat { color: #94a3b8; }
 .ea-pct.down { color: #22c55e; }
+.ea-group { margin-top: 6px; border-left: 2px solid rgba(34,211,238,0.4); padding-left: 6px; }
+.ea-group-title { display: inline-block; font-size: 0.76em; font-weight: 700; color: #67e8f9; background: rgba(34,211,238,0.08); border: 1px solid rgba(34,211,238,0.4); border-radius: 6px; padding: 0 6px; margin: 2px 0 4px; }
 /* 连板序号标记 - 暖色渐变背景 + 圆角标签 */
 .lt-marker {
     display: inline-flex; align-items: center; justify-content: center;
@@ -15535,8 +15527,11 @@ function renderElasticArbitrage(data) {
     for (var a = 0; a < data.cards.length; a++) {
         var ac = data.cards[a];
         addNav(ac.code, ac.name);
-        for (var m1 = 0; m1 < (ac.gem || []).length; m1++) addNav(ac.gem[m1].code, ac.gem[m1].name);
-        for (var m2 = 0; m2 < (ac.star || []).length; m2++) addNav(ac.star[m2].code, ac.star[m2].name);
+        for (var g1 = 0; g1 < (ac.groups || []).length; g1++) {
+            var grp = ac.groups[g1];
+            for (var m1 = 0; m1 < (grp.gem || []).length; m1++) addNav(grp.gem[m1].code, grp.gem[m1].name);
+            for (var m2 = 0; m2 < (grp.star || []).length; m2++) addNav(grp.star[m2].code, grp.star[m2].name);
+        }
     }
     // 同题材卡相邻 + 板块高（lianban）的在上
     var sorted = _eaSortCards(data.cards);
@@ -15613,8 +15608,9 @@ function _eaRenderCard(card, rowIdx) {
     html += '<div class="ea-card-head"><span class="ea-stock lt-cell-stock ' + lbCls + '" title="点击查看 ' + _kplEsc(card.name) + ' ' + card.lianban + '板详情" onclick="event.stopPropagation();openDsStockFromRhythm(\\x27' + _kplEsc(card.name) + '\\x27,\\x27' + card.code + '\\x27,\\x27\\x27,_eaNavAll,' + navIdx + ')">' + _kplEsc(card.name) + '</span>';
     html += '<b class="lt-watch-lb">' + card.lianban + '板</b>' + tagTxt + liveMark;
     html += '<span class="ea-pct" data-code="' + card.code + '">--</span></div>';
-    html += _eaRenderBoard(card.gem, 'gem', rowIdx);
-    html += _eaRenderBoard(card.star, 'star', rowIdx);
+    for (var g = 0; g < (card.groups || []).length; g++) {
+        html += _eaRenderGroup(card.groups[g], rowIdx);
+    }
     html += '</div>';
     return html;
 }
@@ -15624,6 +15620,16 @@ function _eaChip(m) {
     var ztMark = m.today_zt ? '<span class="ea-chip-zt" title="今日涨停">板</span>' : '';
     var navIdx = (_eaNavIdx[m.code] !== undefined) ? _eaNavIdx[m.code] : -1;
     return '<span class="ea-chip" data-code="' + m.code + '" title="点击查看 ' + _kplEsc(m.name) + ' 详情" onclick="event.stopPropagation();openDsStockFromRhythm(\\x27' + _kplEsc(m.name) + '\\x27,\\x27' + m.code + '\\x27,\\x27\\x27,_eaNavAll,' + navIdx + ')">' + starMark + _kplEsc(m.name) + ztMark + '<span class="ea-pct" data-code="' + m.code + '">--</span></span>';
+}
+
+// 单题材区块：组标题（「tag」）+ 该题材创/科两组（rowIdx-tag 合成 data-board 唯一键，避免跨组容器冲突）
+function _eaRenderGroup(g, rowIdx) {
+    var html = '<div class="ea-group">';
+    html += '<div class="ea-group-title">「' + _kplEsc(g.tag) + '」</div>';
+    html += _eaRenderBoard(g.gem, 'gem', rowIdx + '-' + g.tag);
+    html += _eaRenderBoard(g.star, 'star', rowIdx + '-' + g.tag);
+    html += '</div>';
+    return html;
 }
 
 function _eaRenderBoard(members, board, rowIdx) {
@@ -16023,7 +16029,7 @@ function renderThemeWindStrength(sectorData, twsData) {
         return h;
     }
     for (var i = 0; i < twsData.plates.length; i++) {
-        h += _twsRenderPlateTree(twsData.plates[i], i < 3);   // 默认只展开前三，其余折叠手动展开
+        h += _twsRenderPlateTree(twsData.plates[i], false);   // 全部默认折叠，用户手动展开
     }
     return h;
 }
@@ -16308,7 +16314,7 @@ function _twsRenderPlateTree(p, expanded) {
     var h = '<div class="tws-tree" data-plate="' + _kplEsc(p.plate_name) + '">';
     h += '<div class="tws-root" onclick="toggleTwsPlate(this)"><span class="tws-root-arrow">' + (open ? '▼' : '▶') + '</span>📁 ' + _kplEsc(p.plate_name) + ' <span class="tws-root-meta">强度 ' + (p.stock_count != null ? p.stock_count : '--') + '</span></div>';
     if (!p.themes || !p.themes.length) {
-        h += '<div class="tws-empty">今日无 reason_tag=商业航天 的涨停股</div>';
+        h += '<div class="tws-empty">该板块今日暂无有效细分题材</div>';
         h += '</div>';
         return h;
     }
