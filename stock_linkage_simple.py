@@ -6800,6 +6800,24 @@ td.lt-trajectory-cell {
 .lt-watch-pct.up { color: #fca5a5; }
 .lt-watch-pct.flat { color: #94a3b8; }
 .lt-watch-pct.down { color: #60a5fa; }
+/* 次日实时监控 · 排列展示优化：角色计数 + 衍生关注折叠区 + chip 角色色条 */
+.lt-watch-count { color: #94a3b8; font-weight: 600; font-size: 0.92em; }
+.lt-watch-fold { display: inline-flex; align-items: center; gap: 6px; font-size: 0.74em; font-weight: 700; color: #fde68a; background: rgba(255,215,0,0.08); border: 1px dashed rgba(255,215,0,0.45); border-radius: 9px; padding: 2px 8px; margin-top: 4px; cursor: pointer; user-select: none; }
+.lt-watch-fold:hover { background: rgba(255,215,0,0.18); }
+.lt-watch-fold-arrow { color: #fbbf24; }
+.lt-watch-deriv { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+/* chip 角色色条（::before 避免与 .zt 边框/辉光冲突） */
+.lt-watch-chip { position: relative; }
+.lt-watch-chip::before { content: ''; position: absolute; left: 0; top: 3px; bottom: 3px; width: 3px; border-radius: 2px; }
+.lt-watch-chip[data-role="leader"]::before { background: #ffd700; }
+.lt-watch-chip[data-role="relay"]::before { background: #22d3ee; }
+.lt-watch-chip[data-role="cross"]::before { background: #a855f7; }
+.lt-watch-chip[data-role="tiers"]::before { background: #fb923c; }
+.lt-watch-chip[data-role="new2"]::before { background: #fbbf24; }
+.lt-watch-chip[data-role="broken"]::before { background: #f87171; }
+.lt-watch-chip[data-role="restart"]::before { background: #22d3ee; }
+.lt-watch-chip[data-role="buzhang"]::before { background: #38bdf8; }
+.lt-watch-chip[data-role="ladder"]::before { background: #c084fc; }
 /* 弹性套利 · 创/科补涨池（Session 23）：毛玻璃卡 + 创/科板块徽标 + ★ zt20 + 涨停高亮 */
 .ea-section { margin-bottom: 10px; }
 .ea-loading { padding: 12px; text-align: center; color: #888; font-size: 0.82em; }
@@ -15044,14 +15062,24 @@ function renderLadderLianbanTagTrajectory(data) {
 }
 
 // 连板总结卡片：非可点击彩色 chip（复用矩阵 chip 板数配色类）
-function _ltChip(x) {
+var _ltLeaderNavAll = [];   // 市场总龙头竞争格局全部可弹框股票 {code,name}（leader+并列+relay+cross+tiers+new2，去重）
+var _ltLeaderNavIdx = {};   // code → _ltLeaderNavAll 索引
+function _ltChip(x) { return _ltChipCore(x, -1); }
+function _ltLeaderChip(x, navIdx) { return _ltChipCore(x, navIdx); }
+function _ltChipCore(x, navIdx) {
     if (!x) return '';
     var lb = x.lianban || 1;
     var lbCls = x.is_restart ? 'lt-cell-stock-restart'
              : (lb >= 5 ? 'lt-lb-high'
              : 'lt-lb-' + (lb >= 2 ? lb : 1));
     var restartMark = x.is_restart ? ' <i class="lt-restart-mark">重启</i>' : '';
-    return '<span class="lt-cell-stock ' + lbCls + '" style="cursor:default;">' + _kplEsc(x.name || '') + ' <b>' + lb + '板</b>' + restartMark + '</span>';
+    var clickable = (navIdx >= 0) && x.code;
+    var cursor = clickable ? 'cursor:pointer;' : 'cursor:default;';
+    var onclick = clickable ? (' onclick="event.stopPropagation();openDsStockFromRhythm(\\x27' +
+        (x.name || '').replace(/'/g, '') + '\\x27,\\x27' + x.code + '\\x27,\\x27\\x27,_ltLeaderNavAll,' + navIdx + ')"')
+        : '';
+    return '<span class="lt-cell-stock ' + lbCls + '" style="' + cursor + '"' + onclick +
+           '>' + _kplEsc(x.name || '') + ' <b>' + lb + '板</b>' + restartMark + '</span>';
 }
 
 // 市场总龙头竞争格局数据计算（纯数据，供结构图渲染与监控卡复用同一份分组）
@@ -15125,6 +15153,16 @@ function _ltLeaderMapData(s) {
 // 市场总龙头竞争格局结构图：今日总龙头 + 明日分歧竞争（同题材接力/其他题材晋级）+ 梯队 + 新竞2板 + 情绪标注
 function _ltRenderLeaderMap(s) {
     var d = _ltLeaderMapData(s);
+    // 全竞争格局导航：leader+并列+relay+cross+tiers+new2 去重构建，供弹框左右切换
+    _ltLeaderNavAll = [];
+    _ltLeaderNavIdx = {};
+    function _lnAdd(o) {
+        if (o && o.code && _ltLeaderNavIdx[o.code] === undefined) {
+            _ltLeaderNavIdx[o.code] = _ltLeaderNavAll.length;
+            _ltLeaderNavAll.push({ code: o.code, name: o.name || '' });
+        }
+        return _ltLeaderNavIdx[o.code] !== undefined ? _ltLeaderNavIdx[o.code] : -1;
+    }
     if (!d) return '';
     var ladders = d.ladders;
     var byLb = d.byLb;
@@ -15143,11 +15181,11 @@ function _ltRenderLeaderMap(s) {
     // 1) 今日总龙头
     h += '<div class="lt-leader-crown">';
     h += '<div class="lt-leader-crown-label">今日市场总龙头</div>';
-    h += '<div class="lt-leader-crown-stock">' + _ltChip(leader) + '<span class="lt-sum-tag">「' + _kplEsc(leader.tag) + '」</span></div>';
+    h += '<div class="lt-leader-crown-stock">' + _ltLeaderChip(leader, _lnAdd(leader)) + '<span class="lt-sum-tag">「' + _kplEsc(leader.tag) + '」</span></div>';
     if (byLb[leaderLb].length > 1) {
         h += '<div class="lt-leader-note">并列最高板：';
         for (var cl = 1; cl < byLb[leaderLb].length; cl++) {
-            h += _ltChip(byLb[leaderLb][cl]) + '<span class="lt-sum-tag">「' + _kplEsc(byLb[leaderLb][cl].tag) + '」</span>';
+            h += _ltLeaderChip(byLb[leaderLb][cl], _lnAdd(byLb[leaderLb][cl])) + '<span class="lt-sum-tag">「' + _kplEsc(byLb[leaderLb][cl].tag) + '」</span>';
         }
         h += '</div>';
     }
@@ -15163,7 +15201,7 @@ function _ltRenderLeaderMap(s) {
     if (relay.length) {
         for (var rr = 0; rr < relay.length; rr++) {
             var rk = relay[rr];
-            h += '<div class="lt-compete-row">' + _ltChip(rk) + '<span class="lt-compete-scn">晋级' + (rk.lianban + 1) + '板 → 接力接任，题材情绪维持</span></div>';
+            h += '<div class="lt-compete-row">' + _ltLeaderChip(rk, _lnAdd(rk)) + '<span class="lt-compete-scn">晋级' + (rk.lianban + 1) + '板 → 接力接任，题材情绪维持</span></div>';
         }
     } else {
         h += '<div class="lt-compete-empty">无同题材低板连板股</div>';
@@ -15176,7 +15214,7 @@ function _ltRenderLeaderMap(s) {
             var cscn = ck.lianban >= leaderLb
                 ? '并列最高板，直接竞争总龙头'
                 : '晋级' + (ck.lianban + 1) + '板 → 可接任总龙头，题材切换';
-            h += '<div class="lt-compete-row">' + _ltChip(ck) + '<span class="lt-sum-tag">「' + _kplEsc(ck.tag) + '」</span><span class="lt-compete-scn">' + cscn + '</span></div>';
+            h += '<div class="lt-compete-row">' + _ltLeaderChip(ck, _lnAdd(ck)) + '<span class="lt-sum-tag">「' + _kplEsc(ck.tag) + '」</span><span class="lt-compete-scn">' + cscn + '</span></div>';
         }
     } else {
         h += '<div class="lt-compete-empty">无其他题材连板</div>';
@@ -15194,7 +15232,7 @@ function _ltRenderLeaderMap(s) {
             h += '<div class="lt-tier-row"><span class="lt-tier-label">' + tName + ' · ' + t.lb + '板</span>';
             for (var ts = 0; ts < t.stocks.length; ts++) {
                 var tk = t.stocks[ts];
-                h += '<span class="lt-tier-item">' + _ltChip(tk) + '<span class="lt-sum-tag">「' + _kplEsc(tk.tag) + '」</span></span>';
+                h += '<span class="lt-tier-item">' + _ltLeaderChip(tk, _lnAdd(tk)) + '<span class="lt-sum-tag">「' + _kplEsc(tk.tag) + '」</span></span>';
             }
             h += '<span class="lt-tier-scn">晋级' + (t.lb + 1) + '板 → 梯队上移、进入总龙头竞争；断板 → 梯队空缺</span>';
             h += '</div>';
@@ -15209,7 +15247,7 @@ function _ltRenderLeaderMap(s) {
         h += '<div class="lt-leader-new2-body">';
         for (var n2 = 0; n2 < new2.length; n2++) {
             var nk = new2[n2];
-            h += '<span class="lt-new2-item">' + _ltChip(nk) + '<span class="lt-sum-tag">「' + _kplEsc(nk.tag) + '」</span></span>';
+            h += '<span class="lt-new2-item">' + _ltLeaderChip(nk, _lnAdd(nk)) + '<span class="lt-sum-tag">「' + _kplEsc(nk.tag) + '」</span></span>';
         }
         h += '</div>';
         h += '<div class="lt-leader-new2-scn">明日晋级3板 → 题材崛起机会；断板 → 淘汰。持续跟踪连板卡位</div>';
@@ -15344,23 +15382,37 @@ function _ltRenderWatchMonitor(s) {
         (groups[role] = groups[role] || []).push(items[i]);
     }
     html += '<div class="lt-watch-groups">';
+    var deriv = [];
+    var derivCount = 0;
     for (var gi = 0; gi < _ltWatchRoleOrder.length; gi++) {
         var r = _ltWatchRoleOrder[gi];
         var list = groups[r];
         if (!list || !list.length) continue;
-        html += '<div class="lt-watch-group" data-role="' + r + '">';
-        html += '<span class="lt-watch-role">' + _ltWatchRoleLabel[r] + '</span>';
-        html += '<div class="lt-watch-chips">';
+        var isDeriv = (r === 'broken' || r === 'restart' || r === 'buzhang' || r === 'ladder');
+        var grpHtml = '';
+        grpHtml += '<div class="lt-watch-group" data-role="' + r + '">';
+        grpHtml += '<span class="lt-watch-role">' + _ltWatchRoleLabel[r] + ' <b class="lt-watch-count">(' + list.length + ')</b></span>';
+        grpHtml += '<div class="lt-watch-chips">';
         for (var j = 0; j < list.length; j++) {
             var it = list[j];
             var lbTxt = it.lianban >= 1 ? '<b class="lt-watch-lb">' + it.lianban + '板</b>' : '';
             var tagTxt = it.tag ? '<span class="lt-watch-tag">「' + _kplEsc(it.tag) + '」</span>' : '';
-            html += '<span class="lt-watch-chip" data-code="' + it.code + '" data-name="' + _kplEsc(it.name) + '" data-tag="' + _kplEsc(it.tag) + '" data-role="' + it.role + '" data-lb="' + it.lianban + '" title="' + _kplEsc(it.name) + ' ' + _ltWatchRoleLabel[it.role] + '">';
-            html += '<span class="lt-watch-name">' + _kplEsc(it.name) + '</span>' + lbTxt + tagTxt;
-            html += '<span class="lt-watch-pct" data-code="' + it.code + '">--</span>';
-            html += '</span>';
+            grpHtml += '<span class="lt-watch-chip" data-code="' + it.code + '" data-name="' + _kplEsc(it.name) + '" data-tag="' + _kplEsc(it.tag) + '" data-role="' + it.role + '" data-lb="' + it.lianban + '" title="' + _kplEsc(it.name) + ' ' + _ltWatchRoleLabel[it.role] + '">';
+            grpHtml += '<span class="lt-watch-name">' + _kplEsc(it.name) + '</span>' + lbTxt + tagTxt;
+            grpHtml += '<span class="lt-watch-pct" data-code="' + it.code + '">--</span>';
+            grpHtml += '</span>';
         }
-        html += '</div></div>';
+        grpHtml += '</div></div>';
+        if (isDeriv) {
+            deriv.push(grpHtml);
+            derivCount += list.length;
+        } else {
+            html += grpHtml;
+        }
+    }
+    if (deriv.length) {
+        html += '<div class="lt-watch-fold" onclick="_ltWatchToggleDeriv(this)">➕ 衍生关注（断板/重启/补涨/连板延续）<b class="lt-watch-count">' + derivCount + ' 只</b><span class="lt-watch-fold-arrow">▸</span></div>';
+        html += '<div class="lt-watch-deriv" style="display:none;">' + deriv.join('') + '</div>';
     }
     html += '</div>';
     html += '</div>';
@@ -15497,6 +15549,15 @@ function _ltWatchStartPoll() {
     if (_ltWatchTimer) clearInterval(_ltWatchTimer);
     _ltWatchTimer = setInterval(function() { _ltWatchPoll(false); }, _ltWatchInterval);
     _ltWatchPoll(false);
+}
+
+function _ltWatchToggleDeriv(btn) {
+    var box = btn.nextElementSibling;
+    var arrow = btn.querySelector('.lt-watch-fold-arrow');
+    if (!box) return;
+    var closed = box.style.display === 'none';
+    box.style.display = closed ? '' : 'none';
+    if (arrow) arrow.textContent = closed ? '▾' : '▸';
 }
 
 // ===== 弹性套利 · 创/科补涨池（Session 23）：连板晋级/新晋2板题材下创/科补涨候选 =====
