@@ -959,9 +959,9 @@ def _kpl_compute_lianban(stock_code, date_str):
 
 
 def _kpl_is_restart(stock_code, date_fmt, known_zt=False):
-    """判断股票在指定日期是否为'重启'：此前 ≥2 连板、回调数日后再次孤立首板（20个交易日内）。
+    """判断股票在指定日期是否为'重启'：此前 ≥2 连板、回调数日后再次孤立首板（30个交易日内）。
     规则：当日为该股涨停日且不在连板中（连板中不算重启时刻）；
-    从当日向前最多回溯20个交易日，找到最近一次旧的涨停日；
+    从当日向前最多回溯30个交易日，找到最近一次旧的涨停日；
     该旧涨停日属于一条 ≥2 连板的旧链条。
     date_fmt: YYYY-MM-DD
     known_zt: True 表示调用方已确认当日为该股涨停日（盘中注入场景，今日记录可能尚未入库）"""
@@ -978,9 +978,9 @@ def _kpl_is_restart(stock_code, date_fmt, known_zt=False):
     date_ymd = date_fmt.replace('-', '')
     if not known_zt and date_ymd not in zt_set:
         return False
-    # 从当日向前最多回溯20个交易日，找最近一次旧的涨停日
+    # 从当日向前最多回溯30个交易日，找最近一次旧的涨停日
     cur = date_ymd
-    for _ in range(20):
+    for _ in range(30):
         prev = finder._get_lagged_date(cur, -1)
         if not prev:
             break
@@ -995,7 +995,9 @@ def _kpl_is_restart(stock_code, date_fmt, known_zt=False):
                     pc = pp
                 else:
                     break
-            return chain_len >= 2
+            if chain_len >= 2:
+                return True
+            # 孤立首板（如哈药 07-21 重启1板）：继续向前找更早的 ≥2 连板链条
         cur = prev
     return False
 
