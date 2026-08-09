@@ -1098,8 +1098,9 @@ def _inject_today_zt_to_trajectory(recent_fmt, freq_by_tag, min_lianban=0, stock
     Returns:
         today_stock_tags: {stock_code: reason_tag}
     """
-    today_fmt = datetime.now().strftime('%Y-%m-%d')
-    today_ymd = today_fmt.replace('-', '')
+    today_bj = datetime.now(timezone(timedelta(hours=8)))
+    today_fmt = today_bj.strftime('%Y-%m-%d')
+    today_ymd = today_bj.strftime('%Y%m%d')
     # 检查今日数据是否需要补充：最新日期是今天 且 freq_by_tag中今日无数据
     if recent_fmt[-1] != today_fmt:
         return {}
@@ -14323,25 +14324,56 @@ function loadThemeWind() {
 var _rtTrajWindow = null;
 var _twTrajWindow = null;
 
-// 默认窗口：结束=今天，开始=今天减1月同日（与 KPL 涨停深挖口径一致）
-function _trajDefaultWindow() {
+// 北京时间 YYYY-MM-DD（不依赖客户端时区）
+function _bjTodayStr() {
     var now = new Date();
-    var y = now.getFullYear();
-    var m = String(now.getMonth()+1).padStart(2,'0');
-    var d = String(now.getDate()).padStart(2,'0');
-    var end = y + '-' + m + '-' + d;
-    var start = new Date(now);
-    start.setMonth(start.getMonth() - 1);
-    var sy = start.getFullYear();
-    var sm = String(start.getMonth()+1).padStart(2,'0');
-    var sd = String(start.getDate()).padStart(2,'0');
+    var off = now.getTimezoneOffset();                       // 本地与 UTC 的分差（分钟）
+    var bj = new Date(now.getTime() + (480 + off) * 60000);  // UTC+8
+    var y = bj.getFullYear();
+    var m = String(bj.getMonth() + 1).padStart(2, '0');
+    var d = String(bj.getDate()).padStart(2, '0');
+    return y + '-' + m + '-' + d;
+}
+
+// 默认窗口：结束=今天(北京时间)，开始=今天减1月同日（与 KPL 涨停深挖口径一致）
+function _trajDefaultWindow() {
+    var p = _bjTodayStr().split('-');
+    var end = p[0] + '-' + p[1] + '-' + p[2];
+    var start = new Date(Date.UTC(parseInt(p[0],10), parseInt(p[1],10) - 1, parseInt(p[2],10)));
+    start.setUTCMonth(start.getUTCMonth() - 1);
+    var sy = start.getUTCFullYear();
+    var sm = String(start.getUTCMonth() + 1).padStart(2, '0');
+    var sd = String(start.getUTCDate()).padStart(2, '0');
     return {start: sy + '-' + sm + '-' + sd, end: end};
 }
+var _trajDefaultSnap = null;
+
 (function() {
     var w = _trajDefaultWindow();
+    _trajDefaultSnap = {start: w.start, end: w.end};
     _rtTrajWindow = {start: w.start, end: w.end};
     _twTrajWindow = {start: w.start, end: w.end};
 })();
+
+// 页面开着过夜时自动滚动到新北京日的默认窗口（仍在默认窗口才滚动，用户自定义窗口不动）
+function _trajMaybeRollDefault() {
+    var def = _trajDefaultWindow();
+    if (!_trajDefaultSnap || def.end === _trajDefaultSnap.end) return;  // 北京日未变
+    var oldSnap = _trajDefaultSnap;
+    ['rt', 'tw'].forEach(function(tab) {
+        var w = (tab === 'rt') ? _rtTrajWindow : _twTrajWindow;
+        if (w && w.start && w.end && w.start === oldSnap.start && w.end === oldSnap.end) {
+            // 仍处默认窗口（未被用户自定义）→ 滚动到新默认并刷新
+            if (tab === 'rt') _rtTrajWindow = {start: def.start, end: def.end};
+            else _twTrajWindow = {start: def.start, end: def.end};
+            _fillTrajDefaultDates(tab);
+            updateTrajLbBadge(tab);
+            _trajFetchRender(tab, _trajLbUrl(tab));
+        }
+    });
+    _trajDefaultSnap = def;
+}
+setInterval(_trajMaybeRollDefault, 60000);
 
 // 把当前窗口日期填回输入框（rt/tw 各自独立，HTML 动态生成后调用）
 function _fillTrajDefaultDates(tab) {
@@ -26888,7 +26920,7 @@ class Handler(BaseHTTPRequestHandler):
             result = _get_cached('ladder_trajectory_' + str(n), ttl=120)
             if result is None:
                 _kpl_ensure_loaded()
-                today_ymd = datetime.now().strftime('%Y%m%d')
+                today_ymd = datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d')
                 recent = [d for d in _trading_days if d <= today_ymd]
                 recent = recent[-n:] if len(recent) >= n else recent
                 # 格式化为 YYYY-MM-DD
@@ -26936,7 +26968,7 @@ class Handler(BaseHTTPRequestHandler):
                 _kpl_ensure_loaded()   # 最近200文件，保证连板回溯精度
                 if ds or de:
                     _kpl_ensure_loaded(ds, de)   # 累积式加载窗口内日文件，覆盖旧窗口文件
-                today_ymd = datetime.now().strftime('%Y%m%d')
+                today_ymd = datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d')
                 if ds or de:
                     recent = [d for d in _trading_days if (not ds or d >= ds) and (not de or d <= de) and d <= today_ymd]
                 else:
@@ -27111,7 +27143,7 @@ class Handler(BaseHTTPRequestHandler):
             result = _get_cached(cache_key, ttl=120)
             if result is None:
                 _kpl_ensure_loaded()
-                today_ymd = datetime.now().strftime('%Y%m%d')
+                today_ymd = datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d')
                 recent = [d for d in _trading_days if d <= today_ymd]
                 recent = recent[-n:] if len(recent) >= n else recent
                 recent_fmt = [d[:4]+'-'+d[4:6]+'-'+d[6:] for d in recent]
@@ -27141,7 +27173,7 @@ class Handler(BaseHTTPRequestHandler):
                 _inject_freq = {}
                 today_injected = _inject_today_zt_to_trajectory(recent_fmt, _inject_freq)
                 if today_injected:
-                    today_fmt = datetime.now().strftime('%Y-%m-%d')
+                    today_fmt = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
                     if today_fmt not in daily_top_themes:
                         daily_top_themes[today_fmt] = []
                     theme_map = {item['tag']: item for item in daily_top_themes[today_fmt]}
