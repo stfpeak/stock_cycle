@@ -124,7 +124,7 @@ _kpl_top_tags_cache_timestamp = 0  # 上次成功写入时间戳
 _ELASTIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'elastic_arbitrage')
 _elastic_lock = threading.Lock()
 _elastic_kw_cache = {}          # keyword → {'gem': set, 'star': set, 'main': set} 题材成分股反查缓存（跨天清空）
-_ELASTIC_VERSION = 2            # 磁盘数据格式版本，递增使旧缓存自动失效重算（v2: tags去泛概念 + groups按题材分组）
+_ELASTIC_VERSION = 3            # 磁盘数据格式版本，递增使旧缓存自动失效重算（v2: tags去泛概念 + groups按题材分组；v3: 成分反查改 _kw_hit_fn 词首匹配，失效 CRO 误收 Mini/Micro 面板股的旧缓存）
 _ELASTIC_MEMBER_CAP = 12        # 每组（创/科）成员展示上限
 _ELASTIC_CARD_CAP = 30          # 连板股卡上限
 
@@ -819,10 +819,24 @@ def _get_sniper_data(lookback=20):
     }
 
 
+def _kw_hit_fn(keyword):
+    """构建关键词命中函数 f(text)->bool：
+    拉丁关键词词首匹配（大小写不敏感），中文关键词子串匹配。
+    拉丁词首规则 (?<![a-z0-9])kw：仅拒绝被两侧字母数字夹住的中间子串
+    （CRO⊂Micro/LED⊂OLED 误命中），保留整词与前缀（AI⊂AIGC、Micro 命中 Mini/Micro）。"""
+    if not keyword:
+        return lambda t: False
+    kw = keyword.lower()
+    if re.search(r'[a-z]', kw):
+        pat = re.compile(r'(?<![a-z0-9])' + re.escape(kw))
+        return lambda t: bool(pat.search((t or '').lower()))
+    return lambda t: kw in (t or '').lower()
+
+
 def _kpl_get_search_text(r):
     """获取KPL记录的可搜索文本字段"""
-    return (r.get('stock_name', '') + r.get('stock_code', '') + r.get('plate_name', '')
-            + (r.get('reason_tag', '') or '') + (r.get('reason_brief', '') or '') + (r.get('concepts', '') or ''))
+    return ' '.join([r.get('stock_name', ''), r.get('stock_code', ''), r.get('plate_name', ''),
+                     (r.get('reason_tag', '') or ''), (r.get('reason_brief', '') or ''), (r.get('concepts', '') or '')])
 
 
 def _kpl_get_strict_text(r):
@@ -842,7 +856,6 @@ def _kpl_search_rows(q, strict=False):
     q = q.strip()
     if not q:
         return {'results': [], 'mode': 'single', 'query': q, 'total_hits': 0, 'kw_results': {}, 'keywords': []}
-    q_lower = q.lower()
     text_fn = _kpl_get_strict_text if strict else _kpl_get_search_text
     # 盘中注入今日实时涨停池行（60s 缓存，盘后/今日日文件已存在返回 []）
     _source = list(_kpl_rows)
@@ -855,8 +868,8 @@ def _kpl_search_rows(q, strict=False):
         combined = []
         kw_results = {}
         for kw in keywords:
-            kw_lower = kw.lower()
-            matched = [r for r in _source if kw_lower in text_fn(r).lower()]
+            hit = _kw_hit_fn(kw)
+            matched = [r for r in _source if hit(text_fn(r))]
             kw_results[kw] = matched
             combined.extend(matched)
         # 去重（同一记录可能在多个关键词中匹配）
@@ -875,8 +888,8 @@ def _kpl_search_rows(q, strict=False):
             return _kpl_search_rows(keywords[0], strict) if keywords else {'results': [], 'mode': 'single', 'query': q, 'total_hits': 0, 'kw_results': {}, 'keywords': []}
         matched = list(_source)
         for kw in keywords:
-            kw_lower = kw.lower()
-            matched = [r for r in matched if kw_lower in text_fn(r).lower()]
+            hit = _kw_hit_fn(kw)
+            matched = [r for r in matched if hit(text_fn(r))]
         # 去重（云主机日JSON可能存在重复记录）
         seen = set()
         deduped = []
@@ -887,7 +900,8 @@ def _kpl_search_rows(q, strict=False):
                 deduped.append(r)
         return {'results': deduped, 'mode': 'and', 'query': q, 'total_hits': len(deduped), 'kw_results': {}, 'keywords': keywords}
     # 单关键词模式
-    matched = [r for r in _source if q_lower in text_fn(r).lower()]
+    hit = _kw_hit_fn(q)
+    matched = [r for r in _source if hit(text_fn(r))]
     # 去重（云主机日JSON可能存在重复记录）
     seen = set()
     deduped = []
@@ -902,6 +916,7 @@ def _kpl_search_rows(q, strict=False):
 def _kpl_race_match_stock(sc, q_lower, strict):
     """检查股票是否匹配关键词（用于赛马今日涨停检查）。
     strict=True时仅匹配reason_tag。"""
+    hit = _kw_hit_fn(q_lower)
     # 1. 检查_kpl_rows_by_stock中的记录
     records = _kpl_rows_by_stock.get(sc, [])
     for r in records:
@@ -911,10 +926,10 @@ def _kpl_race_match_stock(sc, q_lower, strict):
         if strict:
             search_text = tag
         else:
-            search_text = (r.get('stock_name', '') + r.get('stock_code', '')
-                           + r.get('plate_name', '') + tag
-                           + (r.get('reason_brief', '') or '') + (r.get('concepts', '') or ''))
-        if q_lower and q_lower in search_text.lower():
+            search_text = ' '.join([r.get('stock_name', ''), r.get('stock_code', ''),
+                                    r.get('plate_name', ''), tag,
+                                    (r.get('reason_brief', '') or ''), (r.get('concepts', '') or '')])
+        if q_lower and hit(search_text):
             return True
     # 2. 降级到_kpl_stock_latest_tag
     if sc in _kpl_stock_latest_tag:
@@ -925,8 +940,8 @@ def _kpl_race_match_stock(sc, q_lower, strict):
         if strict:
             search_text = tag
         else:
-            search_text = tag + (lt.get('concepts', '') or '')
-        if q_lower and q_lower in search_text.lower():
+            search_text = tag + ' ' + (lt.get('concepts', '') or '')
+        if q_lower and hit(search_text):
             return True
     return False
 
@@ -3293,10 +3308,10 @@ def _kpl_get_all_stock_codes_for_keyword(keyword):
     搜索字段：reason_tag（标签名）、reason_brief（原因简述）、concepts（所属概念）"""
     if not keyword:
         return []
-    kw_lower = keyword.lower()
+    hit = _kw_hit_fn(keyword)
     matched = set()
     for tag, records in _kpl_reason_index.items():
-        if kw_lower in tag.lower():
+        if hit(tag):
             # 标签名直接包含关键词 → 该标签下所有记录都相关
             for r in records:
                 code = r.get('stock_code', '')
@@ -3305,9 +3320,7 @@ def _kpl_get_all_stock_codes_for_keyword(keyword):
         else:
             # 标签名不含关键词 → 检查每条记录的reason_brief和concepts字段
             for r in records:
-                brief = (r.get('reason_brief', '') or '').lower()
-                concepts = (r.get('concepts', '') or '').lower()
-                if kw_lower in brief or kw_lower in concepts:
+                if hit(r.get('reason_brief', '') or '') or hit(r.get('concepts', '') or ''):
                     code = r.get('stock_code', '')
                     if code:
                         matched.add(code)
@@ -27977,6 +27990,7 @@ class Handler(BaseHTTPRequestHandler):
                     # 1. 在_kpl_rows中按关键词搜索匹配股票（与搜索API/_kpl_search_rows保持一致的搜索逻辑）
                     # 搜索字段：stock_name + stock_code + plate_name + reason_tag + reason_brief + concepts
                     q_lower = keyword.lower() if keyword else ''
+                    hit = _kw_hit_fn(q_lower)
                     matched_codes = set()
                     events_by_stock = {}
                     all_stock_codes = set()
@@ -27998,9 +28012,9 @@ class Handler(BaseHTTPRequestHandler):
                             if strict:
                                 search_text = tag  # 仅标签搜索
                             else:
-                                search_text = (r.get('stock_name', '') + sc + r.get('plate_name', '')
-                                               + tag + (r.get('reason_brief', '') or '') + (r.get('concepts', '') or ''))
-                            if q_lower and q_lower not in search_text.lower():
+                                search_text = ' '.join([r.get('stock_name', ''), sc, r.get('plate_name', ''),
+                                                        tag, (r.get('reason_brief', '') or ''), (r.get('concepts', '') or '')])
+                            if q_lower and not hit(search_text):
                                 continue
                             matched_codes.add(sc)
                             key = sc + '|' + d
