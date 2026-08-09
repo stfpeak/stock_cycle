@@ -1118,19 +1118,23 @@ def _inject_today_zt_to_trajectory(recent_fmt, freq_by_tag, min_lianban=0, stock
                     reason_tag = _kpl_stock_latest_tag[code].get('tag', '') or ''
                     brief = ''
                 if reason_tag:
-                    today_stock_tags[code] = reason_tag
-                    if reason_tag not in freq_by_tag:
-                        freq_by_tag[reason_tag] = {}
-                    freq_by_tag[reason_tag][today_fmt] = freq_by_tag[reason_tag].get(today_fmt, 0) + 1
+                    valid = _traj_valid_tags(reason_tag, brief)
+                    if not valid:
+                        continue   # 纯泛概念盘中股跳过，与主聚合口径一致
+                    ptag = valid[0]
+                    today_stock_tags[code] = ptag
+                    if ptag not in freq_by_tag:
+                        freq_by_tag[ptag] = {}
+                    freq_by_tag[ptag][today_fmt] = freq_by_tag[ptag].get(today_fmt, 0) + 1
                     if stocks_by_tag is not None:
                         name = str(row.get('名称', '')) or ''
-                        stocks_by_tag.setdefault(reason_tag, {}).setdefault(today_fmt, []).append({
+                        stocks_by_tag.setdefault(ptag, {}).setdefault(today_fmt, []).append({
                             'code': code,
                             'name': name,
                             'lianban': lianban,
                             'is_restart': is_restart,
                             'is_gem': (code[:3] in ('300', '301') or code[:3] in ('688', '689')),
-                            'tags': list(dict.fromkeys(_split_reason_tag(reason_tag, brief))),
+                            'tags': valid,
                         })
     except Exception:
         pass
@@ -2442,6 +2446,16 @@ def _tws_is_generic_tag(t):
     if t.startswith('ST') or '摘帽' in t:
         return True
     return False
+
+
+# 连板轨迹额外泛概念（仅轨迹过滤，不影响题材风向）
+_TRAJ_GENERIC_EXTRA = {'国有企业', '英伟达概念'}
+
+
+def _traj_valid_tags(tag, brief=''):
+    """连板轨迹有效标签：A+B 拆分后去泛概念（TWS_GENERIC_TAGS + 轨迹额外），保序去重。"""
+    tags = [t for t in _split_reason_tag(tag, brief) if t and not _tws_is_generic_tag(t) and t not in _TRAJ_GENERIC_EXTRA]
+    return list(dict.fromkeys(tags))
 
 
 def _tws_subtheme_tags(s):
@@ -14123,6 +14137,7 @@ function loadRealtime() {
         html += '</div>';
 
         container.innerHTML = html;
+        _fillTrajDefaultDates('rt');
         updateTrajLbBadge('rt');
         initTabSidebarScroll('rtSidebar', ['ltTrajectoryLbSection','rtLadderSection','ltTrajectorySection','todayZtTrendSection','rtHistorySection']);
         loadLuReasons();
@@ -14277,6 +14292,7 @@ function loadThemeWind() {
         if (reviewData && reviewData.latest) _reviewDayCache[reviewData.latest_date] = reviewData.latest;
 
         container.innerHTML = html;
+        _fillTrajDefaultDates('tw');
         updateTrajLbBadge('tw');
         initTabSidebarScroll('twSidebar', ['twWindStrengthSection','twLtTrajectoryLbSection','twLtTrajectorySection','twTopThemeSection','twThemeTreeSection','twReviewSection']);
         updateReviewNavSel();   // 导航渲染在 _reviewSelDate 赋值之前，需手动补选中态
@@ -14291,6 +14307,35 @@ function loadThemeWind() {
 // 连板轨迹日期窗口（实时/题材风向各自独立，null 或 {start,end}，YYYY-MM-DD）
 var _rtTrajWindow = null;
 var _twTrajWindow = null;
+
+// 默认窗口：结束=今天，开始=今天减1月同日（与 KPL 涨停深挖口径一致）
+function _trajDefaultWindow() {
+    var now = new Date();
+    var y = now.getFullYear();
+    var m = String(now.getMonth()+1).padStart(2,'0');
+    var d = String(now.getDate()).padStart(2,'0');
+    var end = y + '-' + m + '-' + d;
+    var start = new Date(now);
+    start.setMonth(start.getMonth() - 1);
+    var sy = start.getFullYear();
+    var sm = String(start.getMonth()+1).padStart(2,'0');
+    var sd = String(start.getDate()).padStart(2,'0');
+    return {start: sy + '-' + sm + '-' + sd, end: end};
+}
+(function() {
+    var w = _trajDefaultWindow();
+    _rtTrajWindow = {start: w.start, end: w.end};
+    _twTrajWindow = {start: w.start, end: w.end};
+})();
+
+// 把当前窗口日期填回输入框（rt/tw 各自独立，HTML 动态生成后调用）
+function _fillTrajDefaultDates(tab) {
+    var startEl = document.getElementById(_trajDateStartId(tab));
+    var endEl = document.getElementById(_trajDateEndId(tab));
+    var w = (tab === 'rt') ? _rtTrajWindow : _twTrajWindow;
+    if (startEl && w && w.start) startEl.value = w.start;
+    if (endEl && w && w.end) endEl.value = w.end;
+}
 
 function _trajLbUrl(tab) {
     var w = (tab === 'rt') ? _rtTrajWindow : _twTrajWindow;
@@ -14321,8 +14366,13 @@ function updateTrajLbBadge(tab) {
     if (!badge) return;
     var w = (tab === 'rt') ? _rtTrajWindow : _twTrajWindow;
     var lbl = '近20日';
-    if (w && (w.start || w.end)) {
-        lbl = (w.start ? w.start.slice(5) : '') + '~' + (w.end ? w.end.slice(5) : '');
+    if (w && w.start) {
+        var def = _trajDefaultWindow();
+        if (w.start === def.start && w.end === def.end) {
+            lbl = '近1月';
+        } else {
+            lbl = (w.start ? w.start.slice(5) : '') + '~' + (w.end ? w.end.slice(5) : '');
+        }
     }
     badge.textContent = lbl;
 }
@@ -14357,11 +14407,12 @@ function applyTrajectoryWindow(tab) {
 }
 
 function resetTrajectoryWindow(tab) {
+    var w = _trajDefaultWindow();
+    if (tab === 'rt') _rtTrajWindow = {start: w.start, end: w.end}; else _twTrajWindow = {start: w.start, end: w.end};
     var startEl = document.getElementById(_trajDateStartId(tab));
     var endEl = document.getElementById(_trajDateEndId(tab));
-    if (startEl) startEl.value = '';
-    if (endEl) endEl.value = '';
-    if (tab === 'rt') _rtTrajWindow = null; else _twTrajWindow = null;
+    if (startEl) startEl.value = w.start;
+    if (endEl) endEl.value = w.end;
     updateTrajLbBadge(tab);
     _trajFetchRender(tab, _trajLbUrl(tab));
 }
@@ -15067,7 +15118,7 @@ function renderLadderLianbanTagTrajectory(data, bodyId) {
         return '<div class="empty" style="padding:15px;color:#666;font-size:0.82em;">暂无轨迹数据</div>';
     }
     _ltTrajectoryStockNavs = [];   // 每次渲染重置，随自动刷新重渲染避免数组无限增长
-    var EXCLUDE_TAGS = ['ST', '并购重组', 'ST摘帽', '实控人变更', '业绩预亏', '风险提示'];
+    var EXCLUDE_TAGS = ['ST', '并购重组', 'ST摘帽', '实控人变更', '业绩预亏', '风险提示', '中报增长', '国有企业', '英伟达概念', '借壳上市', '资产注入', '定增', '增发', '年报增长', '业绩预增', '高送转'];
     function shouldExclude(tag) {
         for (var ei = 0; ei < EXCLUDE_TAGS.length; ei++) {
             if (tag.indexOf(EXCLUDE_TAGS[ei]) >= 0) return true;
@@ -15082,8 +15133,28 @@ function renderLadderLianbanTagTrajectory(data, bodyId) {
     var stocksByTag = data.stocks_by_tag || {};
     var sortedTags = Object.keys(tagTotals).filter(function(t) {
         return !shouldExclude(t);
-    }).sort(function(a, b) {
-        return (tagTotals[b] || 0) - (tagTotals[a] || 0);
+    });
+    // 需求3：标签按「最近活跃优先」排序——(最近有连板的日期↓, 当天最高连板↓, 总数↓)
+    var tagRank = {};
+    for (var ti = 0; ti < sortedTags.length; ti++) {
+        var t = sortedTags[ti];
+        var dateCounts = freqByTag[t] || {};
+        var lastDate = '';
+        for (var di in dateCounts) {
+            if (dateCounts[di] > 0 && di > lastDate) lastDate = di;   // YYYY-MM-DD 可直接字典序比较
+        }
+        var hOnLast = 0;
+        var dayStocks = (stocksByTag[t] && stocksByTag[t][lastDate]) || [];
+        for (var si = 0; si < dayStocks.length; si++) {
+            if ((dayStocks[si].lianban || 0) > hOnLast) hOnLast = dayStocks[si].lianban;
+        }
+        tagRank[t] = {lastDate: lastDate, hOnLast: hOnLast, total: tagTotals[t] || 0};
+    }
+    sortedTags.sort(function(a, b) {
+        var ra = tagRank[a], rb = tagRank[b];
+        if (ra.lastDate !== rb.lastDate) return (ra.lastDate > rb.lastDate) ? -1 : 1;   // 最近活跃在前
+        if (ra.hOnLast !== rb.hOnLast) return rb.hOnLast - ra.hOnLast;                    // 当天最高板降序
+        return rb.total - ra.total;                                                      // 总数降序
     });
     if (sortedTags.length > 60) sortedTags = sortedTags.slice(0, 60);
 
@@ -26921,21 +26992,22 @@ class Handler(BaseHTTPRequestHandler):
                 primary_stocks = {}
                 for d_fmt, code_info in all_entries.items():
                     for sc, info in code_info.items():
-                        tag = info['tag']
-                        if tag not in primary_freq:
-                            primary_freq[tag] = {}
-                        primary_freq[tag][d_fmt] = primary_freq[tag].get(d_fmt, 0) + 1
-                        if tag not in primary_stocks:
-                            primary_stocks[tag] = {}
-                        _tags = _split_reason_tag(info['tag'], info['brief'])
-                        _tags = list(dict.fromkeys(_tags))   # 去重，防 A+A 重复计入
-                        primary_stocks[tag].setdefault(d_fmt, []).append({
+                        valid = _traj_valid_tags(info['tag'], info['brief'])
+                        if not valid:
+                            continue   # 纯泛概念股不进轨迹/总结
+                        ptag = valid[0]   # 主 tag 是泛概念但简介拆出有效标签时归第一个有效标签
+                        if ptag not in primary_freq:
+                            primary_freq[ptag] = {}
+                        primary_freq[ptag][d_fmt] = primary_freq[ptag].get(d_fmt, 0) + 1
+                        if ptag not in primary_stocks:
+                            primary_stocks[ptag] = {}
+                        primary_stocks[ptag].setdefault(d_fmt, []).append({
                             'code': sc,
                             'name': info['name'],
                             'lianban': info['lb'],
                             'is_restart': info['is_restart'],
                             'is_gem': (sc[:3] in ('300', '301') or sc[:3] in ('688', '689')),
-                            'tags': _tags,
+                            'tags': valid,
                         })
                 # 盘中补充今日实时涨停数据（连板版只统计 lianban >= 2，注入股票明细）
                 _inject_today_zt_to_trajectory(recent_fmt, primary_freq, min_lianban=2, stocks_by_tag=primary_stocks)
