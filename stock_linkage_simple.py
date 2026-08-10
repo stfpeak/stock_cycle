@@ -11,6 +11,7 @@ import sys
 import json
 import sqlite3
 import threading
+import bisect
 import time
 import importlib
 from datetime import datetime, timedelta, timezone
@@ -964,7 +965,7 @@ def _kpl_compute_lianban(stock_code, date_str):
     lb = 1
     curr = date_ymd
     while True:
-        prev = finder._get_lagged_date(curr, -1)
+        prev = _kpl_lagged_day(curr, -1)
         if prev and prev in zt_set:
             lb += 1
             curr = prev
@@ -973,10 +974,22 @@ def _kpl_compute_lianban(stock_code, date_str):
     return lb
 
 
+def _kpl_lagged_day(date_ymd, lag):
+    """从权威交易日历 _trading_days 取 date_ymd 滞后 lag 个交易日（YYYYMMDD）；越界返回 None。
+    替代 finder._get_lagged_date（依赖 K线快照 trade_dates，云端 K线落后时缺当天）。"""
+    if not _trading_days:
+        return None
+    idx = bisect.bisect_left(_trading_days, date_ymd)
+    target = idx + lag
+    if 0 <= target < len(_trading_days):
+        return _trading_days[target]
+    return None
+
+
 def _kpl_is_restart(stock_code, date_fmt, known_zt=False):
-    """判断股票在指定日期是否为'重启'：此前 ≥2 连板、回调数日后再次孤立首板（30个交易日内）。
+    """判断股票在指定日期是否为'重启'：此前 ≥2 连板、回调数日后再次孤立首板（20个交易日内）。
     规则：当日为该股涨停日且不在连板中（连板中不算重启时刻）；
-    从当日向前最多回溯30个交易日，找到最近一次旧的涨停日；
+    从当日向前最多回溯20个交易日，找到最近一次旧的涨停日；
     该旧涨停日属于一条 ≥2 连板的旧链条。
     date_fmt: YYYY-MM-DD
     known_zt: True 表示调用方已确认当日为该股涨停日（盘中注入场景，今日记录可能尚未入库）"""
@@ -993,10 +1006,10 @@ def _kpl_is_restart(stock_code, date_fmt, known_zt=False):
     date_ymd = date_fmt.replace('-', '')
     if not known_zt and date_ymd not in zt_set:
         return False
-    # 从当日向前最多回溯30个交易日，找最近一次旧的涨停日
+    # 从当日向前最多回溯20个交易日，找最近一次旧的涨停日
     cur = date_ymd
-    for _ in range(30):
-        prev = finder._get_lagged_date(cur, -1)
+    for _ in range(20):
+        prev = _kpl_lagged_day(cur, -1)
         if not prev:
             break
         if prev in zt_set:
@@ -1004,7 +1017,7 @@ def _kpl_is_restart(stock_code, date_fmt, known_zt=False):
             chain_len = 1
             pc = prev
             while True:
-                pp = finder._get_lagged_date(pc, -1)
+                pp = _kpl_lagged_day(pc, -1)
                 if pp and pp in zt_set:
                     chain_len += 1
                     pc = pp
@@ -1298,13 +1311,219 @@ def _kpl_restart_prev_chain(code, date_fmt):
     date_ymd = date_fmt.replace('-', '')
     cur = date_ymd
     for _ in range(20):
-        prev = finder._get_lagged_date(cur, -1)
+        prev = _kpl_lagged_day(cur, -1)
         if not prev:
             break
         if prev in zt_set:
             return _kpl_compute_lianban(code, f"{prev[:4]}-{prev[4:6]}-{prev[6:]}")
         cur = prev
     return 0
+
+
+def _kpl_prev_chain_info(code, date_fmt, window=20):
+    """date_fmt 之前 window 交易日内最近一条 ≥2 连板旧链条（跳过孤立首板，仿 _kpl_is_restart Session39 逻辑）。
+    返回 (chain_len, last_old_ymd, first_old_ymd)；无则 (0,None,None)。"""
+    records = _kpl_rows_by_stock.get(code, [])
+    if not records:
+        return (0, None, None)
+    zt_set = set()
+    for r in records:
+        d = r.get('date', '').replace('-', '')
+        if d:
+            zt_set.add(d)
+    date_ymd = date_fmt.replace('-', '')
+    cur = date_ymd
+    for _ in range(window):
+        prev = _kpl_lagged_day(cur, -1)
+        if not prev:
+            break
+        if prev in zt_set:
+            # 该旧涨停日所属链条：继续向前数连续涨停天数（链起点）
+            chain_len = 1
+            pc = prev
+            while True:
+                pp = _kpl_lagged_day(pc, -1)
+                if pp and pp in zt_set:
+                    chain_len += 1
+                    pc = pp
+                else:
+                    break
+            if chain_len >= 2:
+                return (chain_len, prev, pc)
+            # 孤立首板（如哈药 07-21 重启1板）：继续向前找更早 ≥2 连板链条
+        cur = prev
+    return (0, None, None)
+
+
+def _kpl_td_gap(a_ymd, b_ymd):
+    """交易日间隔（bisect 索引差 -1，严格之间）。"""
+    if not _trading_days:
+        return 0
+    ia = bisect.bisect_left(_trading_days, a_ymd)
+    ib = bisect.bisect_left(_trading_days, b_ymd)
+    return ib - ia - 1
+
+
+def _kpl_board_structure(code, date_fmt, lb_override=None):
+    """涨停板结构字符串，简洁：
+       '5连板' | '3连板后重启首板·断4日' | '3连板后重启2板·断4日' | '首板'
+    规则：lb 取 lb_override(akshare 实时) 否则 _kpl_compute_lianban；
+      lb>=2 时 chain_start=_kpl_lagged_day(ymd,-(lb-1))，从 chain_start 前一日向后找 _kpl_prev_chain_info → 命中则 'N连板后重启{lb}板·断X日'；
+      lb==1 时从 date_fmt 找 → 命中则 'N连板后重启首板·断X日'；否则 '首板'/'N连板'。
+    断板天数 X=_kpl_td_gap(last_old, target)。重启窗口 20 交易日。"""
+    date_ymd = date_fmt.replace('-', '')
+    lb = lb_override if lb_override is not None else _kpl_compute_lianban(code, date_fmt)
+    try:
+        lb = int(lb)
+    except (TypeError, ValueError):
+        lb = 1
+    if lb >= 2:
+        chain_start = _kpl_lagged_day(date_ymd, -(lb - 1))
+        if not chain_start:
+            return f'{lb}连板'
+        search_from = _kpl_lagged_day(chain_start, -1)
+        chain_len = 0
+        last_old = None
+        if search_from:
+            chain_len, last_old, _ = _kpl_prev_chain_info(
+                code, f"{search_from[:4]}-{search_from[4:6]}-{search_from[6:]}")
+        if chain_len >= 2 and last_old:
+            gap = _kpl_td_gap(last_old, chain_start)
+            return f'{chain_len}连板后重启{lb}板·断{gap}日'
+        return f'{lb}连板'
+    # lb == 1（首板）
+    chain_len, last_old, _ = _kpl_prev_chain_info(code, date_fmt)
+    if chain_len >= 2 and last_old:
+        gap = _kpl_td_gap(last_old, date_ymd)
+        return f'{chain_len}连板后重启首板·断{gap}日'
+    return '首板'
+
+
+_kpl_tag_member_cache = None
+_kpl_tag_member_cache_key = None
+_kpl_tag_member_cache_ts = 0.0
+
+
+def _kpl_tag_member_index(date_fmt, window=20):
+    """近 window 交易日 KPL 涨停股按有效标签（仅 标签+简述，无 concepts/THS）索引。
+    返回 {tag: {code: {'name','date'}}}，date 取窗口内最新涨停日。600s 内存缓存。"""
+    global _kpl_tag_member_cache, _kpl_tag_member_cache_key, _kpl_tag_member_cache_ts
+    key = (date_fmt or '', window)
+    now = time.time()
+    if _kpl_tag_member_cache is not None and key == _kpl_tag_member_cache_key and now - _kpl_tag_member_cache_ts < 600:
+        return _kpl_tag_member_cache
+    _kpl_ensure_loaded()
+    out = {}
+    date_ymd = (date_fmt or '').replace('-', '')
+    if _trading_days and date_ymd:
+        days = sorted(_trading_days)
+        idx = bisect.bisect_right(days, date_ymd)
+        lo = max(0, idx - window)
+        for wd in days[lo:idx]:
+            wf = f"{wd[:4]}-{wd[4:6]}-{wd[6:]}"
+            for r in _kpl_rows_by_date.get(wf, []) or []:
+                sc = r.get('stock_code', '')
+                if not sc:
+                    continue
+                for t in _traj_valid_tags(r.get('reason_tag', '') or '', r.get('reason_brief', '') or ''):
+                    m = out.setdefault(t, {})
+                    old = m.get(sc)
+                    if old is None or wf > old.get('date', ''):
+                        m[sc] = {'name': (r.get('stock_name', '') or '') or sc, 'date': wf}
+    _kpl_tag_member_cache = out
+    _kpl_tag_member_cache_key = key
+    _kpl_tag_member_cache_ts = now
+    return out
+
+
+def _zt_linkage_panel(code, date_fmt):
+    """板块联动弹窗数据：某涨停股 → 拆题材(A+B) → 各题材「今日主板同题材」+「大涨池」(主/创/科)。
+    全部仅用 KPL 板块/标签/简述（去 THS/概念）；主板=近20日，创/科=近200日（与题材风向补涨池同口径）。
+    本股无有效 KPL 记录返回 None（前端不显示）。"""
+    if not code or not date_fmt:
+        return None
+    kpl = _kpl_resolve_stock_kpl(code, date_fmt)
+    if not kpl:
+        return None
+    tags = kpl.get('tags') or []
+    if not tags:
+        return None
+    name = _elastic_stock_name(code)
+    today_rows = list(_kpl_rows_by_date.get(date_fmt) or []) + list(_kpl_today_live_rows() or [])
+    today_zt_codes = set()
+    for r in today_rows:
+        c = r.get('stock_code', '')
+        if c:
+            today_zt_codes.add(c)
+    idx20 = _kpl_tag_member_index(date_fmt, 20)
+    idx200 = _kpl_tag_member_index(date_fmt, 200)
+    # 一次聚齐全部题材成分（近200日，主板不扩窗）→ 创/科强涨查询（截止 date_fmt）
+    all_codes = set()
+    for t in tags:
+        all_codes.update((idx200.get(t) or {}).keys())
+    strong = _kpl_get_gem_strong_rise(list(all_codes), lookback=20, date_end=date_fmt) if all_codes else {}
+    out_tags = []
+    for t in tags:
+        # 今日主板同题材涨停（精确 KPL 拆标签命中，排除本股），带涨停板结构
+        today_main = []
+        for r in today_rows:
+            c = r.get('stock_code', '')
+            if not c or c == code:
+                continue
+            if _kpl_board_of_code(c) != '主':
+                continue
+            if t not in _traj_valid_tags(r.get('reason_tag', '') or '', r.get('reason_brief', '') or ''):
+                continue
+            today_main.append({
+                'code': c,
+                'name': (r.get('stock_name', '') or '') or c,
+                'board_str': _kpl_board_structure(c, date_fmt),
+            })
+        today_main.sort(key=lambda x: x['name'])
+        # 大涨池：主板=近20日索引成员；创/科=近200日索引成员；另并入今日拆标签含 t 的涨停股
+        zt20 = set((idx20.get(t) or {}).keys())
+        members = {}
+        for c, info in (idx200.get(t) or {}).items():
+            b = _kpl_board_of_code(c)
+            if b == '主' and c not in zt20:
+                continue  # 主板不扩窗，仅近20日标签
+            members[c] = {'name': info.get('name', '') or c, 'in_index': c in zt20}
+        for r in today_rows:
+            c = r.get('stock_code', '')
+            if not c:
+                continue
+            if t not in _traj_valid_tags(r.get('reason_tag', '') or '', r.get('reason_brief', '') or ''):
+                continue
+            if c in members:
+                continue
+            members[c] = {'name': (r.get('stock_name', '') or '') or c, 'in_index': False}
+        pool = {'main': [], 'gem': [], 'star': []}
+        for c, info in members.items():
+            nm = info['name']
+            if _elastic_is_st(nm):
+                continue
+            b = _kpl_board_of_code(c)
+            bucket = 'gem' if b == '创' else ('star' if b == '科' else 'main')
+            pool[bucket].append({
+                'code': c,
+                'name': nm,
+                'zt_20d': info['in_index'],
+                'today_zt': c in today_zt_codes,
+                'strong': c in strong,
+            })
+        for bucket in pool:
+            pool[bucket].sort(key=lambda e: (-e['zt_20d'], -e['today_zt'], -e['strong'], e['name']))
+            pool[bucket] = pool[bucket][:_ELASTIC_MEMBER_CAP * 2]
+        out_tags.append({'tag': t, 'today_main': today_main, 'pool': pool})
+    return {
+        'code': code,
+        'name': name,
+        'plate_name': kpl.get('plate_name', '') or '',
+        'reason_tag': kpl.get('reason_tag', '') or '',
+        'reason_brief': kpl.get('reason_brief', '') or '',
+        'date': kpl.get('date', '') or '',
+        'tags': out_tags,
+    }
 
 
 def _kpl_group_expectations(date_fmt, stocks_by_tag):
@@ -1869,7 +2088,7 @@ def _kpl_backfill_chain(results, q, date_start=None):
                     '_backfilled': True,
                 })
                 existing.add(key)
-            curr = finder._get_lagged_date(curr, -1)
+            curr = _kpl_lagged_day(curr, -1)
             pos -= 1
     if not additions:
         return results
@@ -1986,6 +2205,61 @@ def _kpl_resolve_tag(code):
     return (lt.get('tag', '') or ''), (lt.get('reason_brief', '') or '')
 
 
+def _kpl_resolve_stock_kpl(code, date_fmt, window=200):
+    """解析股票 KPL 板块/标签/简述（仅 KPL 信息，无 THS/概念）。
+    优先级：① 今日行（date_fmt 当日 KPL 行或盘中实时合成行）_traj_valid_tags 非空即用；
+    ② _kpl_rows_by_stock 按日期降序、限近 window 交易日（≤ date_fmt）取最近一条有效。
+    返回 {plate_name(逗号取首段), reason_tag, reason_brief, tags, date}；无有效记录返回 None。"""
+    if not code:
+        return None
+    _kpl_ensure_loaded()
+    date_ymd = (date_fmt or '').replace('-', '')
+    # ① 今日行（文件行或盘中实时合成行）
+    today_cands = []
+    if date_fmt:
+        today_cands.extend(_kpl_rows_by_date.get(date_fmt, []) or [])
+    today_cands.extend(_kpl_today_live_rows() or [])
+    for r in today_cands:
+        if (r.get('stock_code', '') or '') != code:
+            continue
+        tags = _traj_valid_tags(r.get('reason_tag', '') or '', r.get('reason_brief', '') or '')
+        if not tags:
+            continue
+        return {
+            'plate_name': ((r.get('plate_name', '') or '').split(',')[0].strip()),
+            'reason_tag': (r.get('reason_tag', '') or '').strip(),
+            'reason_brief': (r.get('reason_brief', '') or ''),
+            'tags': tags,
+            'date': date_fmt,
+        }
+    # ② 历史回扫：近 window 交易日
+    if not _trading_days:
+        return None
+    days = sorted(_trading_days)
+    idx = bisect.bisect_right(days, date_ymd) if date_ymd else len(days)
+    lo = max(0, idx - window)
+    ws = days[lo] if lo < len(days) else ''
+    if not ws:
+        return None
+    ws_fmt = f"{ws[:4]}-{ws[4:6]}-{ws[6:]}"
+    recs = sorted(_kpl_rows_by_stock.get(code, []), key=lambda x: x.get('date', ''), reverse=True)
+    for r in recs:
+        rd = r.get('date', '') or ''
+        if not rd or rd < ws_fmt:
+            continue
+        tags = _traj_valid_tags(r.get('reason_tag', '') or '', r.get('reason_brief', '') or '')
+        if not tags:
+            continue
+        return {
+            'plate_name': ((r.get('plate_name', '') or '').split(',')[0].strip()),
+            'reason_tag': (r.get('reason_tag', '') or '').strip(),
+            'reason_brief': (r.get('reason_brief', '') or ''),
+            'tags': tags,
+            'date': rd,
+        }
+    return None
+
+
 def _kpl_tst_change_pct(codes, trade_date_fmt):
     """批量今日涨幅：levistock 实时 → K线DB 兜底。返回 {code: change_pct}"""
     out = {}
@@ -2032,7 +2306,7 @@ def _kpl_max_chain(all_zt, window_zt):
         n = 1
         c = d
         while True:
-            p = finder._get_lagged_date(c, -1)
+            p = _kpl_lagged_day(c, -1)
             if p and p in zset:
                 n += 1
                 c = p
@@ -2331,33 +2605,36 @@ def _tws_detect_focus(code, name, date_fmt, is_today_zt, zt20_set):
     return {'code': code, 'name': name, 'type': 'broken', 'prev_chain': max_chain}
 
 
-def _tws_build_members(theme, date_fmt, today_zt_codes, zt20_map):
-    """细分题材补涨池：三源反查成分股，分主/创/科。
-    主板=近20日涨停★优先，截断12；创/科=显示全部成分股（★标记近20日涨停过）。"""
-    kw_res = _elastic_member_codes_for_keyword(theme)
-    zt20 = zt20_map.get(theme, set())
+def _tws_build_members(theme, date_fmt, today_zt_codes):
+    """细分题材补涨池：仅 KPL 标签/简述索引成分（无 THS/概念）。
+    主板=近20交易日；创/科=近200交易日（覆盖历史KPL标签股，补齐华人健康/漱玉平民类）。
+    zt_20d=近20交易日有此标签（★）；主板截断12，创/科显示全部。"""
+    idx20 = _kpl_tag_member_index(date_fmt, 20).get(theme, {}) or {}
+    idx200 = _kpl_tag_member_index(date_fmt, 200).get(theme, {}) or {}
+    zt20 = set(idx20.keys())
     out = {'main': [], 'gem': [], 'star': []}
-    for bucket in ('gem', 'star', 'main'):
-        lst = []
-        for c in kw_res.get(bucket, set()):
-            if c in today_zt_codes:
-                continue  # 已涨停股在 lianban_stocks 列，不重复进补涨池
-            nm = _elastic_stock_name(c)
-            if _elastic_is_st(nm):
-                continue
-            lst.append({'code': c, 'name': nm, 'zt_20d': c in zt20, 'today_zt': False})
-        lst.sort(key=lambda e: (-e['zt_20d'], e['name']))
-        out[bucket] = lst if bucket != 'main' else lst[:12]
+    for c, info in idx200.items():
+        if c in today_zt_codes:
+            continue  # 已涨停股在 lianban_stocks 列，不重复进补涨池
+        nm = info.get('name', '') or _elastic_stock_name(c)
+        if _elastic_is_st(nm):
+            continue
+        b = _kpl_board_of_code(c)
+        if b == '主' and c not in zt20:
+            continue  # 主板不扩窗，仅近20日标签
+        bucket = 'gem' if b == '创' else ('star' if b == '科' else 'main')
+        out[bucket].append({'code': c, 'name': nm, 'zt_20d': c in zt20, 'today_zt': False})
+    for bucket in out:
+        out[bucket].sort(key=lambda e: (-e['zt_20d'], e['name']))
+    out['main'] = out['main'][:12]
     return out
 
 
-def _tws_build_focus(theme, matched, date_fmt, today_zt_codes, zt20_map):
-    """特别关注：restart（今日首板+前期多板） + broken（今日未涨停+近20日≥2连板断板回调）。"""
-    zt20 = zt20_map.get(theme, set())
-    kw_res = _elastic_member_codes_for_keyword(theme)
-    member_codes = set()
-    for b in kw_res.values():
-        member_codes.update(b)
+def _tws_build_focus(theme, matched, date_fmt, today_zt_codes):
+    """特别关注：restart（今日首板+前期多板） + broken（今日未涨停+近20日≥2连板断板回调）。
+    成员宇宙 = 该题材 KPL 近20日标签索引成分（无 THS/概念）。"""
+    idx = _kpl_tag_member_index(date_fmt, 20).get(theme, {}) or {}
+    zt20 = set(idx.keys())
     focus = []
     seen = set()
     for s in matched:
@@ -2370,8 +2647,6 @@ def _tws_build_focus(theme, matched, date_fmt, today_zt_codes, zt20_map):
             seen.add(code)
     for c in zt20:
         if c in today_zt_codes or c in seen:
-            continue
-        if c not in member_codes:
             continue
         d = _tws_detect_focus(c, _elastic_stock_name(c), date_fmt, False, zt20)
         if d:
@@ -2506,77 +2781,61 @@ def _build_theme_wind_strength(top_n=10):
         if not date_fmt and _kpl_day_files:
             date_fmt = _kpl_day_files[-1].replace('.json', '')
 
-    # 构建今日涨停股 token 集（匹配用，含 KPL plate_name/concepts + akshare concepts + reason_tag 拆分）
+    # 构建今日涨停股：每只今日涨停股解析 KPL 板块/标签/简述（仅 KPL 信息，无 THS/概念）
     zt_stocks = []
     today_zt_codes = set()
     kpl_today_rows = _kpl_rows_by_date.get(date_fmt, []) if date_fmt else []
+    src_stocks = []
     if pool:
         for s in pool:
             code = s.get('code', '')
             if not code:
                 continue
-            tag, brief = _kpl_resolve_tag(code)
-            tokens = set()
-            if tag:
-                tokens.add(tag)
-            for t in _split_reason_tag(tag, brief):
-                if t and t != '未分类':
-                    tokens.add(t)
-            for r in kpl_today_rows:
-                if r.get('stock_code') == code:
-                    for pn in (r.get('plate_name', '') or '').split(','):
-                        pn = pn.strip()
-                        if pn:
-                            tokens.add(pn)
-                    for c in (r.get('concepts', '') or '').split('、'):
-                        c = c.strip()
-                        if c:
-                            tokens.add(c)
-            for c in (s.get('concepts') or []):
-                c = str(c).strip()
-                if c:
-                    tokens.add(c)
-            zt_stocks.append({
+            src_stocks.append({
                 'code': code,
                 'name': (s.get('name', '') or '') or _kpl_stock_index.get(code, {}).get('stock_name', '') or code,
                 'lianban': int(s.get('lianban', 0) or 1),
                 'change_pct': float(s.get('change_pct', 0) or 0),
-                'reason_tag': (tag or '未分类'),
-                'reason_brief': brief,
-                'tokens': tokens,
             })
-            today_zt_codes.add(code)
     else:
         for r in kpl_today_rows:
             code = r.get('stock_code', '')
             if not code:
                 continue
-            tag = (r.get('reason_tag', '') or '').strip() or '未分类'
-            brief = r.get('reason_brief', '') or ''
-            tokens = set()
-            if tag:
-                tokens.add(tag)
-            for t in _split_reason_tag(tag, brief):
-                if t and t != '未分类':
-                    tokens.add(t)
-            for pn in (r.get('plate_name', '') or '').split(','):
-                pn = pn.strip()
-                if pn:
-                    tokens.add(pn)
-            for c in (r.get('concepts', '') or '').split('、'):
-                c = c.strip()
-                if c:
-                    tokens.add(c)
-            zt_stocks.append({
+            src_stocks.append({
                 'code': code,
                 'name': (r.get('stock_name', '') or '') or code,
                 'lianban': _kpl_compute_lianban(code, date_fmt),
                 'change_pct': 0.0,
-                'reason_tag': tag,
-                'reason_brief': brief,
-                'tokens': tokens,
             })
-            today_zt_codes.add(code)
+    for s in src_stocks:
+        code = s['code']
+        kpl = _kpl_resolve_stock_kpl(code, date_fmt)
+        if not kpl:
+            continue  # 近200交易日无有效 KPL 板块/标签/简述 → 不显示
+        tokens = set()
+        for pn in (kpl.get('plate_name', '') or '').split(','):
+            pn = pn.strip()
+            if pn:
+                tokens.add(pn)
+        rt = kpl.get('reason_tag', '') or ''
+        if rt:
+            tokens.add(rt)
+        for t in kpl.get('tags', []) or []:
+            t = (t or '').strip()
+            if t:
+                tokens.add(t)
+        zt_stocks.append({
+            'code': code,
+            'name': s['name'],
+            'lianban': s['lianban'],
+            'change_pct': s['change_pct'],
+            'reason_tag': kpl.get('reason_tag', '') or '未分类',
+            'reason_brief': kpl.get('reason_brief', '') or '',
+            'plate_name': kpl.get('plate_name', '') or '',
+            'tokens': tokens,
+        })
+        today_zt_codes.add(code)
 
     # 板块 → 细分题材（reason_tag）聚合（同一涨停股可命中多板块=双归属）
     plate_themes = []
@@ -2593,14 +2852,6 @@ def _build_theme_wind_strength(top_n=10):
     rendered_plates = set()
     for pt in plate_themes:
         rendered_plates.add(_plate_suffix_strip(pt['plate_name']))
-
-    # 收集全部主题，一次扫描 zt20（避免逐主题重复扫窗口）
-    all_themes = set()
-    for pt in plate_themes:
-        for s in pt['matched']:
-            for t in _tws_subtheme_tags(s):
-                all_themes.add(t)
-    zt20_map = _elastic_zt20_map(date_fmt, list(all_themes))
 
     all_codes = set()
     plates_out = []
@@ -2625,8 +2876,8 @@ def _build_theme_wind_strength(top_n=10):
             for k in cols:
                 cols[k].sort(key=lambda x: (-x['lianban'], -x['change_pct'], x['name']))
                 cols[k] = cols[k][:20]
-            members = _tws_build_members(theme, date_fmt, today_zt_codes, zt20_map)
-            focus = _tws_build_focus(theme, stocks, date_fmt, today_zt_codes, zt20_map)
+            members = _tws_build_members(theme, date_fmt, today_zt_codes)
+            focus = _tws_build_focus(theme, stocks, date_fmt, today_zt_codes)
             for k in cols:
                 for x in cols[k]:
                     all_codes.add(x['code'])
@@ -2653,9 +2904,39 @@ def _build_theme_wind_strength(top_n=10):
     # 连板涨停表现天梯（今日N板 + 昨日断板，全市场）
     ladder = []
     if date_fmt and zt_stocks:
-        prev_ymd = finder._get_lagged_date(resolved_ymd, -1) if resolved_ymd else None
+        prev_ymd = _kpl_lagged_day(resolved_ymd, -1) if resolved_ymd else None
         prev_fmt = f"{prev_ymd[:4]}-{prev_ymd[4:6]}-{prev_ymd[6:]}" if prev_ymd else None
         ladder = _tws_build_ladder(date_fmt, prev_fmt, zt_stocks, today_zt_codes)
+
+    # 市场级「断板重启」总结：全量今日涨停股逐只检测（含非 Top-10 板块），并与各主题 focus restart 按 code 合并
+    restart_stocks = {}
+    if date_fmt:
+        for s in zt_stocks:
+            d = _tws_detect_focus(s['code'], s['name'], date_fmt, True, set())
+            if not d:
+                continue
+            plate, theme = _tws_ladder_plate_theme(s['code'], date_fmt)
+            e = restart_stocks.get(s['code'])
+            if not e:
+                e = restart_stocks[s['code']] = {'code': s['code'], 'name': s['name'], 'prev': d['prev_chain'], 'themes': []}
+            if d['prev_chain'] > e['prev']:
+                e['prev'] = d['prev_chain']
+            if theme and not any(t['theme'] == theme for t in e['themes']):
+                e['themes'].append({'plate': plate, 'theme': theme})
+        # 合并各主题 focus restart（Top-10 板块内已算的），prev 取最大
+        for pt in plates_out:
+            for th in pt.get('themes', []):
+                for f in th.get('focus', []):
+                    if f.get('type') != 'restart':
+                        continue
+                    e = restart_stocks.get(f['code'])
+                    if not e:
+                        e = restart_stocks[f['code']] = {'code': f['code'], 'name': f['name'] or f['code'], 'prev': f.get('prev_chain', 0), 'themes': []}
+                    if f.get('prev_chain', 0) > e['prev']:
+                        e['prev'] = f['prev_chain']
+                    if not any(t['theme'] == th['theme'] for t in e['themes']):
+                        e['themes'].append({'plate': pt['plate_name'], 'theme': th['theme']})
+    restart_list = sorted(restart_stocks.values(), key=lambda x: (-x['prev'], x['name']))
 
     today_bj = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
     return {
@@ -2666,6 +2947,7 @@ def _build_theme_wind_strength(top_n=10):
         'plates': plates_out,
         'codes': sorted(all_codes),
         'ladder': ladder,
+        'restart_stocks': restart_list,
     }
 
 
@@ -6112,6 +6394,8 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
     background: rgba(0,0,0,0.7); backdrop-filter: blur(4px);
 }
 .kline-modal-overlay.active { display: flex; align-items: center; justify-content: center; }
+/* 股票详情弹框层级高于板块联动弹框（联动弹框内点股票名 → 详情弹框盖在最上面） */
+#dsStockModal { z-index: 1100; }
 .kline-modal {
     background: #16213e; border-radius: 16px; border: 1px solid #0f3460;
     width: 90%; max-width: 900px; max-height: 90vh; overflow-y: auto;
@@ -6390,6 +6674,57 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 .rt-lb-5 { background: rgba(156,39,176,0.3); color: #ce93d8; }
 .rt-lb-high { background: linear-gradient(135deg, #e94560, #ff4081); color: #fff; }
 
+/* 今日涨停表 · 涨停板结构 chip（紧凑静态文本） */
+.zt-struct {
+    display: inline-block; font-size: 0.74em; color: #fde68a;
+    background: rgba(251,191,36,0.1); border: 1px solid rgba(251,191,36,0.35);
+    border-radius: 8px; padding: 1px 6px; white-space: nowrap;
+}
+/* 今日涨停表 · 板块联动按钮（青字蓝框小按钮） */
+.zt-link-btn {
+    font-size: 0.74em; color: #67e8f9; background: rgba(34,211,238,0.08);
+    border: 1px solid rgba(34,211,238,0.45); border-radius: 8px; padding: 1px 8px;
+    cursor: pointer; white-space: nowrap;
+}
+.zt-link-btn:hover { color: #fff; background: rgba(34,211,238,0.25); box-shadow: 0 0 8px rgba(34,211,238,0.4); }
+
+/* ===== 今日涨停表 · 连板呼吸灯 + 断板重启跑马灯（仅 zt-today-table 作用域） ===== */
+.zt-today-table tr.zt-row-lb-1 { --zt-breath: rgba(0,123,255,0.5); }
+.zt-today-table tr.zt-row-lb-2 { --zt-breath: rgba(255,152,0,0.55); }
+.zt-today-table tr.zt-row-lb-3 { --zt-breath: rgba(255,87,34,0.6); }
+.zt-today-table tr.zt-row-lb-4 { --zt-breath: rgba(233,30,99,0.6); }
+.zt-today-table tr.zt-row-lb-high { --zt-breath: rgba(233,64,87,0.7); }
+.zt-today-table tr.zt-row-restart { --zt-breath: rgba(168,85,247,0.65); }
+.zt-today-table .rt-lb { animation: ztLbBreath 1.8s ease-in-out infinite; }
+@keyframes ztLbBreath {
+    0%, 100% { box-shadow: 0 0 4px var(--zt-breath, rgba(0,212,255,0.3)); }
+    50% { box-shadow: 0 0 14px var(--zt-breath, rgba(0,212,255,0.9)); }
+}
+/* 断板重启行：整行跑马灯扫光 */
+.zt-today-table tr.zt-row-restart td {
+    background-image: linear-gradient(90deg, rgba(168,85,247,0.10) 0%, rgba(255,107,53,0.05) 50%, rgba(168,85,247,0.10) 100%);
+    background-size: 200% 100%;
+    animation: ztRestartSweep 2.4s linear infinite;
+}
+@keyframes ztRestartSweep {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+.zt-today-table tr.zt-row-restart .zt-struct {
+    color: #f0abfc;
+    background: rgba(168,85,247,0.18);
+    border-color: rgba(168,85,247,0.6);
+    background-image: linear-gradient(90deg, rgba(168,85,247,0.1), rgba(255,107,53,0.3), rgba(168,85,247,0.1));
+    background-size: 200% 100%;
+    animation: ztStructMarquee 1.6s linear infinite;
+}
+@keyframes ztStructMarquee {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+/* 重启行 hover 时停扫光，恢复普通行 hover 底色反馈 */
+.zt-today-table tr.zt-row-restart:hover td { animation: none; background-image: none; }
+
 /* Realtime ladder expand/collapse */
 .rt-ladder-row.expanded td { background: #2a3a6a !important; }
 .rt-ladder-detail {
@@ -6455,16 +6790,16 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
     white-space: nowrap;
     border: 1px solid rgba(0,212,255,0.12);
 }
-.kpl-path-l1 { color: #00d4ff; cursor: pointer; }
-.kpl-path-l2 { color: #4fc3f7; cursor: pointer; }
-.kpl-path-l3 { color: #ffb74d; cursor: pointer; }
+.kpl-path-l1 { color: #fde047; cursor: pointer; }
+.kpl-path-l2 { color: #facc15; cursor: pointer; }
+.kpl-path-l3 { color: #fbbf24; cursor: pointer; }
 .kpl-path-l1:hover, .kpl-path-l2:hover, .kpl-path-l3:hover { text-decoration: underline; }
 .kpl-path-sep { color: #555; margin: 0 3px; user-select: none; }
 
 .lu-chip {
     display: inline-block;
     background: #3d1f00;
-    color: #ffa726;
+    color: #fde047;
     padding: 1px 6px;
     border-radius: 3px;
     font-size: 0.78em;
@@ -6892,6 +7227,7 @@ td.lt-trajectory-cell {
 .ea-board-badge { flex: 0 0 auto; font-size: 0.7em; font-weight: 700; border-radius: 8px; padding: 1px 7px; margin-top: 1px; }
 .ea-board-badge.gem { color: #22d3ee; background: rgba(34,211,238,0.1); border: 1px solid rgba(34,211,238,0.45); }
 .ea-board-badge.star { color: #60a5fa; background: rgba(96,165,250,0.1); border: 1px solid rgba(96,165,250,0.45); }
+.ea-board-badge.main { color: #fcd34d; background: rgba(252,211,77,0.1); border: 1px solid rgba(252,211,77,0.45); }
 .ea-board-empty { font-size: 0.74em; color: #64748b; padding-top: 3px; }
 .ea-chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .ea-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 0.74em; background: rgba(30,41,59,0.6); border: 1px solid rgba(148,163,184,0.35); border-radius: 8px; padding: 1px 6px; white-space: nowrap; }
@@ -6906,6 +7242,8 @@ td.lt-trajectory-cell {
 .ea-pct.down { color: #22c55e; }
 .ea-group { margin-top: 6px; border-left: 2px solid rgba(34,211,238,0.4); padding-left: 6px; }
 .ea-group-title { display: inline-block; font-size: 0.76em; font-weight: 700; color: #67e8f9; background: rgba(34,211,238,0.08); border: 1px solid rgba(34,211,238,0.4); border-radius: 6px; padding: 0 6px; margin: 2px 0 4px; }
+.ea-plate { display: inline-block; font-size: 0.76em; font-weight: 700; color: #fbbf24; background: rgba(251,191,36,0.1); border: 1px solid rgba(251,191,36,0.45); border-radius: 6px; padding: 0 6px; margin: 2px 6px 4px 0; }
+.ea-link-meta { font-size: 0.72em; color: #94a3b8; margin: 2px 0 6px; }
 /* 连板序号标记 - 暖色渐变背景 + 圆角标签 */
 .lt-marker {
     display: inline-flex; align-items: center; justify-content: center;
@@ -7108,6 +7446,9 @@ td.lt-trajectory-cell {
 .tws-subtheme-main { grid-column: 1 / -1; border-color: rgba(255,215,0,.45); box-shadow: 0 0 14px rgba(255,215,0,.12); }
 .tws-subtheme-head { font-size: 0.85em; font-weight: 700; color: #ffd700; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .tws-subtheme-main-head { color: #ffd700; font-size: 0.95em; text-shadow: 0 0 8px rgba(255,215,0,.25); }
+/* 细分题材名 → 跳转KPL涨停深挖查询 链接 */
+.tws-theme-kpl-link { cursor: pointer; color: #fde047; border-bottom: 1px dashed rgba(253,224,71,0.55); padding: 0 2px; white-space: nowrap; }
+.tws-theme-kpl-link:hover { color: #fff; border-bottom-color: #fde047; text-shadow: 0 0 6px rgba(253,224,71,0.6); }
 .tws-code { color: #8b949e; font-size: 0.82em; font-weight: 400; white-space: nowrap; }
 .tws-cols { display: flex; gap: 8px; align-items: flex-start; }
 .tws-col { position: relative; flex: 1 1 0; min-width: 0; background: rgba(22,33,62,.4); border: 1px solid rgba(255,255,255,.08); border-radius: 8px; padding: 6px 8px; }
@@ -8376,6 +8717,18 @@ td.lt-trajectory-cell {
                 <span class="kline-modal-close" onclick="closeDsStockModal()">&times;</span>
             </div>
             <div id="dsStockModalBody"></div>
+        </div>
+    </div>
+    <!-- 板块联动弹窗（今日涨停表 🔗 联动）：拆题材 → 今日主板同题材 + 近20日大涨池（主/创/科） -->
+    <div id="ztLinkageModal" class="kline-modal-overlay" onclick="if(event.target===this)closeZtLinkageModal()">
+        <div class="kline-modal" style="max-width:720px;max-height:86vh;display:flex;flex-direction:column;">
+            <div class="kline-modal-header">
+                <div class="kline-modal-title-area">
+                    <h3 id="ztLinkageModalTitle" style="margin:0;">Loading...</h3>
+                </div>
+                <span class="kline-modal-close" onclick="closeZtLinkageModal()">&times;</span>
+            </div>
+            <div id="ztLinkageModalBody" style="overflow-y:auto;padding:10px 14px;"></div>
         </div>
     </div>
     </div>
@@ -14788,7 +15141,7 @@ function _renderLuReasons(el, code) {
             return freq[b] - freq[a];
         }).slice(0, 10);
         var chips = sortedTags.map(function(tag) {
-            return '<span class="lu-chip lu-chip-clickable" data-tag="' + tag.replace(/"/g, '') + '" onclick="searchLuTag(this)">' + tag + ' <span class="lu-chip-freq">' + freq[tag] + '</span></span>';
+            return '<span class="lu-chip lu-chip-clickable" data-tag="' + tag.replace(/"/g, '') + '" title="点击跳转KPL涨停深挖查询" onclick="jumpToKplSearch(this.getAttribute(\\x27data-tag\\x27))">' + tag + ' <span class="lu-chip-freq">' + freq[tag] + '</span></span>';
         }).join('');
         el.innerHTML = '<div style="margin-top:3px;">' + chips + '</div>';
     } else {
@@ -14808,7 +15161,7 @@ function _renderLuReasons(el, code) {
             return freq[b] - freq[a];
         }).slice(0, 10);
         var chips = sortedTags.map(function(tag) {
-            return '<span class="lu-chip lu-chip-clickable" data-tag="' + tag.replace(/"/g, '') + '" onclick="searchLuTag(this)">' + tag + ' <span class="lu-chip-freq">' + freq[tag] + '</span></span>';
+            return '<span class="lu-chip lu-chip-clickable" data-tag="' + tag.replace(/"/g, '') + '" title="点击跳转KPL涨停深挖查询" onclick="jumpToKplSearch(this.getAttribute(\\x27data-tag\\x27))">' + tag + ' <span class="lu-chip-freq">' + freq[tag] + '</span></span>';
         }).join('');
         if (chips) {
             el.innerHTML = '<div style="margin-top:3px;">' + chips + '</div>';
@@ -16363,20 +16716,34 @@ function _twsRenderBoardSummary(twsData) {
         }
         h += '</div>';
     }
-    // ---- 断板重启：theme.focus 中 type==='restart'，同样按 code 合并 ----
+    // ---- 断板重启：直接遍历后端市场级 restart_stocks（含非 Top-10 板块），按 code 合并主题标签 ----
     var rsMap = {};
-    for (var q = 0; q < twsData.plates.length; q++) {
-        var pp = twsData.plates[q];
-        for (var w = 0; w < (pp.themes || []).length; w++) {
-            var th2 = pp.themes[w];
-            for (var u = 0; u < (th2.focus || []).length; u++) {
-                var f = th2.focus[u];
-                if (f.type !== 'restart') continue;
-                var re = rsMap[f.code];
-                if (!re) { re = rsMap[f.code] = { code: f.code, name: f.name || '', prev: f.prev_chain, themes: [] }; }
-                if (f.prev_chain > re.prev) re.prev = f.prev_chain;
-                if (!_twsHasTheme(re.themes, th2.theme)) re.themes.push({ plate: pp.plate_name, theme: th2.theme });
+    var rsSrc = (twsData.restart_stocks || []).length ? twsData.restart_stocks : (function() {
+        // 兼容旧数据：从 theme.focus 中 type==='restart' 聚合（无 restart_stocks 字段时兜底）
+        var m = {};
+        for (var q = 0; q < twsData.plates.length; q++) {
+            var pp = twsData.plates[q];
+            for (var w = 0; w < (pp.themes || []).length; w++) {
+                var th2 = pp.themes[w];
+                for (var u = 0; u < (th2.focus || []).length; u++) {
+                    var f = th2.focus[u];
+                    if (f.type !== 'restart') continue;
+                    var re = m[f.code];
+                    if (!re) { re = m[f.code] = { code: f.code, name: f.name || '', prev: f.prev_chain, themes: [] }; }
+                    if (f.prev_chain > re.prev) re.prev = f.prev_chain;
+                    if (!_twsHasTheme(re.themes, th2.theme)) re.themes.push({ plate: pp.plate_name, theme: th2.theme });
+                }
             }
+        }
+        return Object.keys(m).map(function(k) { return m[k]; });
+    })();
+    for (var q = 0; q < rsSrc.length; q++) {
+        var rs = rsSrc[q];
+        var re = rsMap[rs.code];
+        if (!re) { re = rsMap[rs.code] = { code: rs.code, name: rs.name || '', prev: rs.prev || 0, themes: [] }; }
+        if ((rs.prev || 0) > re.prev) re.prev = rs.prev || 0;
+        for (var u = 0; u < (rs.themes || []).length; u++) {
+            if (!_twsHasTheme(re.themes, rs.themes[u].theme)) re.themes.push({ plate: rs.themes[u].plate || '', theme: rs.themes[u].theme });
         }
     }
     var rsEntries = [];
@@ -16634,7 +17001,8 @@ function _twsRenderSubTheme(th, isMain) {
     var ztList = th.lianban_stocks || {};
     var members = th.members || {};
     var h = '<div class="tws-subtheme' + (isMain ? ' tws-subtheme-main' : '') + '" data-theme="' + _kplEsc(th.theme) + '">';
-    h += '<div class="tws-subtheme-head' + (isMain ? ' tws-subtheme-main-head' : '') + '">' + _kplEsc(th.theme) + ' · ' + th.zt_count + '涨停</div>';
+    var themeTxt = (th.theme || '').replace(/'/g, '');
+    h += '<div class="tws-subtheme-head' + (isMain ? ' tws-subtheme-main-head' : '') + '"><span class="tws-theme-kpl-link" title="点击跳转KPL涨停深挖查询" onclick="event.stopPropagation();jumpToKplSearch(\\x27' + themeTxt + '\\x27)">🔍 ' + _kplEsc(th.theme) + '</span> · ' + th.zt_count + '涨停</div>';
     h += '<div class="tws-cols">';
     h += _twsRenderBoardCol('主板', ztList.main, members.main, 'main');
     h += _twsRenderBoardCol('创业板', ztList.gem, members.gem, 'gem');
@@ -17718,20 +18086,37 @@ function renderTodayZtList(stocks) {
         var s = String(t).padStart(6, '0');
         return s.slice(0, 2) + ':' + s.slice(2, 4);
     }
-    var html = '<table class="rt-zt-table"><tr><th>#</th><th>代码</th><th style="white-space:nowrap;min-width:90px;">名称</th><th style="min-width:90px;white-space:nowrap;">封板时间</th><th>连板</th><th>概念</th></tr>';
+    var html = '<table class="rt-zt-table zt-today-table"><tr><th>#</th><th>代码</th><th style="white-space:nowrap;min-width:90px;">名称</th><th style="min-width:90px;white-space:nowrap;">封板时间</th><th>连板</th><th>涨停板结构</th><th>板块联动</th><th>概念</th></tr>';
     stocks.forEach(function(s, i) {
         var lb = s.lianban || 0;
+        var lbCls = lb >= 5 ? 'high' : Math.min(lb || 1, 5);
+        var rowCls = 'clickable zt-row-lb-' + lbCls;
+        if ((s.board_structure || '').indexOf('重启') !== -1) rowCls += ' zt-row-restart';
         var rankStr = (i + 1) <= 3 ? ['🥇', '🥈', '🥉'][i] : (i + 1);
-        html += '<tr class="clickable" data-code="' + s.code + '" data-name="' + s.name + '">';
+        html += '<tr class="' + rowCls + '" data-code="' + s.code + '" data-name="' + s.name + '">';
         html += '<td style="font-size:0.9em;">' + rankStr + '</td>';
         html += '<td><strong>' + s.code + '</strong></td>';
         html += '<td style="white-space:nowrap;">' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code)) + '<span class="link-stock-name" onclick="event.stopPropagation();stockQueryGoTo(\\x27' + (s.name||'').replace(/'/g,'') + '\\x27)">' + (s.name || '') + '</span></td>';
         html += '<td style="color:#4fc3f7;font-weight:bold;font-size:0.9em;white-space:nowrap;">' + fmtTime(s.first_time) + '</td>';
         html += '<td>' + renderLbBadge(lb) + '</td>';
-        html += '<td>' + renderConceptChips(s.concepts, s.code, s.name) + '</td></tr>';
+        html += '<td><span class="zt-struct">' + (s.board_structure || '') + '</span></td>';
+        html += '<td><button class="zt-link-btn" onclick="event.stopPropagation();openZtLinkageModal(\\x27' + s.code + '\\x27,\\x27' + (s.name||'').replace(/'/g,'') + '\\x27)" title="查看该股题材板块联动">🔗 联动</button></td>';
+        html += '<td>' + _conceptCellPlaceholder(s.code, s.name) + '</td></tr>';
     });
     html += '</table>';
     return html;
+}
+
+// 今日涨停表概念列占位：只输出涨停理由 + KPL概念路径容器（去同花顺 THS chips），其余表不受影响
+function _conceptCellPlaceholder(code, name) {
+    var h = '';
+    if (code) {
+        h += '<div class="lu-reasons" data-code="' + code + '"></div>';
+    }
+    if (code && name) {
+        h += '<div class="kpl-paths" data-code="' + code + '" data-name="' + name + '"></div>';
+    }
+    return h;
 }
 
 function renderHotStocksTable(stocks) {
@@ -18849,6 +19234,99 @@ function closeDsStockModal() {
     _dsStockNavList = [];
     _dsStockNavIndex = -1;
     _dsStockConcept = '';
+}
+
+// ===== 板块联动弹窗（今日涨停表 🔗 联动）=====
+function openZtLinkageModal(code, name) {
+    var modal = document.getElementById('ztLinkageModal');
+    var title = document.getElementById('ztLinkageModalTitle');
+    var body = document.getElementById('ztLinkageModalBody');
+    if (!modal || !body) return;
+    title.textContent = (name || '') + (code ? ' ' + code : '') + ' · 板块联动';
+    body.innerHTML = '<div class="loading">加载板块联动数据...</div>';
+    modal.classList.add('active');
+    fetch('/api/zt_board_linkage?code=' + encodeURIComponent(code))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data || data.error) {
+                body.innerHTML = '<div class="empty">暂无 KPL 板块联动数据</div>';
+                return;
+            }
+            renderZtLinkagePanel(data);
+        })
+        .catch(function() {
+            body.innerHTML = '<div class="empty">数据加载失败</div>';
+        });
+}
+
+function closeZtLinkageModal() {
+    var modal = document.getElementById('ztLinkageModal');
+    if (modal) modal.classList.remove('active');
+}
+
+// 联动 chip：名称 + ★(近20日涨停) + 涨停(今日) + ↑强涨 + 涨停板结构 + pct（30s 轮询回填）
+function _ztLinkageChip(m) {
+    var s = '<span class="ea-chip' + (m.today_zt ? ' zt' : '') + '" data-code="' + m.code + '" onclick="event.stopPropagation();openDsStockFromRhythm(\\x27' + (m.name||'').replace(/'/g,'') + '\\x27,\\x27' + m.code + '\\x27,\\x27\\x27,[],-1)" title="点击查看股票详情">';
+    s += '<span class="ea-stock">' + _kplEsc(m.name) + '</span>';
+    if (m.zt_20d) s += '<span class="ea-z20">★</span>';
+    if (m.today_zt) s += '<span class="ea-chip-zt">涨停</span>';
+    if (m.strong) s += '<span class="ea-chip-zt" style="color:#fde047;border-color:rgba(253,224,71,0.5);background:rgba(253,224,71,0.12);">↑强涨</span>';
+    if (m.board_str) s += '<i style="font-style:normal;color:#fde68a;font-size:0.82em;">' + _kplEsc(m.board_str) + '</i>';
+    s += '<span class="ea-pct" data-code="' + m.code + '">--</span>';
+    s += '</span>';
+    return s;
+}
+
+function renderZtLinkagePanel(data) {
+    var body = document.getElementById('ztLinkageModalBody');
+    if (!body) return;
+    if (!data || data.error || data.no_kpl) {
+        body.innerHTML = '<div class="empty">近200个交易日无KPL涨停原因数据，不显示</div>';
+        return;
+    }
+    var h = '';
+    // head：板块 chip + 标签/简述 + KPL 记录日期
+    if (data.plate_name) h += '<span class="ea-plate">📍 ' + _kplEsc(data.plate_name) + '</span>';
+    h += '<div class="ea-group-title">💡 ' + _kplEsc(data.reason_tag || '')
+        + (data.reason_brief ? ' · ' + _kplEsc(data.reason_brief) : '') + '</div>';
+    h += '<div class="ea-link-meta">标签：' + _kplEsc(data.reason_tag || '-') + ' · 简述：' + _kplEsc(data.reason_brief || '-')
+        + ' · KPL日期：' + _kplEsc(data.date || '-') + '</div>';
+    var tags = data.tags || [];
+    if (!tags.length) {
+        h += '<div class="ea-empty">暂无题材联动数据</div>';
+        body.innerHTML = h;
+        return;
+    }
+    for (var i = 0; i < tags.length; i++) {
+        var t = tags[i];
+        h += '<div class="ea-group"><div class="ea-group-title">「' + _kplEsc(t.tag) + '」</div>';
+        // 今日主板同题材（带涨停板结构）
+        var tm = t.today_main || [];
+        h += '<div class="ea-board"><span class="ea-board-badge main">今日主板</span><span class="ea-chips">';
+        if (tm.length) {
+            for (var k = 0; k < tm.length; k++) h += _ztLinkageChip(tm[k]);
+        } else {
+            h += '<span class="ea-board-empty">无</span>';
+        }
+        h += '</span></div>';
+        // 近20日大涨池：主/创/科
+        var pool = t.pool || {};
+        var buckets = [['main', '主板'], ['gem', '创业板'], ['star', '科创板']];
+        for (var b = 0; b < buckets.length; b++) {
+            var key = buckets[b][0];
+            var label = buckets[b][1];
+            var arr = pool[key] || [];
+            h += '<div class="ea-board"><span class="ea-board-badge ' + (key === 'main' ? 'main' : key) + '">' + label + '</span><span class="ea-chips" data-board="' + key + '">';
+            if (arr.length) {
+                for (var c = 0; c < arr.length; c++) h += _ztLinkageChip(arr[c]);
+            } else {
+                h += '<span class="ea-board-empty">无</span>';
+            }
+            h += '</span></div>';
+        }
+        h += '</div>';
+    }
+    body.innerHTML = h;
 }
 
 // ===== KPL涨停深挖搜索 =====
@@ -22555,9 +23033,9 @@ function _fillKplPaths() {
         var parts = [];
         for (var pi = 0; pi < paths.length; pi++) {
             var p = paths[pi];
-            var p1 = '<span class="kpl-path-l1" onclick="sqJumpToKpl(\\x27' + p.l1.replace(/'/g, '') + '\\x27)">' + _kplEsc(p.l1) + '</span>';
-            var p2 = '<span class="kpl-path-l2" onclick="sqJumpToKpl(\\x27' + p.l2.replace(/'/g, '') + '\\x27)">' + _kplEsc(p.l2) + '</span>';
-            var p3 = '<span class="kpl-path-l3" onclick="sqJumpToKpl(\\x27' + p.l3.replace(/'/g, '') + '\\x27)">' + _kplEsc(p.l3) + '</span>';
+            var p1 = '<span class="kpl-path-l1" title="点击跳转KPL涨停深挖查询" onclick="jumpToKplSearch(\\x27' + p.l1.replace(/'/g, '') + '\\x27)">' + _kplEsc(p.l1) + '</span>';
+            var p2 = '<span class="kpl-path-l2" title="点击跳转KPL涨停深挖查询" onclick="jumpToKplSearch(\\x27' + p.l2.replace(/'/g, '') + '\\x27)">' + _kplEsc(p.l2) + '</span>';
+            var p3 = '<span class="kpl-path-l3" title="点击跳转KPL涨停深挖查询" onclick="jumpToKplSearch(\\x27' + p.l3.replace(/'/g, '') + '\\x27)">' + _kplEsc(p.l3) + '</span>';
             parts.push('<span class="kpl-path-chip">' + p1 + '<span class="kpl-path-sep">›</span>' + p2 + '<span class="kpl-path-sep">›</span>' + p3 + '</span>');
         }
         el.innerHTML = '<span class="kpl-path-label" style="color:#888;margin-right:4px;">📋</span> ' + parts.join(' ');
@@ -22775,6 +23253,13 @@ function _kplRenderL3(item, l1Key, l2Key) {
 function _kplEsc(s) {
     if (!s) return '';
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// 跳转 KPL涨停深挖 查询指定关键词（各题材/概念链接共用）
+function jumpToKplSearch(term) {
+    if (!term) return;
+    switchTab('kplsearch');
+    setTimeout(function(){ doKplSearch(term); }, 100);
 }
 
 // ===== Tree Interaction =====
@@ -26542,10 +27027,47 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == '/api/realtime_zt':
             try:
+                _kpl_ensure_loaded()
                 result = _get_zt_from_akshare()
+                if result:
+                    date_str = result[0].get('trade_date', '') or ''
+                    date_fmt = ''
+                    if len(date_str) >= 8 and date_str.isdigit():
+                        date_fmt = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+                    for s in result:
+                        s['board_structure'] = _kpl_board_structure(s.get('code', ''), date_fmt, s.get('lianban'))
                 self._respond_json(result or [], cors_headers)
             except Exception as e:
                 self._respond_json([], cors_headers)
+
+        elif path == '/api/zt_board_linkage':
+            # 板块联动弹窗：某涨停股拆题材 → 今日主板同题材 + 大涨池（主板近20日 / 创科近200日）
+            code = query.get('code', [''])[0].strip()
+            if not code:
+                self._respond_json({'error': 'missing code'}, cors_headers)
+            else:
+                try:
+                    now_bj = datetime.now(timezone(timedelta(hours=8)))
+                    today_ymd = now_bj.strftime('%Y%m%d')
+                    today_fmt = now_bj.strftime('%Y-%m-%d')
+                    # 今日为交易日且已有数据（盘后日文件 / 盘中 live）才锚定今日；否则回退最近数据交易日（与题材风向同口径）
+                    if today_ymd in _trading_days and (today_fmt + '.json' in _kpl_day_files or _is_trading_hours()):
+                        date_str = today_ymd
+                    else:
+                        date_str = _kpl_resolve_latest_zt_date() or today_ymd
+                    date_fmt = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+                    cache_key = 'zt_board_linkage:' + code
+                    ttl = 60 if _is_trading_hours() else 600   # 盘中60s / 盘后600s
+                    result = _get_cached(cache_key, ttl=ttl)
+                    if result is None:
+                        result = _zt_linkage_panel(code, date_fmt)
+                        if result is not None:
+                            _set_cache(cache_key, result)
+                        else:
+                            result = {'no_kpl': True}   # 近200交易日无有效 KPL 板块/标签/简述，不写缓存
+                    self._respond_json(result, cors_headers)
+                except Exception as e:
+                    self._respond_json({'error': str(e)}, cors_headers)
 
         elif path == '/api/realtime_prices':
             codes_str = query.get('codes', [''])[0].strip()
@@ -27011,7 +27533,7 @@ class Handler(BaseHTTPRequestHandler):
                             if lb < 2:
                                 continue
                             for i in range(1, lb):
-                                c_ymd = finder._get_lagged_date(d_ymd, -i)
+                                c_ymd = _kpl_lagged_day(d_ymd, -i)
                                 if not c_ymd or c_ymd < window_start_ymd:
                                     break
                                 c_fmt = '%s-%s-%s' % (c_ymd[:4], c_ymd[4:6], c_ymd[6:])
