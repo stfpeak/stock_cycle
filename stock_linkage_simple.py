@@ -125,7 +125,7 @@ _kpl_top_tags_cache_timestamp = 0  # 上次成功写入时间戳
 _ELASTIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'elastic_arbitrage')
 _elastic_lock = threading.Lock()
 _elastic_kw_cache = {}          # keyword → {'gem': set, 'star': set, 'main': set} 题材成分股反查缓存（跨天清空）
-_ELASTIC_VERSION = 3            # 磁盘数据格式版本，递增使旧缓存自动失效重算（v2: tags去泛概念 + groups按题材分组；v3: 成分反查改 _kw_hit_fn 词首匹配，失效 CRO 误收 Mini/Micro 面板股的旧缓存）
+_ELASTIC_VERSION = 4            # 磁盘数据格式版本，递增使旧缓存自动失效重算（v2: tags去泛概念 + groups按题材分组；v3: 成分反查改 _kw_hit_fn 词首匹配，失效 CRO 误收 Mini/Micro 面板股的旧缓存；v4: 成员新增 lianban/prev_lianban/promoted 盘中晋级标识）
 _ELASTIC_MEMBER_CAP = 12        # 每组（创/科）成员展示上限
 _ELASTIC_CARD_CAP = 30          # 连板股卡上限
 
@@ -1208,6 +1208,25 @@ def _kpl_today_zt_snapshot():
     return _today_zt_snap_cache
 
 
+def _kpl_today_lianban(code, date_fmt):
+    """今日连板数（弹性套利盘中晋级标识用）：
+    盘中优先 _kpl_today_zt_snapshot()（akshare 实时连板），盘后回退 _kpl_compute_lianban（KPL 日文件），无数据兜底 1。"""
+    snap = _kpl_today_zt_snapshot()
+    if snap and code in snap:
+        lb = snap[code].get('lianban', 0)
+        if lb >= 1:
+            try:
+                return int(lb)
+            except (TypeError, ValueError):
+                pass
+    if date_fmt:
+        try:
+            return int(_kpl_compute_lianban(code, date_fmt))
+        except (TypeError, ValueError):
+            pass
+    return 1
+
+
 def _kpl_today_live_rows():
     """盘中 akshare 实时涨停池合成 KPL 行（60s 内存缓存），供 KPL涨停深挖 盘中实时查询。
     非交易时段 / 今日日文件已存在 / 拉取失败 → 返回 []（盘后走固定日数据，避免重复注入）。
@@ -1524,6 +1543,50 @@ def _zt_linkage_panel(code, date_fmt):
         'date': kpl.get('date', '') or '',
         'tags': out_tags,
     }
+
+
+def _kpl_today_tag_rows(date_fmt):
+    """今日全市场涨停股按有效标签索引（联动弹框同口径：仅 KPL 标签/简述，A+B 拆分去泛概念）。
+    返回 {tag: [KPL行,...]}；date_fmt 为空返回 {}。"""
+    out = {}
+    if not date_fmt:
+        return out
+    rows = list(_kpl_rows_by_date.get(date_fmt) or []) + list(_kpl_today_live_rows() or [])
+    for r in rows:
+        for t in _traj_valid_tags(r.get('reason_tag', '') or '', r.get('reason_brief', '') or ''):
+            out.setdefault(t, []).append(r)
+    return out
+
+
+def _kpl_today_echelon(code, date_fmt, tag_rows, today_lb):
+    """今日涨停股所属细分题材今日涨停梯队（今日涨停表「涨停板结构」列改版）：
+    _kpl_resolve_stock_kpl 解析本股题材（仅 KPL 标签/简述，A+B 拆开），逐题材聚合今日全部同题材涨停股
+    （tag_rows，不遗漏），按板块（主/创/科）+ 连板级（4板+/3板/2板/首板）分级。
+    返回 [{tag, boards:{main/gem/star:{level:[{code,name}]}}}]；本股无有效题材返回 None。"""
+    if not code or not date_fmt:
+        return None
+    kpl = _kpl_resolve_stock_kpl(code, date_fmt)
+    if not kpl:
+        return None
+    tags = kpl.get('tags') or []
+    if not tags:
+        return None
+    out = []
+    for t in tags:
+        rows = tag_rows.get(t) or []
+        boards = {'main': {}, 'gem': {}, 'star': {}}
+        for r in rows:
+            c = r.get('stock_code', '')
+            if not c:
+                continue
+            name = (r.get('stock_name', '') or '') or _elastic_stock_name(c)
+            b = _kpl_board_of_code(c)
+            bucket = 'gem' if b == '创' else ('star' if b == '科' else 'main')
+            lb = int(today_lb.get(c, 1) or 1)
+            level = '4' if lb >= 4 else str(lb)
+            boards[bucket].setdefault(level, []).append({'code': c, 'name': name})
+        out.append({'tag': t, 'boards': boards})
+    return out
 
 
 def _kpl_group_expectations(date_fmt, stocks_by_tag):
@@ -3733,24 +3796,31 @@ def _elastic_is_st(name):
     return nm.startswith('*ST') or nm.startswith('ST') or '退' in nm
 
 
-def _elastic_mk_members(codes_set, zt20_set, today_zt_codes):
-    """按单个题材的成员 code 集 + 该题材 zt20 命中集构建成员列表：ST 过滤 + zt_20d/today_zt 排序 + 截断。"""
+def _elastic_mk_members(codes_set, zt20_set, today_zt_codes, date_fmt):
+    """按单个题材的成员 code 集 + 该题材 zt20 命中集构建成员列表：ST 过滤 + zt_20d/today_zt 排序 + 截断。
+    盘中晋级标识：今日涨停成员取当日连板数 lianban（盘中 akshare / 盘后 KPL），
+    promoted = 今日涨停且 lianban >= 2（盘中晋级，如 x板 → x+1板）。"""
     out = []
     for c in codes_set:
         nm = _elastic_stock_name(c)
         if _elastic_is_st(nm):
             continue
+        today_zt = c in today_zt_codes
+        lianban = _kpl_today_lianban(c, date_fmt) if today_zt else 0
         out.append({
             'code': c,
             'name': nm,
             'zt_20d': bool(c in zt20_set),
-            'today_zt': c in today_zt_codes,
+            'today_zt': today_zt,
+            'lianban': lianban,
+            'prev_lianban': (lianban - 1) if (today_zt and lianban >= 1) else 0,
+            'promoted': bool(today_zt and lianban >= 2),
         })
     out.sort(key=lambda e: (-e['zt_20d'], -e['today_zt'], e['name']))
     return out[:_ELASTIC_MEMBER_CAP]
 
 
-def _elastic_build_card_groups(code, tags, zt20, today_zt_codes):
+def _elastic_build_card_groups(code, tags, zt20, today_zt_codes, date_fmt):
     """逐题材分组：每 tag 独立反查创/科成员并归因该 tag 的 zt20，双空组保留（前端空态提示）。
     返回 [{'tag': t, 'gem': [...], 'star': [...]}]"""
     groups = []
@@ -3761,8 +3831,8 @@ def _elastic_build_card_groups(code, tags, zt20, today_zt_codes):
         star_set = {c for c in kw_res['star'] if c != code}
         groups.append({
             'tag': kw,
-            'gem': _elastic_mk_members(gem_set, kw_zt20, today_zt_codes),
-            'star': _elastic_mk_members(star_set, kw_zt20, today_zt_codes),
+            'gem': _elastic_mk_members(gem_set, kw_zt20, today_zt_codes, date_fmt),
+            'star': _elastic_mk_members(star_set, kw_zt20, today_zt_codes, date_fmt),
         })
     return groups
 
@@ -3817,7 +3887,7 @@ def _elastic_build_preset(date_fmt):
             all_tags.add(t)
     zt20 = _elastic_zt20_map(date_fmt, all_tags)
     for c in cards:
-        c['groups'] = _elastic_build_card_groups(c['code'], c['tags'], zt20, today_zt_codes)
+        c['groups'] = _elastic_build_card_groups(c['code'], c['tags'], zt20, today_zt_codes, date_fmt)
     cards.sort(key=lambda c: (-c['lianban'], c['name']))
     cards = cards[:_ELASTIC_CARD_CAP]
     return {
@@ -3870,17 +3940,21 @@ def _elastic_build_live(data):
         zt20 = _elastic_zt20_map(data.get('date', ''), all_tags)
         snap_codes = set(snap.keys())
         for c in new_cards:
-            c['groups'] = _elastic_build_card_groups(c['code'], c['tags'], zt20, snap_codes)
+            c['groups'] = _elastic_build_card_groups(c['code'], c['tags'], zt20, snap_codes, data.get('date', ''))
         data['cards'].extend(new_cards)
         data['live_added'] = int(data.get('live_added', 0)) + len(new_cards)
         data['cards'].sort(key=lambda c: (-c['lianban'], c['name']))
         data['cards'] = data['cards'][:_ELASTIC_CARD_CAP]
         data['codes'] = _elastic_all_codes(data['cards'])
-    # 既有卡片成员 today_zt 更新为实时池命中（新卡已在 snap_codes 下计算）
+    # 既有卡片成员 today_zt 更新为实时池命中 + 晋级标识同步刷新（盘中晋级即时生效；新卡已在 snap_codes 下计算）
     for c in data.get('cards', []):
         for g in c.get('groups', []):
             for m in g.get('gem', []) + g.get('star', []):
                 m['today_zt'] = m['code'] in snap
+                lb = _kpl_today_lianban(m['code'], data.get('date', '')) if m['today_zt'] else 0
+                m['lianban'] = lb
+                m['prev_lianban'] = (lb - 1) if (m['today_zt'] and lb >= 1) else 0
+                m['promoted'] = bool(m['today_zt'] and lb >= 2)
     if new_cards:
         _elastic_save(data.get('date', ''), data)
     return data
@@ -6687,6 +6761,22 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
     cursor: pointer; white-space: nowrap;
 }
 .zt-link-btn:hover { color: #fff; background: rgba(34,211,238,0.25); box-shadow: 0 0 8px rgba(34,211,238,0.4); }
+/* 今日涨停表 · 细分题材今日涨停梯队（涨停板结构列改版） */
+.zt-ec-block { display: flex; flex-direction: column; gap: 2px; max-width: 340px; }
+.zt-ec-tag { display: inline-block; align-self: flex-start; font-size: 0.72em; font-weight: 700; color: #67e8f9; background: rgba(34,211,238,0.1); border: 1px solid rgba(34,211,238,0.45); border-radius: 6px; padding: 0 5px; margin-bottom: 2px; }
+.zt-ec-row { font-size: 0.72em; line-height: 1.55; color: #cbd5e1; }
+.zt-ec-bd { display: inline-block; font-weight: 700; border-radius: 5px; padding: 0 4px; margin-right: 2px; vertical-align: baseline; }
+.zt-ec-bd.main { color: #fcd34d; background: rgba(252,211,77,0.12); border: 1px solid rgba(252,211,77,0.45); }
+.zt-ec-bd.gem { color: #22d3ee; background: rgba(34,211,238,0.1); border: 1px solid rgba(34,211,238,0.45); }
+.zt-ec-bd.star { color: #60a5fa; background: rgba(96,165,250,0.1); border: 1px solid rgba(96,165,250,0.45); }
+.zt-ec-lv { display: inline-block; font-weight: 700; border-radius: 4px; padding: 0 3px; margin-right: 3px; }
+.zt-ec-lv.lv4 { color: #ffd700; background: rgba(255,215,0,0.14); border: 1px solid rgba(255,215,0,0.5); }
+.zt-ec-lv.lv3 { color: #fbbf24; background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.45); }
+.zt-ec-lv.lv2 { color: #fb923c; background: rgba(251,146,60,0.12); border: 1px solid rgba(251,146,60,0.45); }
+.zt-ec-lv.lv1 { color: #f87171; background: rgba(248,113,113,0.12); border: 1px solid rgba(248,113,113,0.45); }
+.zt-ec-sep { color: #475569; margin: 0 3px; }
+.zt-ec-self { color: #ffd700; font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
+.zt-ec-empty { font-size: 0.72em; color: #64748b; }
 
 /* ===== 今日涨停表 · 连板呼吸灯 + 断板重启跑马灯（仅 zt-today-table 作用域） ===== */
 .zt-today-table tr.zt-row-lb-1 { --zt-breath: rgba(0,123,255,0.5); }
@@ -7235,6 +7325,8 @@ td.lt-trajectory-cell {
 .ea-chip.zt .ea-chip-zt { color: #fecaca; }
 .ea-z20 { color: #ffd700; font-size: 0.9em; }
 .ea-chip-zt { color: #f87171; font-size: 0.72em; font-weight: 700; background: rgba(248,113,113,0.15); border: 1px solid rgba(248,113,113,0.5); border-radius: 6px; padding: 0 3px; }
+/* 弹性套利 · 盘中晋级小徽标（金=晋级约定，与 .ea-chip-zt 红系区分）：x板 → 晋级 x+1板 */
+.ea-chip-promo { color: #ffd700; font-size: 0.72em; font-weight: 700; background: rgba(255,215,0,0.14); border: 1px solid rgba(255,215,0,0.55); border-radius: 6px; padding: 0 3px; }
 .ea-zt-badge { color: #fff; font-size: 0.66em; font-weight: 800; background: linear-gradient(135deg, #ef4444, #dc2626); border-radius: 5px; padding: 0 4px; box-shadow: 0 0 6px rgba(239,68,68,0.6); }
 .ea-pct { font-size: 0.9em; font-weight: 700; min-width: 46px; text-align: right; color: #94a3b8; }
 .ea-pct.up { color: #ef4444; }
@@ -16265,7 +16357,15 @@ function _eaRenderCard(card, rowIdx) {
 
 function _eaChip(m) {
     var starMark = m.zt_20d ? '<span class="ea-z20" title="近20日涨停过">★</span>' : '';
-    var ztMark = m.today_zt ? '<span class="ea-chip-zt" title="今日涨停">板</span>' : '';
+    var ztMark = '';
+    if (m.today_zt) {
+        if (m.promoted) {
+            // 盘中晋级：x板 → 晋级 x+1板
+            ztMark = '<span class="ea-chip-zt" title="今日涨停">' + (m.prev_lianban || 1) + '板</span><span class="ea-chip-promo" title="盘中晋级">晋级 ' + (m.lianban || 2) + '板</span>';
+        } else {
+            ztMark = '<span class="ea-chip-zt" title="今日首板">首板</span>';
+        }
+    }
     var navIdx = (_eaNavIdx[m.code] !== undefined) ? _eaNavIdx[m.code] : -1;
     return '<span class="ea-chip" data-code="' + m.code + '" title="点击查看 ' + _kplEsc(m.name) + ' 详情" onclick="event.stopPropagation();openDsStockFromRhythm(\\x27' + _kplEsc(m.name) + '\\x27,\\x27' + m.code + '\\x27,\\x27\\x27,_eaNavAll,' + navIdx + ')">' + starMark + _kplEsc(m.name) + ztMark + '<span class="ea-pct" data-code="' + m.code + '">--</span></span>';
 }
@@ -16343,7 +16443,19 @@ function _eaPoll(manual) {
         _eaApplyQuotes(res, codes);
         var data = resArr[1];
         if (!data || !data.cards) return;
-        var fp = data.cards.map(function(c) { return c.code + (c.live_added ? ':L' : ''); }).join('|');
+        // 指纹含成员盘中晋级/今日涨停状态摘要：服务端 30s 更新一次，成员盘中晋级时触发热重渲染
+        var fp = data.cards.map(function(c) {
+            var mState = '';
+            for (var gi = 0; gi < (c.groups || []).length; gi++) {
+                var g = c.groups[gi];
+                var allMs = (g.gem || []).concat(g.star || []);
+                for (var mi = 0; mi < allMs.length; mi++) {
+                    var mm = allMs[mi];
+                    if (mm.today_zt || mm.promoted) mState += mm.code + (mm.promoted ? ':P' + mm.lianban : ':Z' + mm.lianban);
+                }
+            }
+            return c.code + (c.live_added ? ':L' : '') + mState;
+        }).join('|');
         if (fp !== _eaCardsFp) {
             _eaCardsFp = fp;
             var html = renderElasticArbitrage(data);
@@ -18099,11 +18211,54 @@ function renderTodayZtList(stocks) {
         html += '<td style="white-space:nowrap;">' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code)) + '<span class="link-stock-name" onclick="event.stopPropagation();stockQueryGoTo(\\x27' + (s.name||'').replace(/'/g,'') + '\\x27)">' + (s.name || '') + '</span></td>';
         html += '<td style="color:#4fc3f7;font-weight:bold;font-size:0.9em;white-space:nowrap;">' + fmtTime(s.first_time) + '</td>';
         html += '<td>' + renderLbBadge(lb) + '</td>';
-        html += '<td><span class="zt-struct">' + (s.board_structure || '') + '</span></td>';
+        // 涨停板结构列：有细分题材今日涨停梯队（zt_echelon）则渲染梯队，否则回退原板结构串
+        html += '<td>' + (s.zt_echelon ? renderZtEchelon(s.zt_echelon, s.code) : '<span class="zt-struct">' + (s.board_structure || '') + '</span>') + '</td>';
         html += '<td><button class="zt-link-btn" onclick="event.stopPropagation();openZtLinkageModal(\\x27' + s.code + '\\x27,\\x27' + (s.name||'').replace(/'/g,'') + '\\x27)" title="查看该股题材板块联动">🔗 联动</button></td>';
         html += '<td>' + _conceptCellPlaceholder(s.code, s.name) + '</td></tr>';
     });
     html += '</table>';
+    return html;
+}
+
+// 今日涨停表 · 细分题材今日涨停梯队（涨停板结构列改版）：多题材分块；每题材内 主/创/科 × 4板+/3板/2板/首板
+function renderZtEchelon(e, selfCode) {
+    if (!e || !e.length) return '';
+    var html = '';
+    var bdLabel = {main: '主', gem: '创', star: '科'};
+    var lvOrder = ['4', '3', '2', '1'];
+    var lvLabel = {4: '4板+', 3: '3板', 2: '2板', 1: '首板'};
+    for (var i = 0; i < e.length; i++) {
+        var t = e[i];
+        html += '<div class="zt-ec-block">';
+        html += '<div class="zt-ec-tag">「' + _kplEsc(t.tag) + '」</div>';
+        var boards = t.boards || {};
+        var bdKeys = ['main', 'gem', 'star'];
+        var hasRow = false;
+        for (var bi = 0; bi < bdKeys.length; bi++) {
+            var bk = bdKeys[bi];
+            var bd = boards[bk] || {};
+            var parts = [];
+            for (var li = 0; li < lvOrder.length; li++) {
+                var lv = lvOrder[li];
+                var stocks = bd[lv];
+                if (!stocks || !stocks.length) continue;
+                var names = [];
+                for (var si = 0; si < stocks.length; si++) {
+                    var st = stocks[si];
+                    var nm = _kplEsc(st.name);
+                    if (st.code === selfCode) nm = '<span class="zt-ec-self" title="本股">' + nm + '</span>';
+                    names.push(nm);
+                }
+                parts.push('<span class="zt-ec-lv lv' + lv + '">' + lvLabel[lv] + '</span>' + names.join('、'));
+            }
+            if (parts.length) {
+                hasRow = true;
+                html += '<div class="zt-ec-row"><span class="zt-ec-bd ' + bk + '">' + bdLabel[bk] + '</span>' + parts.join('<span class="zt-ec-sep">|</span>') + '</div>';
+            }
+        }
+        if (!hasRow) html += '<div class="zt-ec-empty">今日无同题材涨停</div>';
+        html += '</div>';
+    }
     return html;
 }
 
@@ -27034,8 +27189,21 @@ class Handler(BaseHTTPRequestHandler):
                     date_fmt = ''
                     if len(date_str) >= 8 and date_str.isdigit():
                         date_fmt = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+                    # 细分题材今日涨停梯队：预计算一次 tag_rows / today_lb（避免 O(N²)）
+                    tag_rows = _kpl_today_tag_rows(date_fmt)
+                    today_lb = {}
+                    for s in result:
+                        c = s.get('code', '')
+                        if c:
+                            today_lb[c] = int(s.get('lianban', 0) or 1)
+                    for r_rows in tag_rows.values():
+                        for r in r_rows:
+                            c = r.get('stock_code', '')
+                            if c and c not in today_lb:
+                                today_lb[c] = _kpl_today_lianban(c, date_fmt)
                     for s in result:
                         s['board_structure'] = _kpl_board_structure(s.get('code', ''), date_fmt, s.get('lianban'))
+                        s['zt_echelon'] = _kpl_today_echelon(s.get('code', ''), date_fmt, tag_rows, today_lb)
                 self._respond_json(result or [], cors_headers)
             except Exception as e:
                 self._respond_json([], cors_headers)
