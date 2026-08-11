@@ -27189,8 +27189,16 @@ class Handler(BaseHTTPRequestHandler):
                     date_fmt = ''
                     if len(date_str) >= 8 and date_str.isdigit():
                         date_fmt = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
+                    # 日期锚定（与 /api/zt_board_linkage 同口径）：akshare trade_date 可能超前于 KPL 数据
+                    # （远端时钟偏快/盘前盘后 KPL 日文件未生成），该日期无 KPL 日文件且非交易时段 → 回退最近数据交易日，
+                    # 否则 tag_rows 为空导致梯队全空
+                    efmt = date_fmt
+                    if date_fmt and date_fmt + '.json' not in _kpl_day_files and not _is_trading_hours():
+                        _rr = _kpl_resolve_latest_zt_date()
+                        if _rr:
+                            efmt = f"{_rr[:4]}-{_rr[4:6]}-{_rr[6:]}"
                     # 细分题材今日涨停梯队：预计算一次 tag_rows / today_lb（避免 O(N²)）
-                    tag_rows = _kpl_today_tag_rows(date_fmt)
+                    tag_rows = _kpl_today_tag_rows(efmt)
                     today_lb = {}
                     for s in result:
                         c = s.get('code', '')
@@ -27200,10 +27208,10 @@ class Handler(BaseHTTPRequestHandler):
                         for r in r_rows:
                             c = r.get('stock_code', '')
                             if c and c not in today_lb:
-                                today_lb[c] = _kpl_today_lianban(c, date_fmt)
+                                today_lb[c] = _kpl_today_lianban(c, efmt)
                     for s in result:
                         s['board_structure'] = _kpl_board_structure(s.get('code', ''), date_fmt, s.get('lianban'))
-                        s['zt_echelon'] = _kpl_today_echelon(s.get('code', ''), date_fmt, tag_rows, today_lb)
+                        s['zt_echelon'] = _kpl_today_echelon(s.get('code', ''), efmt, tag_rows, today_lb)
                 self._respond_json(result or [], cors_headers)
             except Exception as e:
                 self._respond_json([], cors_headers)
