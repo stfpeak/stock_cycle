@@ -3001,6 +3001,30 @@ def _build_theme_wind_strength(top_n=10):
                         e['themes'].append({'plate': pt['plate_name'], 'theme': th['theme']})
     restart_list = sorted(restart_stocks.values(), key=lambda x: (-x['prev'], x['name']))
 
+    # 今日涨停时间轴（9:00~15:00 封板时间分布）：连板/重启 特别标注，全部标注题材
+    timeline = []
+    if zt_stocks:
+        ft_map = {}
+        if pool:
+            for p in pool:
+                ft_map[p['code']] = p.get('first_time', 999999)
+        restart_codes = {x['code'] for x in restart_list}
+        for s in zt_stocks:
+            ft = ft_map.get(s['code'], 999999)
+            minute = None
+            if ft and ft < 999999:
+                ft_s = f'{int(ft):06d}'
+                minute = int(ft_s[:2]) * 60 + int(ft_s[2:4]) - 540  # 距9:00分钟数（0~360）
+            tags = _tws_subtheme_tags(s)
+            theme = tags[0] if tags else (s.get('reason_tag') or '')
+            typ = 'restart' if s['code'] in restart_codes else ('ladder' if s['lianban'] >= 2 else 'normal')
+            timeline.append({
+                'code': s['code'], 'name': s['name'],
+                'minute': minute, 'first_time': ft, 'lianban': s['lianban'],
+                'theme': theme, 'plate': s.get('plate_name', ''), 'type': typ,
+            })
+        timeline.sort(key=lambda x: (999999 if x['minute'] is None else x['minute'], x['name']))
+
     today_bj = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
     return {
         'date': date_fmt,
@@ -3011,6 +3035,7 @@ def _build_theme_wind_strength(top_n=10):
         'codes': sorted(all_codes),
         'ladder': ladder,
         'restart_stocks': restart_list,
+        'timeline': timeline,
     }
 
 
@@ -7630,6 +7655,30 @@ td.lt-trajectory-cell {
 .tws-summary-theme-tag { cursor: pointer; color: #4fc3f7; font-size: 0.7em; background: rgba(22,33,62,.5); border: 1px solid rgba(79,195,247,.4); border-radius: 7px; padding: 1px 6px; }
 .tws-summary-theme-tag:hover { border-color: #ffd700; color: #ffd700; }
 .tws-summary-prev { font-style: normal; color: #22d3ee; font-size: 0.9em; margin-left: 3px; }
+/* 今日涨停时间轴（9:00~15:00 封板时间分布）：横向绝对定位按分钟 + 同分钟垂直堆叠 + 贪心多lane，超屏横向滚动 */
+.tws-tl-box { margin-bottom: 2px; }
+.tws-tl-scroll { overflow-x: auto; overflow-y: hidden; border-radius: 10px; border: 1px solid #1e3a5f; background: rgba(15,52,96,0.25); box-shadow: 0 2px 10px rgba(0,0,0,0.12); }
+.tws-tl-scroll::-webkit-scrollbar { height: 8px; }
+.tws-tl-scroll::-webkit-scrollbar-thumb { background: rgba(148,163,184,.4); border-radius: 4px; }
+.tws-tl-scroll::-webkit-scrollbar-track { background: rgba(30,41,59,.3); }
+.tws-timeline { position: relative; padding: 4px 8px 6px; }
+.tws-tl-axis { position: relative; height: 20px; border-bottom: 1px solid rgba(148,163,184,.25); margin-bottom: 2px; }
+.tws-tl-tick { position: absolute; bottom: 0; transform: translateX(-50%); font-size: 0.62em; color: #8b949e; white-space: nowrap; }
+.tws-tl-tick::before { content: ''; position: absolute; left: 50%; top: -8px; width: 1px; height: 6px; background: rgba(148,163,184,.35); }
+.tws-tl-lane { position: relative; min-height: 24px; }
+.tws-tl-chip { position: absolute; top: 0; display: inline-flex; align-items: center; gap: 3px; font-size: 0.68em; white-space: nowrap; border-radius: 7px; padding: 0 5px; cursor: pointer; color: #e6edf3; }
+.tws-tl-chip:hover { filter: brightness(1.2); z-index: 2; }
+.tws-tl-chip.tws-tl-ladder { background: linear-gradient(135deg, rgba(159,18,57,.9), rgba(250,204,21,.8)); border: 1px solid #facc15; color: #fff; }
+.tws-tl-chip.tws-tl-restart { background: linear-gradient(135deg, rgba(21,94,117,.95), rgba(6,182,212,.8)); border: 1px solid #06b6d4; color: #fff; }
+.tws-tl-chip:not(.tws-tl-ladder):not(.tws-tl-restart) { background: rgba(30,41,59,.85); border: 1px solid rgba(148,163,184,.4); }
+.tws-tl-badge { font-size: 0.92em; font-weight: 800; }
+.tws-tl-tm { font-weight: 700; color: #4fc3f7; }
+.tws-tl-chip.tws-tl-ladder .tws-tl-tm { color: #fff; }
+.tws-tl-chip.tws-tl-restart .tws-tl-tm { color: #a5f3fc; }
+.tws-tl-name { font-weight: 600; }
+.tws-tl-theme { color: #4fc3f7; font-size: 0.92em; }
+.tws-tl-chip.tws-tl-ladder .tws-tl-theme { color: #fde68a; }
+.tws-tl-chip.tws-tl-restart .tws-tl-theme { color: #a5f3fc; }
 /* 连板涨停表现天梯：纵向 每档一行（等级徽标 + 今日晋级/昨日断板两组），对齐 .tws-summary 视觉 */
 .tws-ladder { display: flex; flex-direction: column; gap: 6px; }
 .tws-ladder-row { display: flex; align-items: flex-start; gap: 8px; background: rgba(15,52,96,0.25); border: 1px solid #1e3a5f; border-radius: 10px; padding: 6px 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.12); }
@@ -14478,6 +14527,7 @@ function loadRealtime() {
         _cachedFetch('/api/data_status'),
         _cachedFetch(_trajPlainUrl('rt')),
         _cachedFetch(_trajLbUrl('rt')),
+        fetch('/api/theme_wind_strength?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
     ]).then(function(results) {
         var todayZt = results[0] || [];
         var rtLadder = results[1] || [];
@@ -14486,6 +14536,7 @@ function loadRealtime() {
         var dataStatus = results[4] || {};
         var ladderTrajectory = results[5] || null;
         var ladderTrajectoryLb = results[6] || null;
+        var themeWind = results[7] || null;
 
         var summary = stats.summary || {};
         var latestDate = dataStatus.latest_display || (todayZt.length > 0 ? todayZt[0].trade_date : '');
@@ -14563,6 +14614,13 @@ function loadRealtime() {
             html += '<div class="lt-trajectory-loading">加载中...</div>';
         }
         html += '</div></div>';
+
+        // === 今日涨停时间轴（9:00~15:00 封板时间分布，与题材风向同款；今日有涨停池才显示） ===
+        if (todayZt.length > 0 && themeWind && themeWind.timeline && themeWind.timeline.length) {
+            html += '<div class="rt-section">';
+            html += _twsRenderTimeline(themeWind, 'rtTimelineBox');
+            html += '</div>';
+        }
 
         // === 今日涨停（全量显示，按首次封板时间排序） ===
         html += '<div class="rt-section">';
@@ -14833,6 +14891,8 @@ function _trajMaybeRollDefault() {
     _trajDefaultSnap = def;
 }
 setInterval(_trajMaybeRollDefault, 60000);
+// 盘中实时刷新今日涨停时间轴：全局 30s（题材风向+实时双 tab 都存在时间轴块，实时 tab 下 _twsPoll 不运行，需独立定时器）
+setInterval(_twsRefreshTimelineLive, 30000);
 
 // 把当前窗口日期填回输入框（rt/tw 各自独立；lb=连板轨迹, plain=涨停原因轨迹 两组输入框，HTML 动态生成后调用）
 function _fillTrajDefaultDates(tab) {
@@ -16741,6 +16801,7 @@ function renderThemeWindStrength(sectorData, twsData) {
 function _twsRenderBoardSummary(twsData) {
     if (!twsData || !twsData.plates || !twsData.plates.length) return '';
     var h = '<div class="tws-summary">';
+    h += _twsRenderTimeline(twsData);
     h += _twsRenderLadder(twsData);
     // ---- 连板速览：遍历 plates→themes(max_lianban>=2)，取每题材最高档股票，按 code 合并 ----
     var lbMap = {};
@@ -16815,6 +16876,118 @@ function _twsRenderBoardSummary(twsData) {
     }
     h += '</div>';
     return h;
+}
+
+// ===== 今日涨停时间轴（9:00~15:00 封板时间分布）=====
+// 在连板涨停表现上方：连板/重启 特别标注（金/青），全部标注题材，chip 点击弹框
+// 布局=横向时间轴（绝对定位按分钟分布 + 同分钟垂直堆叠 + 贪心多lane分散），超出屏宽横向滚动
+// 盘中实时更新：_twsRefreshTimelineLive() 随 30s 行情轮询重拉 timeline 块
+function _twsTlFmt(minute) {
+    if (minute == null || minute < 0) return '--:--';
+    var t = 9 * 60 + minute;
+    var hh = Math.floor(t / 60), mm = t % 60;
+    return (hh < 10 ? '0' + hh : '' + hh) + ':' + (mm < 10 ? '0' + mm : '' + mm);
+}
+var ROW_H = 24;   // 时间轴每行 chip 高度（px），lane 高度 = 该 lane 最大同分钟堆叠数 * ROW_H
+// chip 渲染：left=分钟横向位置%，stackTop=同分钟垂直堆叠序号
+function _twsTlChip(it, leftPct, stackTop) {
+    var tm = it.minute == null || it.minute >= 9999 ? '--:--' : _twsTlFmt(it.minute);
+    var cls = 'tws-tl-chip';
+    var badge = '';
+    if (it.type === 'ladder') { cls += ' tws-tl-ladder'; badge = '<span class="tws-tl-badge">' + (it.lianban >= 5 ? '高' : it.lianban) + '板</span>'; }
+    else if (it.type === 'restart') { cls += ' tws-tl-restart'; badge = '<span class="tws-tl-badge">重启</span>'; }
+    return '<span class="' + cls + '" style="left:' + leftPct.toFixed(2) + '%;top:' + (stackTop * ROW_H) + 'px" data-code="' + it.code + '" data-name="' + (it.name || '').replace(/'/g, '') + '" onclick="_twsSumOpenStock(this)" title="' + tm + ' ' + (it.name || '') + ' ' + (it.theme || '') + '">' + badge + '<b class="tws-tl-tm">' + tm + '</b><span class="tws-tl-name">' + _kplEsc(it.name) + '</span>' + (it.theme ? '<span class="tws-tl-theme">' + _kplEsc(it.theme) + '</span>' : '') + '</span>';
+}
+function _twsRenderTimeline(twsData, boxId) {
+    boxId = boxId || 'twTimelineBox';
+    var tl = (twsData && twsData.timeline) || [];
+    if (!tl.length) return '';
+    // 最小宽度随涨停股数自适应：股越多时间轴越宽（横向滚动），减少纵向 lane 数避免叠太高
+    var MIN_W = Math.max(1500, Math.round(tl.length * 46));
+    // 按分钟分组（同分钟多股 → 同列垂直堆叠）
+    var groups = {};
+    var gkeys = [];
+    for (var i = 0; i < tl.length; i++) {
+        var it = tl[i];
+        var m = it.minute;
+        var key = (m == null || m >= 9999) ? 'misc' : ('m' + m);
+        if (!groups[key]) { groups[key] = { minute: m, items: [] }; gkeys.push(key); }
+        groups[key].items.push(it);
+    }
+    gkeys.sort(function(a, b) {
+        var ma = a === 'misc' ? 9999 : parseInt(a.slice(1), 10);
+        var mb = b === 'misc' ? 9999 : parseInt(b.slice(1), 10);
+        return ma - mb;
+    });
+    // 每列估算横向宽度（px）：按最长 chip 文本
+    function colW(g) {
+        var w = 0;
+        for (var j = 0; j < g.items.length; j++) {
+            var it = g.items[j];
+            var tw = (it.name || '').length * 13 + (it.theme || '').length * 10 + 52;
+            if (tw > w) w = tw;
+        }
+        return w;
+    }
+    // 贪心 lane：每 lane 内 chip 横向不重叠（间隔 8px），放不下换新 lane；
+    // laneStack[l] = 该 lane 内最大同分钟堆叠数 → lane 高度动态 = maxStack*ROW_H（防同列多股越界覆盖下一 lane）
+    var lanes = [];
+    var laneRight = [];
+    var laneStack = [];
+    for (var gi = 0; gi < gkeys.length; gi++) {
+        var g = groups[gkeys[gi]];
+        var left = g.minute >= 9999 ? 0.985 : (g.minute / 360);
+        var w = colW(g) / MIN_W;
+        var placed = false;
+        for (var l = 0; l < lanes.length; l++) {
+            if (left >= laneRight[l] + 0.008) {
+                lanes[l].push(g); laneRight[l] = left + w + 0.008;
+                if (g.items.length > laneStack[l]) laneStack[l] = g.items.length;
+                placed = true; break;
+            }
+        }
+        if (!placed) { lanes.push([g]); laneRight.push(left + w + 0.008); laneStack.push(g.items.length); }
+    }
+    var marks = ['9:00', '9:30', '10:00', '10:30', '11:00', '11:30', '13:00', '13:30', '14:00', '14:30', '15:00'];
+    var mpos = [0, 30, 60, 90, 120, 150, 240, 270, 300, 330, 360];
+    var axis = '';
+    for (var mi = 0; mi < marks.length; mi++) {
+        axis += '<span class="tws-tl-tick" style="left:' + (mpos[mi] / 360 * 100).toFixed(2) + '%">' + marks[mi] + '</span>';
+    }
+    var h = '<div id="' + boxId + '" class="tws-tl-box"><div class="tws-summary-sec-head">⏱ 今日涨停时间轴（9:00~15:00）</div>';
+    h += '<div class="tws-tl-scroll"><div class="tws-timeline" style="min-width:' + MIN_W + 'px">';
+    h += '<div class="tws-tl-axis">' + axis + '</div>';
+    for (var li = 0; li < lanes.length; li++) {
+        h += '<div class="tws-tl-lane" style="height:' + (laneStack[li] * ROW_H) + 'px">';
+        for (var k = 0; k < lanes[li].length; k++) {
+            var g = lanes[li][k];
+            var leftPct = g.minute >= 9999 ? 98.5 : (g.minute / 360 * 100);
+            g.items.sort(function(a, b2) { return (a.minute == null ? 9999 : a.minute) - (b2.minute == null ? 9999 : b2.minute) || a.name.localeCompare(b2.name); });
+            for (var q = 0; q < g.items.length; q++) {
+                h += _twsTlChip(g.items[q], leftPct, q);
+            }
+        }
+        h += '</div>';
+    }
+    h += '</div></div></div>';
+    return h;
+}
+// 盘中实时刷新时间轴：随 30s 行情轮询，重拉 theme_wind_strength（盘中 30s 缓存）替换全部时间轴块
+// （题材风向 twTimelineBox + 实时 rtTimelineBox 双 tab 共用，任一存在即刷新）
+var _twsTlLastRefresh = 0;
+function _twsRefreshTimelineLive() {
+    var boxes = document.querySelectorAll('.tws-tl-box');
+    if (!boxes.length) return;
+    var now = Date.now();
+    if (now - _twsTlLastRefresh < 28000) return;   // 与行情轮询同频
+    _twsTlLastRefresh = now;
+    fetch('/api/theme_wind_strength?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }).then(function(d) {
+        if (!d) return;
+        for (var i = 0; i < boxes.length; i++) {
+            var h = _twsRenderTimeline(d, boxes[i].id);
+            if (h) boxes[i].outerHTML = h;
+        }
+    });
 }
 
 // 连板涨停表现天梯（最高板在最上）：今日N板（晋级）+ 昨日(N-1)板未涨停（断板），在连板速览之前
@@ -17165,6 +17338,7 @@ function _twsStartPoll() {
 
 function _twsPoll() {
     if (typeof currentTab !== 'undefined' && currentTab !== 'themewind') return;   // 后台空转保护
+    _twsRefreshTimelineLive();   // 盘中实时刷新今日涨停时间轴（30s 同频，非交易时段后端返回缓存不新增开销）
     var pctEls = document.querySelectorAll('.tws-pct[data-code]');
     var codes = [];
     for (var i = 0; i < pctEls.length; i++) {
