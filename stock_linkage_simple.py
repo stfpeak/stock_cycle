@@ -1383,13 +1383,12 @@ def _kpl_td_gap(a_ymd, b_ymd):
     return ib - ia - 1
 
 
-def _kpl_board_structure(code, date_fmt, lb_override=None):
-    """涨停板结构字符串，简洁：
-       '5连板' | '3连板后重启首板·断4日' | '3连板后重启2板·断4日' | '首板'
+def _kpl_board_info(code, date_fmt, lb_override=None):
+    """涨停结构核心信息（供 board_structure / zt_status 复用）：
+       lb=当前连板数(含今日)、is_restart=是否断板重启、chain_len=旧链条连板数(重启时>0)、gap=断板交易日间隔。
     规则：lb 取 lb_override(akshare 实时) 否则 _kpl_compute_lianban；
-      lb>=2 时 chain_start=_kpl_lagged_day(ymd,-(lb-1))，从 chain_start 前一日向后找 _kpl_prev_chain_info → 命中则 'N连板后重启{lb}板·断X日'；
-      lb==1 时从 date_fmt 找 → 命中则 'N连板后重启首板·断X日'；否则 '首板'/'N连板'。
-    断板天数 X=_kpl_td_gap(last_old, target)。重启窗口 20 交易日。"""
+      lb>=2 时 chain_start=_kpl_lagged_day(ymd,-(lb-1))，从 chain_start 前一日向后找 _kpl_prev_chain_info；
+      lb==1 时从 date_fmt 找。重启窗口 20 交易日。"""
     date_ymd = date_fmt.replace('-', '')
     lb = lb_override if lb_override is not None else _kpl_compute_lianban(code, date_fmt)
     try:
@@ -1398,24 +1397,39 @@ def _kpl_board_structure(code, date_fmt, lb_override=None):
         lb = 1
     if lb >= 2:
         chain_start = _kpl_lagged_day(date_ymd, -(lb - 1))
-        if not chain_start:
-            return f'{lb}连板'
-        search_from = _kpl_lagged_day(chain_start, -1)
-        chain_len = 0
-        last_old = None
-        if search_from:
-            chain_len, last_old, _ = _kpl_prev_chain_info(
-                code, f"{search_from[:4]}-{search_from[4:6]}-{search_from[6:]}")
-        if chain_len >= 2 and last_old:
-            gap = _kpl_td_gap(last_old, chain_start)
-            return f'{chain_len}连板后重启{lb}板·断{gap}日'
-        return f'{lb}连板'
+        if chain_start:
+            search_from = _kpl_lagged_day(chain_start, -1)
+            if search_from:
+                chain_len, last_old, _ = _kpl_prev_chain_info(
+                    code, f"{search_from[:4]}-{search_from[4:6]}-{search_from[6:]}")
+                if chain_len >= 2 and last_old:
+                    return (lb, True, chain_len, _kpl_td_gap(last_old, chain_start))
+        return (lb, False, 0, 0)
     # lb == 1（首板）
     chain_len, last_old, _ = _kpl_prev_chain_info(code, date_fmt)
     if chain_len >= 2 and last_old:
-        gap = _kpl_td_gap(last_old, date_ymd)
-        return f'{chain_len}连板后重启首板·断{gap}日'
-    return '首板'
+        return (1, True, chain_len, _kpl_td_gap(last_old, date_ymd))
+    return (1, False, 0, 0)
+
+
+def _kpl_board_structure(code, date_fmt, lb_override=None):
+    """涨停板结构字符串，简洁：
+       '5连板' | '3连板后重启首板·断4日' | '3连板后重启2板·断4日' | '首板'
+    断板天数 X=_kpl_td_gap(last_old, target)。重启窗口 20 交易日。"""
+    lb, is_restart, chain_len, gap = _kpl_board_info(code, date_fmt, lb_override)
+    if not is_restart:
+        return f'{lb}连板' if lb >= 2 else '首板'
+    return f'{chain_len}连板后重启{lb}板·断{gap}日' if lb >= 2 else f'{chain_len}连板后重启首板·断{gap}日'
+
+
+def _kpl_zt_status(code, date_fmt, lb_override=None):
+    """涨停状态（该涨停在K线走势中的状态），简洁标识：
+       '首板' | 'N连板' | 'N·重启（+X）' | '首·重启（+X）'
+       N=当前连板数(含今日)、X=断板交易日间隔；重启用「·重启（+X）」附加，首板重启用「首」前缀。"""
+    lb, is_restart, _chain_len, gap = _kpl_board_info(code, date_fmt, lb_override)
+    if not is_restart:
+        return f'{lb}连板' if lb >= 2 else '首板'
+    return f'{lb}·重启（+{gap}）' if lb >= 2 else f'首·重启（+{gap}）'
 
 
 _kpl_tag_member_cache = None
@@ -3023,7 +3037,8 @@ def _build_theme_wind_strength(top_n=10):
                 'minute': minute, 'first_time': ft, 'lianban': s['lianban'],
                 'theme': theme, 'plate': s.get('plate_name', ''), 'type': typ,
             })
-        timeline.sort(key=lambda x: (999999 if x['minute'] is None else x['minute'], x['name']))
+        # 同分钟按连板数降序（高连板在前）+ 名称稳定排序
+        timeline.sort(key=lambda x: (999999 if x['minute'] is None else x['minute'], -x['lianban'], x['name']))
 
     today_bj = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
     return {
@@ -6802,6 +6817,18 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 .zt-ec-sep { color: #475569; margin: 0 3px; }
 .zt-ec-self { color: #ffd700; font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
 .zt-ec-empty { font-size: 0.72em; color: #64748b; }
+/* 今日涨停表 · 涨停状态（K线走势状态，替换原连板列）：N连板 / 首板 / N·重启（+X） */
+.zt-st { display: inline-flex; align-items: baseline; gap: 2px; font-size: 0.8em; white-space: nowrap; color: #e6edf3; }
+.zt-st-n { font-weight: 800; font-size: 1.08em; }
+.zt-st-n.lb-1 { color: #5a9cff; }
+.zt-st-n.lb-2 { color: #ffb74d; }
+.zt-st-n.lb-3 { color: #ff7043; }
+.zt-st-n.lb-4 { color: #ff4081; }
+.zt-st-n.lb-5, .zt-st-n.lb-high { color: #ce93d8; }
+.zt-st-lb { color: #94a3b8; }
+.zt-st-first { color: #94a3b8; font-weight: 700; }
+.zt-st-restart .zt-st-rs { color: #67e8f9; font-weight: 700; }   /* 重启=青（项目约定） */
+.zt-st-gap { color: #64748b; font-size: 0.92em; }
 
 /* ===== 今日涨停表 · 连板呼吸灯 + 断板重启跑马灯（仅 zt-today-table 作用域） ===== */
 .zt-today-table tr.zt-row-lb-1 { --zt-breath: rgba(0,123,255,0.5); }
@@ -16962,7 +16989,7 @@ function _twsRenderTimeline(twsData, boxId) {
         for (var k = 0; k < lanes[li].length; k++) {
             var g = lanes[li][k];
             var leftPct = g.minute >= 9999 ? 98.5 : (g.minute / 360 * 100);
-            g.items.sort(function(a, b2) { return (a.minute == null ? 9999 : a.minute) - (b2.minute == null ? 9999 : b2.minute) || a.name.localeCompare(b2.name); });
+            g.items.sort(function(a, b2) { return (b2.lianban || 0) - (a.lianban || 0) || a.name.localeCompare(b2.name); });
             for (var q = 0; q < g.items.length; q++) {
                 h += _twsTlChip(g.items[q], leftPct, q);
             }
@@ -18306,6 +18333,28 @@ function toggleRtLadderDetail(detailId, rowId) {
     if (btn) btn.classList.toggle('open');
 }
 
+// 今日涨停表 · 涨停状态（K线走势中的状态，替换原连板列）：解析后端 zt_status
+//   '首板' | 'N连板' | 'N·重启（+X）' | '首·重启（+X）'，N=当前连板数、X=断板交易日间隔
+function renderZtStatus(s) {
+    var st = (s && s.zt_status) || '';
+    if (!st) return renderLbBadge(s && s.lianban || 0);   // 旧缓存兜底
+    // N连板（非重启）
+    var m = st.match(/^(\d+)连板$/);
+    if (m) {
+        var lb = parseInt(m[1], 10);
+        var lbCls = lb >= 5 ? 'lb-high' : ('lb-' + Math.min(lb, 5));
+        return '<span class="zt-st"><b class="zt-st-n ' + lbCls + '">' + lb + '</b><span class="zt-st-lb">连板</span></span>';
+    }
+    // N·重启（+X） / 首·重启（+X）
+    var rm = st.match(/^(首|\d+)·重启（\+(\d+)）$/);
+    if (rm) {
+        var nHtml = rm[1] === '首' ? '<b class="zt-st-first">首</b>' : '<b class="zt-st-n lb-' + Math.min(parseInt(rm[1], 10), 5) + '">' + rm[1] + '</b>';
+        return '<span class="zt-st zt-st-restart">' + nHtml + '<span class="zt-st-rs">·重启</span><span class="zt-st-gap">（+' + rm[2] + '）</span></span>';
+    }
+    if (st === '首板') return '<span class="zt-st zt-st-first">首板</span>';
+    return '<span class="zt-st">' + _kplEsc(st) + '</span>';
+}
+
 function renderTodayZtList(stocks) {
     if (!stocks || stocks.length === 0) return '<div class="empty" style="padding:15px;">暂无今日涨停数据</div>';
     // 格式化封板时间: 简写HH:MM或9位数字转HH:MM:SS
@@ -18314,7 +18363,7 @@ function renderTodayZtList(stocks) {
         var s = String(t).padStart(6, '0');
         return s.slice(0, 2) + ':' + s.slice(2, 4);
     }
-    var html = '<table class="rt-zt-table zt-today-table"><tr><th>#</th><th>代码</th><th style="white-space:nowrap;min-width:90px;">名称</th><th style="min-width:90px;white-space:nowrap;">封板时间</th><th>连板</th><th>涨停板结构</th><th>板块联动</th><th>概念</th></tr>';
+    var html = '<table class="rt-zt-table zt-today-table"><tr><th>#</th><th>代码</th><th style="white-space:nowrap;min-width:90px;">名称</th><th style="min-width:90px;white-space:nowrap;">封板时间</th><th title="该涨停在K线走势中的状态：N连板 / 首板 / N·重启（+断板交易日）">涨停状态</th><th>涨停板结构</th><th>板块联动</th><th>概念</th></tr>';
     stocks.forEach(function(s, i) {
         var lb = s.lianban || 0;
         var lbCls = lb >= 5 ? 'high' : Math.min(lb || 1, 5);
@@ -18326,7 +18375,7 @@ function renderTodayZtList(stocks) {
         html += '<td><strong>' + s.code + '</strong></td>';
         html += '<td style="white-space:nowrap;">' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code)) + '<span class="link-stock-name" onclick="event.stopPropagation();stockQueryGoTo(\\x27' + (s.name||'').replace(/'/g,'') + '\\x27)">' + (s.name || '') + '</span></td>';
         html += '<td style="color:#4fc3f7;font-weight:bold;font-size:0.9em;white-space:nowrap;">' + fmtTime(s.first_time) + '</td>';
-        html += '<td>' + renderLbBadge(lb) + '</td>';
+        html += '<td>' + renderZtStatus(s) + '</td>';
         // 涨停板结构列：有细分题材今日涨停梯队（zt_echelon）则渲染梯队，否则回退原板结构串
         html += '<td>' + (s.zt_echelon ? renderZtEchelon(s.zt_echelon, s.code) : '<span class="zt-struct">' + (s.board_structure || '') + '</span>') + '</td>';
         html += '<td><button class="zt-link-btn" onclick="event.stopPropagation();openZtLinkageModal(\\x27' + s.code + '\\x27,\\x27' + (s.name||'').replace(/'/g,'') + '\\x27)" title="查看该股题材板块联动">🔗 联动</button></td>';
@@ -27327,6 +27376,7 @@ class Handler(BaseHTTPRequestHandler):
                                 today_lb[c] = _kpl_today_lianban(c, efmt)
                     for s in result:
                         s['board_structure'] = _kpl_board_structure(s.get('code', ''), date_fmt, s.get('lianban'))
+                        s['zt_status'] = _kpl_zt_status(s.get('code', ''), date_fmt, s.get('lianban'))
                         s['zt_echelon'] = _kpl_today_echelon(s.get('code', ''), efmt, tag_rows, today_lb)
                 self._respond_json(result or [], cors_headers)
             except Exception as e:
