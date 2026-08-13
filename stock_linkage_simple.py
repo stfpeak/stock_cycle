@@ -1469,6 +1469,40 @@ def _kpl_tag_member_index(date_fmt, window=20):
     return out
 
 
+_kpl_tag_days_cache = None
+_kpl_tag_days_cache_key = None
+_kpl_tag_days_cache_ts = 0.0
+
+
+def _kpl_tag_appear_days(date_fmt, window=60):
+    """近 window 交易日内各细分题材（有效标签）出现过的日期集合。
+    返回 {tag: set(YYYY-MM-DD)}（按天去重）。600s 内存缓存。"""
+    global _kpl_tag_days_cache, _kpl_tag_days_cache_key, _kpl_tag_days_cache_ts
+    key = (date_fmt or '', window)
+    now = time.time()
+    if _kpl_tag_days_cache is not None and key == _kpl_tag_days_cache_key and now - _kpl_tag_days_cache_ts < 600:
+        return _kpl_tag_days_cache
+    _kpl_ensure_loaded()
+    out = {}
+    date_ymd = (date_fmt or '').replace('-', '')
+    if _trading_days and date_ymd:
+        days = sorted(_trading_days)
+        idx = bisect.bisect_right(days, date_ymd)
+        lo = max(0, idx - window)
+        for wd in days[lo:idx]:
+            wf = f"{wd[:4]}-{wd[4:6]}-{wd[6:]}"
+            for r in _kpl_rows_by_date.get(wf, []) or []:
+                sc = r.get('stock_code', '')
+                if not sc:
+                    continue
+                for t in _traj_valid_tags(r.get('reason_tag', '') or '', r.get('reason_brief', '') or ''):
+                    out.setdefault(t, set()).add(wf)
+    _kpl_tag_days_cache = out
+    _kpl_tag_days_cache_key = key
+    _kpl_tag_days_cache_ts = now
+    return out
+
+
 def _zt_linkage_panel(code, date_fmt):
     """板块联动弹窗数据：某涨停股 → 拆题材(A+B) → 各题材「今日主板同题材」+「大涨池」(主/创/科)。
     全部仅用 KPL 板块/标签/简述（去 THS/概念）；主板=近20日，创/科=近200日（与题材风向补涨池同口径）。
@@ -2875,6 +2909,7 @@ def _build_arch_diagrams(zt_stocks, date_fmt):
         return []
     idx30 = _kpl_tag_member_index(date_fmt, 30)
     today_codes = set(today_info.keys())
+    tag_days = _kpl_tag_appear_days(date_fmt, 60)   # 细分题材近60交易日出现天数（含今日）
     out = []
     _all_gem = []     # 创/科非今日涨停，循环后统一批量取当日涨幅（levistock 实时 → K线DB 兜底）
     _all_broken = []  # 主板连板断板，同上
@@ -2922,7 +2957,14 @@ def _build_arch_diagrams(zt_stocks, date_fmt):
                                'prev': chain, 'board': b, 'change_pct': None, 'mab': _arch_mab(c)})
                 _all_broken.append(c)
         zt_count = sum(len(r['stocks']) for r in tier_rows) + len(restart)
+        # 细分题材出现天数 + 当天新出（历史从未出现=首日）——展示于题材卡头
+        td = tag_days.get(theme, set()) or set()
+        days = len(td)
+        if date_fmt and date_fmt not in td:
+            days += 1                      # 今日已出现但 KPL 日文件未生成/未含今日时补计
+        is_new = days == 1                 # 仅今日出现 → 当天新出
         out.append({'theme': theme, 'max_lb': max_lb, 'zt_count': zt_count,
+                    'days': days, 'is_new': is_new,
                     'tiers': tier_rows, 'restart': restart, 'broken': broken, 'gemstar': gemstar})
     # 主板断板 + 创/科当日涨幅一次批量获取 + 按涨幅降序（涨幅缺省排最后），每类截断 30
     if _all_gem or _all_broken:
@@ -7910,12 +7952,19 @@ td.lt-trajectory-cell {
 .tws-ladder-pt:hover { color: #ffd700; text-decoration: underline; }
 /* 题材涨停架构图（天梯式）：每题材一张卡 = 今日连板梯队(龙头→首板,空档断层) + 断板重启(今日) + 连板断板(近30日) */
 .tws-arch-wrap { display: flex; flex-direction: column; gap: 6px; }
-.tws-arch-card { background: rgba(15,52,96,0.25); border: 1px solid #1e3a5f; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.12); }
+.tws-arch-card { position: relative; background: rgba(15,52,96,0.25); border: 1px solid #1e3a5f; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.12); }
 .tws-arch-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 8px; cursor: pointer; }
 .tws-arch-head:hover .tws-arch-title { color: #ffd700; }
 .tws-arch-title { font-size: 0.82em; font-weight: 800; color: #ffd700; }
 .tws-arch-meta { font-size: 0.68em; color: #8b949e; }
 .tws-arch-arrow { margin-left: auto; color: #ffd700; font-size: 0.8em; }
+/* 细分题材「当天新出」爆炸 NEW 标签：大字 + 红金渐变 + 星芒光晕 + 弹出/脉冲动画，置于卡头右上角 */
+.tws-arch-new { position: absolute; top: 3px; right: 24px; font-size: 1.18em; font-weight: 900; letter-spacing: 1px; line-height: 1.25; color: #fff; background: linear-gradient(135deg, #dc2626, #f59e0b 45%, #facc15); padding: 1px 9px; border-radius: 7px; box-shadow: 0 0 10px rgba(245,158,11,.9), 0 0 22px rgba(250,204,21,.5); text-shadow: 0 0 6px rgba(255,255,255,.9), 0 1px 2px rgba(0,0,0,.5); transform: rotate(-8deg); z-index: 3; animation: twsArchNewBoom .55s ease-out, twsArchNewPulse 1.5s ease-in-out infinite; cursor: default; }
+.tws-arch-new::before, .tws-arch-new::after { content: ''; position: absolute; inset: -3px; border-radius: 9px; background: inherit; filter: blur(5px); z-index: -1; animation: twsArchNewFlash .9s ease-in-out infinite; }
+.tws-arch-new::after { animation-delay: .35s; }
+@keyframes twsArchNewBoom { 0% { transform: rotate(-8deg) scale(.25); opacity: 0; } 60% { transform: rotate(-8deg) scale(1.35); opacity: 1; } 100% { transform: rotate(-8deg) scale(1); } }
+@keyframes twsArchNewPulse { 0%, 100% { transform: rotate(-8deg) scale(1); box-shadow: 0 0 10px rgba(245,158,11,.9), 0 0 22px rgba(250,204,21,.5); } 50% { transform: rotate(-8deg) scale(1.13); box-shadow: 0 0 18px rgba(250,204,21,1), 0 0 34px rgba(250,204,21,.7); } }
+@keyframes twsArchNewFlash { 0%, 100% { opacity: .45; } 50% { opacity: .95; } }
 .tws-arch-body { display: flex; flex-direction: column; gap: 3px; padding: 0 8px 7px; }
 .tws-arch-row { display: flex; align-items: flex-start; gap: 6px; }
 .tws-arch-lv { flex: 0 0 auto; min-width: 30px; text-align: center; font-size: 0.76em; font-weight: 800; color: #fff; border-radius: 7px; padding: 1px 4px; margin-top: 1px; }
@@ -17341,7 +17390,9 @@ function _twsArchChip(x, tag, tagCls, title) {
 // 单题材架构卡：头=题材名+最高板+今日涨停数（点击折叠），body=梯队行 + 重启/断板 分区
 function _twsRenderArchCard(a) {
     var cld = !!_twsArchCollapsed[a.theme];
-    var h = '<div class="tws-arch-card"><div class="tws-arch-head" onclick="toggleTwsArch(this)"><span class="tws-arch-title">🏗 ' + _kplEsc(a.theme) + '</span><span class="tws-arch-meta">最高' + a.max_lb + '连板 · 今日涨停' + a.zt_count + '只</span><span class="tws-arch-arrow">' + (cld ? '▸' : '▾') + '</span></div><div class="tws-arch-body"' + (cld ? ' style="display:none"' : '') + '>';
+    var daysTxt = (typeof a.days === 'number') ? ' · 出现' + a.days + '天' : '';
+    var newHtml = a.is_new ? '<span class="tws-arch-new" title="细分题材当日新出" onclick="event.stopPropagation()">NEW</span>' : '';
+    var h = '<div class="tws-arch-card"><div class="tws-arch-head" onclick="toggleTwsArch(this)"><span class="tws-arch-title">🏗 ' + _kplEsc(a.theme) + '</span><span class="tws-arch-meta">最高' + a.max_lb + '连板 · 今日涨停' + a.zt_count + '只' + daysTxt + '</span>' + newHtml + '<span class="tws-arch-arrow">' + (cld ? '▸' : '▾') + '</span></div><div class="tws-arch-body"' + (cld ? ' style="display:none"' : '') + '>';
     for (var i = 0; i < a.tiers.length; i++) {
         var row = a.tiers[i];
         h += '<div class="tws-arch-row"><span class="tws-arch-lv sc-lb' + (row.level >= 5 ? 'high' : row.level) + '">' + row.level + '板</span>';
