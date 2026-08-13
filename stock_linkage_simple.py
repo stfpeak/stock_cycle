@@ -2969,13 +2969,16 @@ def _build_arch_diagrams(zt_stocks, date_fmt):
     out = []
     _all_gem = []     # 创/科非今日涨停，循环后统一批量取当日涨幅（levistock 实时 → K线DB 兜底）
     _all_broken = []  # 主板连板断板，同上
-    for theme in sorted(anchor, key=lambda t: (-anchor[t], t)):
+    for theme in anchor:   # 卡排序在循环后统一按 连板高度+仅重启 处理
         tiers = {}
         restart = []
+        max_today_lb = 0
         for code, info in today_info.items():
             if theme not in info['tags']:
                 continue
             b = _kpl_board_of_code(code)
+            if info['lb'] > max_today_lb:
+                max_today_lb = info['lb']
             if info['is_restart']:
                 restart.append({'code': code, 'name': info['name'], 'lb': info['lb'], 'chain_len': info['chain_len'],
                                 'gap': info['gap'], 'change_pct': info['change_pct'], 'board': b, 'mab': info['mab']})
@@ -3026,9 +3029,14 @@ def _build_arch_diagrams(zt_stocks, date_fmt):
             else:
                 break
         is_new = days == 1                 # 连续激活仅今天 → 当天新激活（NEW，盘中/盘后均生效）
+        # 仅重启：今日该题材无任何 lb>=2 股（无真实连板高度）且无普通首板股（梯队全空）→ 排序置最末「仅重启」桶
+        # 注：重启股本身若 lb>=2（如4连板重启）仍按其连板高度归入 4板 档，不视为仅重启
+        restart_only = max_today_lb < 2 and not any(r['stocks'] for r in tier_rows)
         out.append({'theme': theme, 'max_lb': max_lb, 'zt_count': zt_count,
-                    'days': days, 'is_new': is_new,
+                    'days': days, 'is_new': is_new, 'restart_only': restart_only,
                     'tiers': tier_rows, 'restart': restart, 'broken': broken, 'gemstar': gemstar})
+    # 天梯排序：按连板高度 5→4→3→2→1板（重启题材归入其最高板档），仅重启题材置最末
+    out.sort(key=lambda o: (1 if o['restart_only'] else 0, -o['max_lb'], o['theme']))
     # 主板断板 + 创/科当日涨幅一次批量获取 + 按涨幅降序（涨幅缺省排最后），每类截断 30
     if _all_gem or _all_broken:
         pct_map = _kpl_tst_change_pct(_all_gem + _all_broken, date_fmt)
@@ -17458,7 +17466,7 @@ function _twsRenderArchCard(a) {
     var daysTxt = (typeof a.days === 'number') ? ' · 连续' + a.days + '天' : '';
     var newHtml = a.is_new ? '<span class="tws-arch-new" title="细分题材当日激活（连板/重启）" onclick="event.stopPropagation()">NEW</span>' : '';
     var themeKey = (a.theme || '').replace(/'/g, '');
-    var h = '<div class="tws-arch-card"><div class="tws-arch-head" onclick="toggleTwsArch(this)"><span class="tws-arch-title" data-theme="' + themeKey + '">🪜 <a class="tws-arch-theme-link" href="javascript:void(0)" onclick="event.stopPropagation();switchTab(\\x27kplsearch\\x27);setTimeout(function(){doKplSearch(\\x27' + themeKey + '\\x27)},100)" title="KPL涨停深挖：' + _kplEsc(a.theme) + '">' + _kplEsc(a.theme) + '</a></span><span class="tws-arch-meta">最高' + a.max_lb + '连板 · 今日涨停' + a.zt_count + '只' + daysTxt + '</span>' + newHtml + '<span class="tws-arch-arrow">' + (cld ? '▸' : '▾') + '</span></div><div class="tws-arch-body"' + (cld ? ' style="display:none"' : '') + '>';
+    var h = '<div class="tws-arch-card"><div class="tws-arch-head" onclick="toggleTwsArch(this)"><span class="tws-arch-title" data-theme="' + themeKey + '">🗼 <a class="tws-arch-theme-link" href="javascript:void(0)" onclick="event.stopPropagation();switchTab(\\x27kplsearch\\x27);setTimeout(function(){doKplSearch(\\x27' + themeKey + '\\x27)},100)" title="KPL涨停深挖：' + _kplEsc(a.theme) + '">' + _kplEsc(a.theme) + '</a></span><span class="tws-arch-meta">最高' + a.max_lb + '连板 · 今日涨停' + a.zt_count + '只' + daysTxt + '</span>' + newHtml + '<span class="tws-arch-arrow">' + (cld ? '▸' : '▾') + '</span></div><div class="tws-arch-body"' + (cld ? ' style="display:none"' : '') + '>';
     for (var i = 0; i < a.tiers.length; i++) {
         var row = a.tiers[i];
         h += '<div class="tws-arch-row"><span class="tws-arch-lv sc-lb' + (row.level >= 5 ? 'high' : row.level) + '">' + row.level + '板</span>';
