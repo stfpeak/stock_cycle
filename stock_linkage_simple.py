@@ -1475,7 +1475,8 @@ _kpl_tag_days_cache_ts = 0.0
 
 
 def _kpl_tag_appear_days(date_fmt, window=60):
-    """近 window 交易日内各细分题材（有效标签）出现过的日期集合。
+    """近 window 交易日内各细分题材（有效标签）被「激活」的日期集合。
+    激活 = 当日该题材有 连板(lb>=2) 或 重启(is_restart) 涨停股（仅首板不激活）。
     返回 {tag: set(YYYY-MM-DD)}（按天去重）。600s 内存缓存。"""
     global _kpl_tag_days_cache, _kpl_tag_days_cache_key, _kpl_tag_days_cache_ts
     key = (date_fmt or '', window)
@@ -1483,6 +1484,59 @@ def _kpl_tag_appear_days(date_fmt, window=60):
     if _kpl_tag_days_cache is not None and key == _kpl_tag_days_cache_key and now - _kpl_tag_days_cache_ts < 600:
         return _kpl_tag_days_cache
     _kpl_ensure_loaded()
+    # 本地 memo：每只股票涨停日期集合只构建一次，避免逐日逐股重复扫描
+    _zt_memo = {}
+
+    def _zt_dates(sc):
+        s = _zt_memo.get(sc)
+        if s is None:
+            s = set()
+            for r in _kpl_rows_by_stock.get(sc, []) or []:
+                d = r.get('date', '').replace('-', '')
+                if d:
+                    s.add(d)
+            _zt_memo[sc] = s
+        return s
+
+    def _is_active_on(sc, wf):
+        """该股当日是否激活题材：连板(lb>=2) 或 重启(is_restart)。"""
+        ymd = wf.replace('-', '')
+        zt = _zt_dates(sc)
+        if ymd not in zt:
+            return False
+        # 连板数（从当日向前数连续涨停）
+        lb = 1
+        cur = ymd
+        while True:
+            prev = _kpl_lagged_day(cur, -1)
+            if prev and prev in zt:
+                lb += 1
+                cur = prev
+            else:
+                break
+        if lb >= 2:
+            return True
+        # 首板：是否重启（此前 ≥2 连板、回调后再次孤立首板，20 交易日内）
+        cur = ymd
+        for _ in range(20):
+            prev = _kpl_lagged_day(cur, -1)
+            if not prev:
+                break
+            if prev in zt:
+                chain = 1
+                pc = prev
+                while True:
+                    pp = _kpl_lagged_day(pc, -1)
+                    if pp and pp in zt:
+                        chain += 1
+                        pc = pp
+                    else:
+                        break
+                if chain >= 2:
+                    return True
+            cur = prev
+        return False
+
     out = {}
     date_ymd = (date_fmt or '').replace('-', '')
     if _trading_days and date_ymd:
@@ -1494,6 +1548,8 @@ def _kpl_tag_appear_days(date_fmt, window=60):
             for r in _kpl_rows_by_date.get(wf, []) or []:
                 sc = r.get('stock_code', '')
                 if not sc:
+                    continue
+                if not _is_active_on(sc, wf):
                     continue
                 for t in _traj_valid_tags(r.get('reason_tag', '') or '', r.get('reason_brief', '') or ''):
                     out.setdefault(t, set()).add(wf)
@@ -2909,7 +2965,7 @@ def _build_arch_diagrams(zt_stocks, date_fmt):
         return []
     idx30 = _kpl_tag_member_index(date_fmt, 30)
     today_codes = set(today_info.keys())
-    tag_days = _kpl_tag_appear_days(date_fmt, 60)   # 细分题材近60交易日出现天数（含今日）
+    tag_act = _kpl_tag_appear_days(date_fmt, 60)   # 细分题材近60交易日被激活日期集合（连板/重启才激活，不含今日）
     out = []
     _all_gem = []     # 创/科非今日涨停，循环后统一批量取当日涨幅（levistock 实时 → K线DB 兜底）
     _all_broken = []  # 主板连板断板，同上
@@ -2957,12 +3013,19 @@ def _build_arch_diagrams(zt_stocks, date_fmt):
                                'prev': chain, 'board': b, 'change_pct': None, 'mab': _arch_mab(c)})
                 _all_broken.append(c)
         zt_count = sum(len(r['stocks']) for r in tier_rows) + len(restart)
-        # 细分题材出现天数 + 当天新出（历史从未出现=首日）——展示于题材卡头
-        td = tag_days.get(theme, set()) or set()
-        days = len(td)
-        if date_fmt and date_fmt not in td:
-            days += 1                      # 今日已出现但 KPL 日文件未生成/未含今日时补计
-        is_new = days == 1                 # 仅今日出现 → 当天新出
+        # 细分题材连续激活天数 + 当天新激活（前一日未激活=首日/重现→NEW）——展示于题材卡头
+        # 今日必激活（锚点题材=今日连板/重启股题材）；向前逐交易日数「连续激活」天数，断开即停
+        act = tag_act.get(theme, set()) or set()
+        days = 1
+        cur = date_ymd
+        while True:
+            prev = _kpl_lagged_day(cur, -1)
+            if prev and f"{prev[:4]}-{prev[4:6]}-{prev[6:]}" in act:
+                days += 1
+                cur = prev
+            else:
+                break
+        is_new = days == 1                 # 连续激活仅今天 → 当天新激活（NEW，盘中/盘后均生效）
         out.append({'theme': theme, 'max_lb': max_lb, 'zt_count': zt_count,
                     'days': days, 'is_new': is_new,
                     'tiers': tier_rows, 'restart': restart, 'broken': broken, 'gemstar': gemstar})
@@ -7956,6 +8019,8 @@ td.lt-trajectory-cell {
 .tws-arch-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 8px; cursor: pointer; }
 .tws-arch-head:hover .tws-arch-title { color: #ffd700; }
 .tws-arch-title { font-size: 0.82em; font-weight: 800; color: #ffd700; }
+.tws-arch-theme-link { color: #ffd700; text-decoration: none; border-bottom: 1px dashed rgba(255,215,0,.55); cursor: pointer; }
+.tws-arch-theme-link:hover { color: #fff; border-bottom-style: solid; text-shadow: 0 0 6px rgba(255,215,0,.65); }
 .tws-arch-meta { font-size: 0.68em; color: #8b949e; }
 .tws-arch-arrow { margin-left: auto; color: #ffd700; font-size: 0.8em; }
 /* 细分题材「当天新出」爆炸 NEW 标签：大字 + 红金渐变 + 星芒光晕 + 弹出/脉冲动画，置于卡头右上角 */
@@ -17390,9 +17455,10 @@ function _twsArchChip(x, tag, tagCls, title) {
 // 单题材架构卡：头=题材名+最高板+今日涨停数（点击折叠），body=梯队行 + 重启/断板 分区
 function _twsRenderArchCard(a) {
     var cld = !!_twsArchCollapsed[a.theme];
-    var daysTxt = (typeof a.days === 'number') ? ' · 出现' + a.days + '天' : '';
-    var newHtml = a.is_new ? '<span class="tws-arch-new" title="细分题材当日新出" onclick="event.stopPropagation()">NEW</span>' : '';
-    var h = '<div class="tws-arch-card"><div class="tws-arch-head" onclick="toggleTwsArch(this)"><span class="tws-arch-title">🏗 ' + _kplEsc(a.theme) + '</span><span class="tws-arch-meta">最高' + a.max_lb + '连板 · 今日涨停' + a.zt_count + '只' + daysTxt + '</span>' + newHtml + '<span class="tws-arch-arrow">' + (cld ? '▸' : '▾') + '</span></div><div class="tws-arch-body"' + (cld ? ' style="display:none"' : '') + '>';
+    var daysTxt = (typeof a.days === 'number') ? ' · 连续' + a.days + '天' : '';
+    var newHtml = a.is_new ? '<span class="tws-arch-new" title="细分题材当日激活（连板/重启）" onclick="event.stopPropagation()">NEW</span>' : '';
+    var themeKey = (a.theme || '').replace(/'/g, '');
+    var h = '<div class="tws-arch-card"><div class="tws-arch-head" onclick="toggleTwsArch(this)"><span class="tws-arch-title" data-theme="' + themeKey + '">🪜 <a class="tws-arch-theme-link" href="javascript:void(0)" onclick="event.stopPropagation();switchTab(\\x27kplsearch\\x27);setTimeout(function(){doKplSearch(\\x27' + themeKey + '\\x27)},100)" title="KPL涨停深挖：' + _kplEsc(a.theme) + '">' + _kplEsc(a.theme) + '</a></span><span class="tws-arch-meta">最高' + a.max_lb + '连板 · 今日涨停' + a.zt_count + '只' + daysTxt + '</span>' + newHtml + '<span class="tws-arch-arrow">' + (cld ? '▸' : '▾') + '</span></div><div class="tws-arch-body"' + (cld ? ' style="display:none"' : '') + '>';
     for (var i = 0; i < a.tiers.length; i++) {
         var row = a.tiers[i];
         h += '<div class="tws-arch-row"><span class="tws-arch-lv sc-lb' + (row.level >= 5 ? 'high' : row.level) + '">' + row.level + '板</span>';
@@ -17461,7 +17527,11 @@ function toggleTwsArch(head) {
     var arrow = head.querySelector('.tws-arch-arrow');
     if (arrow) arrow.textContent = vis ? '▾' : '▸';
     var title = head.querySelector('.tws-arch-title');
-    if (title) _twsArchCollapsed[title.textContent.replace(/^🏗\s*/, '')] = !vis;   // 折叠后同步记录，供重渲染保留
+    if (title) {
+        // data-theme 优先（标题含图标+链接，textContent 需剥图标），兜底剥首个「图标 空格」前缀
+        var key = title.getAttribute('data-theme') || title.textContent.replace(/^\S+\s*/, '').trim();
+        _twsArchCollapsed[key] = !vis;   // 折叠后同步记录，供重渲染保留
+    }
 }
 
 // 取某主题下 max 板档的股票（主/创/科三列，连板===max，取前3）→ [{code,name,mab}]，去重/弹框在调用方构建
