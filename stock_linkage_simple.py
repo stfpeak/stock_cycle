@@ -17629,10 +17629,11 @@ function _twsOppTheme(theme) {
     return '<a class="tws-opp-theme" href="javascript:void(0)" onclick="jumpToKplSearch(\\x27' + key + '\\x27)" title="KPL涨停深挖：' + _kplEsc(t) + '">「' + _kplEsc(t) + '」</a>';
 }
 function _twsRenderOpportunities(arch) {
-    var MODES = ['晋级助攻', '断板重启', '首板潮', '强势晋级', '首板·重启'];   // 5 模式固定顺序（同模式聚为一组渲染）
+    var MODES = ['晋级助攻', '强势晋级', '首板潮', '首板·重启', '断板重启'];   // 5 模式固定顺序（同模式聚为一组渲染）；首板·重启 优先 断板重启
+    var MODE_CLS = ['opp-m-1', 'opp-m-4', 'opp-m-3', 'opp-m-5', 'opp-m-2'];   // 模式→原语义配色类（CSS 不动）：橙金/红金/蓝/紫/青
     var buckets = [[], [], [], [], []];
     function pushOpp(m, text) {
-        buckets[m].push('<div class="tws-opp-item opp-m-' + (m + 1) + '"><span class="tws-opp-mode opp-m-' + (m + 1) + '">' + MODES[m] + '</span><span class="tws-opp-text">' + text + '</span></div>');
+        buckets[m].push('<div class="tws-opp-item ' + MODE_CLS[m] + '"><span class="tws-opp-mode ' + MODE_CLS[m] + '">' + MODES[m] + '</span><span class="tws-opp-text">' + text + '</span></div>');
     }
     for (var i = 0; i < arch.length; i++) {
         var a = arch[i];
@@ -17644,18 +17645,33 @@ function _twsRenderOpportunities(arch) {
         var broken = a.broken || [];
         var mainZt = a.main_zt || [];
         var gemStar = a.gemstar || [];
-        // 机会1 晋级助攻
-        if (maxLb >= 2 && firsts.length && broken.length && hb.length) {
-            pushOpp(0, _twsOppTheme(theme) + '有 ' + _twsOppStocks([hb[0]]) + ' ' + maxLb + '板晋级，并有 ' + _twsOppStocks(firsts) + ' 首板助攻，关注该题材N字形态，特别是前期连板断板股 ' + _twsOppStocks(_twsOppSort(broken)) + ' 重启机会');
+        var hasLb = maxLb >= 2 && hb.length > 0;        // 今日有连板股
+        var hasFirst = firsts.length > 0;               // 今日有首板
+        var hasRestart = restarts.length > 0;           // 今日有重启
+        var nCands = _twsOppSort(broken.concat(mainZt)); // 断板回调候选（连板断板+主板近20日涨停），优先级排序
+        // 机会1 晋级助攻：有连板股 + 有首板（不依赖断板）
+        if (hasLb && hasFirst) {
+            var t1 = _twsOppTheme(theme) + '有 ' + _twsOppStocks([hb[0]]) + ' ' + maxLb + '板晋级，并有 ' + _twsOppStocks(firsts) + ' 首板助攻';
+            if (nCands.length) t1 += '，关注该题材N字形态，特别是前期连板断板股 ' + _twsOppStocks(nCands) + ' 重启机会';
+            pushOpp(0, t1);
         }
-        // 机会2 断板重启
+        // 机会5 首板·重启（优先于断板重启，同时命中只显此模式）
         var earlyR = [];
         for (var r2 = 0; r2 < restarts.length; r2++) if (_twsOppIsEarly(restarts[r2])) earlyR.push(restarts[r2]);
-        var strongPrev = broken.length ? broken : mainZt;
-        if (earlyR.length && strongPrev.length) {
-            var s2 = '，关注题材前期强势股 ' + _twsOppStocks(_twsOppSort(strongPrev));
-            if (gemStar.length) s2 += ' 和20cm弹性套利机会 ' + _twsOppStocks(gemStar);
-            pushOpp(1, _twsOppTheme(theme) + '有 ' + _twsOppStocks(earlyR) + ' 断板重启，并在10:00前涨停，可能给题材带来行情' + s2);
+        if (hasFirst && hasRestart) {
+            var s5 = '，注意该题材N字形态';
+            if (nCands.length) s5 += '，特别是前期连板断板股 ' + _twsOppStocks(nCands) + ' 重启机会';
+            if (gemStar.length) s5 += '，以及20cm套利机会 ' + _twsOppStocks(gemStar);
+            pushOpp(3, _twsOppTheme(theme) + '有首板 ' + _twsOppStocks(firsts) + ' 和断板重启 ' + _twsOppStocks(restarts) + s5);
+        }
+        // 机会2 断板重启（仅当无首板·重启命中，避免重复提示）
+        else if (earlyR.length) {
+            var strongPrev = broken.length ? broken : mainZt;
+            if (strongPrev.length) {
+                var s2 = '，关注题材前期强势股 ' + _twsOppStocks(_twsOppSort(strongPrev));
+                if (gemStar.length) s2 += ' 和20cm弹性套利机会 ' + _twsOppStocks(gemStar);
+                pushOpp(4, _twsOppTheme(theme) + '有 ' + _twsOppStocks(earlyR) + ' 断板重启，并在10:00前涨停，可能给题材带来行情' + s2);
+            }
         }
         // 机会3 首板潮
         if (firsts.length >= 3) {
@@ -17669,17 +17685,10 @@ function _twsRenderOpportunities(arch) {
                 pushOpp(2, _twsOppTheme(theme) + '今日首板有 ' + firsts.length + ' 个（' + _twsOppStocks(firsts) + '），其中 ' + _twsOppStocks(earlyF) + ' 在10:00前涨停，明天若有股票晋级2板可能带来题材情绪' + s3);
             }
         }
-        // 机会4 强势晋级
-        if (maxLb >= 3 && hb.length) {
-            var cand4 = broken.concat(mainZt, gemStar);
-            if (cand4.length) pushOpp(3, _twsOppStocks(hb) + ' 强势晋级 ' + maxLb + '板，关注' + _twsOppTheme(theme) + '题材N字形态股票机会：' + _twsOppStocks(_twsOppSort(cand4)));
-        }
-        // 机会5 首板·重启
-        if (firsts.length && restarts.length) {
-            var s5 = '，注意该题材N字形态';
-            if (broken.length) s5 += '，特别是前期连板断板股 ' + _twsOppStocks(_twsOppSort(broken)) + ' 重启机会';
-            if (gemStar.length) s5 += '，以及20cm套利机会 ' + _twsOppStocks(gemStar);
-            pushOpp(4, _twsOppTheme(theme) + '有首板 ' + _twsOppStocks(firsts) + ' 和断板重启 ' + _twsOppStocks(restarts) + s5);
+        // 机会4 强势晋级：纯连板（有连板股，但无首板且无重启）
+        if (hasLb && maxLb >= 3 && !hasFirst && !hasRestart) {
+            var cand4 = nCands.concat(gemStar);
+            if (cand4.length) pushOpp(1, _twsOppStocks(hb) + ' 强势晋级 ' + maxLb + '板，关注' + _twsOppTheme(theme) + '题材N字形态股票机会：' + _twsOppStocks(_twsOppSort(cand4)));
         }
     }
     var items = [];
