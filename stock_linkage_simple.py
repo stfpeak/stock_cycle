@@ -8120,6 +8120,27 @@ td.lt-trajectory-cell {
 .tws-arch-nav-lv.sc-lb4 { background: linear-gradient(135deg, #6b21a8, #a855f7); }
 .tws-arch-nav-lv.sc-lbhigh { background: linear-gradient(135deg, #9f1239, #facc15); }
 .tws-arch-nav-new { font-size: 0.48em; font-weight: 900; color: #fff; background: linear-gradient(135deg, #dc2626, #f59e0b); padding: 0 2px; border-radius: 3px; transform: rotate(-6deg); }
+/* 机会推演（天梯目录下方、架构图卡之前）：自然语言 5 类机会提示，股票名可点击弹框 */
+/* 5 模式分色参考连板轨迹调色板：晋级助攻橙金/断板重启青/首板潮蓝/强势晋级红金/首板·重启紫；同模式聚为一组，左色条强化分组 */
+.tws-opp-wrap { margin: 10px 0 14px; display: flex; flex-direction: column; gap: 6px; }
+.tws-opp-item { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border-radius: 8px; background: linear-gradient(135deg, rgba(16,35,61,.9), rgba(13,27,48,.9)); border: 1px solid #1e3a5f; font-size: 13px; line-height: 1.75; color: #cbd5e1; }
+.tws-opp-mode { flex: 0 0 auto; margin-top: 2px; font-size: 11px; font-weight: 700; color: #fff; border: 1px solid; border-radius: 4px; padding: 0 5px; line-height: 1.5; }
+.tws-opp-text { flex: 1 1 0; min-width: 0; }
+.tws-opp-stock { color: #fbbf24; font-weight: 600; cursor: pointer; border-bottom: 1px dotted rgba(251,191,36,.5); white-space: nowrap; }
+.tws-opp-stock:hover { color: #fff; background: rgba(251,191,36,.15); border-radius: 3px; }
+/* 机会推演细分题材链接：与架构卡题材名同款金虚线下划线，点击跳 KPL涨停深挖 查询 */
+.tws-opp-theme { color: #ffd700; font-weight: 700; text-decoration: none; border-bottom: 1px dashed rgba(255,215,0,.55); cursor: pointer; }
+.tws-opp-theme:hover { color: #fff; border-bottom-style: solid; text-shadow: 0 0 6px rgba(255,215,0,.65); }
+.tws-opp-mode.opp-m-1 { background: linear-gradient(135deg, #b45309, #facc15); border-color: #facc15; }
+.tws-opp-mode.opp-m-2 { background: linear-gradient(135deg, #155e75, #06b6d4); border-color: #06b6d4; }
+.tws-opp-mode.opp-m-3 { background: linear-gradient(135deg, #1e40af, #60a5fa); border-color: #60a5fa; }
+.tws-opp-mode.opp-m-4 { background: linear-gradient(135deg, #9f1239, #facc15); border-color: #fde047; }
+.tws-opp-mode.opp-m-5 { background: linear-gradient(135deg, #6b21a8, #a855f7); border-color: #a855f7; }
+.tws-opp-item.opp-m-1 { border-left: 3px solid #fb923c; }
+.tws-opp-item.opp-m-2 { border-left: 3px solid #06b6d4; }
+.tws-opp-item.opp-m-3 { border-left: 3px solid #60a5fa; }
+.tws-opp-item.opp-m-4 { border-left: 3px solid #facc15; }
+.tws-opp-item.opp-m-5 { border-left: 3px solid #a855f7; }
 .tws-arch-card { position: relative; background: rgba(15,52,96,0.25); border: 1px solid #1e3a5f; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.12); }
 .tws-arch-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 8px; cursor: pointer; }
 .tws-arch-head:hover .tws-arch-title { color: #ffd700; }
@@ -17557,9 +17578,114 @@ function _twsRenderArchDiagrams(twsData) {
         h += '<span class="tws-arch-nav-item" data-theme="' + themeKey + '" onclick="_twsArchNavJump(this)"><span class="tws-arch-nav-lv ' + lvCls + '">' + a.max_lb + '板</span>' + _kplEsc(a.theme) + newDot + '</span>';
     }
     h += '</div>';
+    h += _twsRenderOpportunities(arch);   // 机会推演（天梯目录下方，卡之前）
     for (var j = 0; j < arch.length; j++) h += _twsRenderArchCard(arch[j]);
     h += '</div>';
     return h;
+}
+
+// ===== 机会推演（天梯目录下方、架构图卡之前）：根据今日涨停数据输出 5 类机会提示（晋级助攻/断板重启/首板潮/强势晋级/首板·重启），股票名可点击弹框 =====
+// 取某卡指定板档的股票数组（无则空数组；level 1 = 首板）
+function _twsArchTierStocks(a, lv) {
+    for (var i = 0; i < (a.tiers || []).length; i++) {
+        if (a.tiers[i].level === lv) return a.tiers[i].stocks || [];
+    }
+    return [];
+}
+// 股票列表 → 可点击 chip 串（data-code/data-name 供 _twsSumOpenStock 弹框，max 截断，_kplEsc 转义）
+function _twsOppStocks(list, max) {
+    if (!list || !list.length) return '';
+    var n = max || 5;
+    var s = [];
+    for (var i = 0; i < list.length && i < n; i++) {
+        var it = list[i];
+        s.push('<span class="tws-opp-stock" data-code="' + it.code + '" data-name="' + (it.name || '').replace(/'/g, '') + '" onclick="_twsSumOpenStock(this)">' + _kplEsc(it.name) + '</span>');
+    }
+    return s.join('、');
+}
+// 10:00 前封板 = first_time(HHMMSS 整数) < 100000（非 akshare 数据 first_time=999999 自然不满足，不触发 10 点前条件）
+function _twsOppIsEarly(x) {
+    return !!x && !!x.first_time && Number(x.first_time) < 100000;
+}
+// 机会推演推荐股优先级：连板回调(lb/prev>=2) > 20cm套利(创/科) > 1板断板
+function _twsOppTier(x) {
+    if (x.board === '创' || x.board === '科') return 1;   // 20cm套利
+    return ((x.lb || x.prev || 0) >= 2) ? 0 : 2;          // 连板回调 / 1板断板
+}
+function _twsOppCmp(a, b) {
+    var ta = _twsOppTier(a), tb = _twsOppTier(b);
+    if (ta !== tb) return ta - tb;                        // 连板回调 < 20cm < 1板
+    var la = (a.lb || a.prev || 0), lb = (b.lb || b.prev || 0);
+    if (la !== lb) return lb - la;                        // 断板前连板数降序
+    var ga = (a.gap || 99999), gb = (b.gap || 99999);
+    if (ga !== gb) return ga - gb;                        // 断板天数升序（越近越新）
+    return ((b.change_pct || -999) - (a.change_pct || -999));  // 涨幅降序
+}
+function _twsOppSort(list) { return (list || []).slice().sort(_twsOppCmp); }
+// 细分题材 → 可点击 KPL涨停深挖 链接（点击 jumpToKplSearch 切到 KPL涨停深挖 查询），与架构卡题材名同款金虚线下划线
+function _twsOppTheme(theme) {
+    var t = theme || '';
+    var key = t.replace(/'/g, '');
+    return '<a class="tws-opp-theme" href="javascript:void(0)" onclick="jumpToKplSearch(\\x27' + key + '\\x27)" title="KPL涨停深挖：' + _kplEsc(t) + '">「' + _kplEsc(t) + '」</a>';
+}
+function _twsRenderOpportunities(arch) {
+    var MODES = ['晋级助攻', '断板重启', '首板潮', '强势晋级', '首板·重启'];   // 5 模式固定顺序（同模式聚为一组渲染）
+    var buckets = [[], [], [], [], []];
+    function pushOpp(m, text) {
+        buckets[m].push('<div class="tws-opp-item opp-m-' + (m + 1) + '"><span class="tws-opp-mode opp-m-' + (m + 1) + '">' + MODES[m] + '</span><span class="tws-opp-text">' + text + '</span></div>');
+    }
+    for (var i = 0; i < arch.length; i++) {
+        var a = arch[i];
+        var theme = a.theme || '';
+        var maxLb = a.max_lb || 0;
+        var firsts = _twsArchTierStocks(a, 1);          // 首板
+        var hb = _twsArchTierStocks(a, maxLb);          // 最高板
+        var restarts = a.restart || [];
+        var broken = a.broken || [];
+        var mainZt = a.main_zt || [];
+        var gemStar = a.gemstar || [];
+        // 机会1 晋级助攻
+        if (maxLb >= 2 && firsts.length && broken.length && hb.length) {
+            pushOpp(0, _twsOppTheme(theme) + '有 ' + _twsOppStocks([hb[0]]) + ' ' + maxLb + '板晋级，并有 ' + _twsOppStocks(firsts) + ' 首板助攻，关注该题材N字形态，特别是前期连板断板股 ' + _twsOppStocks(_twsOppSort(broken)) + ' 重启机会');
+        }
+        // 机会2 断板重启
+        var earlyR = [];
+        for (var r2 = 0; r2 < restarts.length; r2++) if (_twsOppIsEarly(restarts[r2])) earlyR.push(restarts[r2]);
+        var strongPrev = broken.length ? broken : mainZt;
+        if (earlyR.length && strongPrev.length) {
+            var s2 = '，关注题材前期强势股 ' + _twsOppStocks(_twsOppSort(strongPrev));
+            if (gemStar.length) s2 += ' 和20cm弹性套利机会 ' + _twsOppStocks(gemStar);
+            pushOpp(1, _twsOppTheme(theme) + '有 ' + _twsOppStocks(earlyR) + ' 断板重启，并在10:00前涨停，可能给题材带来行情' + s2);
+        }
+        // 机会3 首板潮
+        if (firsts.length >= 3) {
+            var earlyF = [];
+            for (var f3 = 0; f3 < firsts.length; f3++) if (_twsOppIsEarly(firsts[f3])) earlyF.push(firsts[f3]);
+            if (earlyF.length) {
+                var rbs3 = restarts.concat(_twsOppSort(broken));
+                var s3 = '';
+                if (rbs3.length) s3 += '，关注断板重启 ' + _twsOppStocks(rbs3);
+                if (gemStar.length) s3 += (rbs3.length ? ' 及20cm套利机会 ' : '，关注20cm套利机会 ') + _twsOppStocks(gemStar);
+                pushOpp(2, _twsOppTheme(theme) + '今日首板有 ' + firsts.length + ' 个（' + _twsOppStocks(firsts) + '），其中 ' + _twsOppStocks(earlyF) + ' 在10:00前涨停，明天若有股票晋级2板可能带来题材情绪' + s3);
+            }
+        }
+        // 机会4 强势晋级
+        if (maxLb >= 3 && hb.length) {
+            var cand4 = broken.concat(mainZt, gemStar);
+            if (cand4.length) pushOpp(3, _twsOppStocks(hb) + ' 强势晋级 ' + maxLb + '板，关注' + _twsOppTheme(theme) + '题材N字形态股票机会：' + _twsOppStocks(_twsOppSort(cand4)));
+        }
+        // 机会5 首板·重启
+        if (firsts.length && restarts.length) {
+            var s5 = '，注意该题材N字形态';
+            if (broken.length) s5 += '，特别是前期连板断板股 ' + _twsOppStocks(_twsOppSort(broken)) + ' 重启机会';
+            if (gemStar.length) s5 += '，以及20cm套利机会 ' + _twsOppStocks(gemStar);
+            pushOpp(4, _twsOppTheme(theme) + '有首板 ' + _twsOppStocks(firsts) + ' 和断板重启 ' + _twsOppStocks(restarts) + s5);
+        }
+    }
+    var items = [];
+    for (var b = 0; b < buckets.length; b++) items = items.concat(buckets[b]);
+    if (!items.length) return '';
+    return '<div class="tws-summary-sec-head">🧠 机会推演（' + items.length + '）</div><div class="tws-opp-wrap">' + items.join('') + '</div>';
 }
 
 // 天梯目录点击跳转：滚动到对应细分题材天梯卡（折叠卡自动展开）+ 金色闪烁高亮
