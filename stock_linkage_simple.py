@@ -1272,6 +1272,7 @@ def _kpl_build_akshare_rows(df, date_fmt):
             if industry:
                 reason_tag = industry
                 plate_name = industry
+        first_time = int(row['首次封板时间']) if pd.notna(row.get('首次封板时间')) else 999999
         rows.append({
             'date': date_fmt, 'stock_code': code, 'stock_name': name,
             'lianban_count': lianban,
@@ -1280,6 +1281,7 @@ def _kpl_build_akshare_rows(df, date_fmt):
             'plate_name': plate_name, 'concepts': concepts, 'reason_detail': reason_detail,
             'change_pct': float(row['涨跌幅']) if pd.notna(row.get('涨跌幅')) else 0.0,
             'lianban_computed': lianban,
+            'first_time': first_time,
         })
     return rows
 
@@ -3416,10 +3418,121 @@ def _build_theme_wind_strength(top_n=10):
         'restart_stocks': restart_list,
         'timeline': timeline,
         'arch': _build_arch_diagrams(zt_stocks, date_fmt),
+        'promotion': _build_theme_promotion(date_fmt),
     }
 
 
-# ===== 复盘总结和交易计划（题材风向 Section 5）=====
+# ===== 细分题材晋级（时间轴下方 · 4日连续观察）=====
+_kpl_ak_ft_cache = {}
+def _kpl_akshare_first_times(date_ymd):
+    """akshare 某交易日涨停池 first_time 索引 {code: first_time}（HHMMSS int，无时间 999999）。
+    供 KPL 日文件行（无封板时间）补充涨停时间；复用 _kpl_akshare_zt_rows 的日期缓存。"""
+    if date_ymd in _kpl_ak_ft_cache:
+        return _kpl_ak_ft_cache[date_ymd]
+    ft = {}
+    for r in _kpl_akshare_zt_rows(date_ymd):
+        v = r.get('first_time')
+        try:
+            v = int(v) if v else 999999
+        except (ValueError, TypeError):
+            v = 999999
+        if v < 999999 and r.get('stock_code'):
+            ft[r['stock_code']] = v
+    _kpl_ak_ft_cache[date_ymd] = ft
+    return ft
+
+
+def _build_theme_promotion(date_fmt):
+    """细分题材晋级（4日连续观察）：以 date_fmt 为锚点取最近4个交易日，每列按细分题材聚合当日涨停股，
+    列内严格按涨停时间排序（题材为主角、股票为配角）。
+    返回 {'days': [{date, today, themes: [{theme, cnt, promo, same_stock, stocks: [{code,name,first_time,lianban,board}]}]}]}
+    - cnt = 当日该题材涨停只数（当日出现次数）
+    - promo = 连续晋级天数-1（该题材连续出现 N 天 → +N-1，中断归 0）
+    - same_stock = 该题材今日涨停股 ∩ 前一列同题材涨停股 非空（同一股票连板晋级 vs 新股票接力维持细分热度）"""
+    if not date_fmt:
+        return {'days': []}
+    date_ymd = date_fmt.replace('-', '')
+    tmp = []
+    cur = date_ymd
+    for _ in range(4):
+        tmp.append(cur)
+        cur = _kpl_lagged_day(cur, -1)
+        if not cur:
+            break
+    tmp.reverse()   # 旧 → 新
+    cols = []
+    for dy in tmp:
+        df = f"{dy[:4]}-{dy[4:6]}-{dy[6:]}"
+        rows = _kpl_rows_by_date.get(df) or []
+        is_today = (df == date_fmt)
+        if not rows and is_today and _is_trading_hours():
+            rows = _kpl_today_live_rows()          # 盘中今日 KPL 未生成 → 实时 akshare 涨停池（60s 刷新，含 first_time，保盘中实时）
+        elif not rows:
+            rows = _kpl_akshare_zt_rows(dy)        # KPL 缺文件日 → akshare 涨停池兜底（含 first_time）
+        ft = _kpl_akshare_first_times(dy)          # KPL 文件行补充封板时间
+        theme_map = {}
+        for r in rows:
+            code = r.get('stock_code', '')
+            if not code:
+                continue
+            tags = _traj_valid_tags(r.get('reason_tag', '') or '', r.get('reason_brief', '') or '')
+            if not tags:
+                continue
+            ft_v = r.get('first_time')
+            try:
+                ft_i = int(ft_v) if ft_v else 999999
+            except (ValueError, TypeError):
+                ft_i = 999999
+            if (ft_i >= 999999 or ft_i <= 0) and code in ft:
+                ft_i = ft.get(code, 999999)
+            try:
+                lb = int(r.get('lianban_count', 0) or 0)
+            except (ValueError, TypeError):
+                lb = 0
+            entry = {
+                'code': code,
+                'name': r.get('stock_name', '') or _elastic_stock_name(code) or code,
+                'first_time': ft_i,
+                'lianban': lb,
+                'board': _kpl_board_of_code(code),
+            }
+            for t in tags:      # 多标签归属：一股可进多个细分题材（如 消费电子+苹果概念），不省略题材
+                theme_map.setdefault(t, []).append(entry)
+        themes = []
+        for t, stocks in theme_map.items():
+            stocks.sort(key=lambda x: (x['first_time'], -x['lianban'], x['name']))
+            themes.append({'theme': t, 'cnt': len(stocks), 'stocks': stocks})
+        # 列内题材按最早封板时间排序（无时间沉底）
+        themes.sort(key=lambda x: (x['stocks'][0]['first_time'] if x['stocks'] else 999999, x['theme']))
+        cols.append({'date': df, 'today': df == date_fmt, 'themes': themes})
+    # 晋级标记：与前一列对比
+    for i in range(len(cols)):
+        prev_map = {}
+        if i >= 1:
+            for th in cols[i - 1]['themes']:
+                prev_map[th['theme']] = set(s['code'] for s in th['stocks'])
+        for th in cols[i]['themes']:
+            if i == 0:
+                th['promo'] = 0
+                th['same_stock'] = False
+                continue
+            prev_codes = prev_map.get(th['theme'])
+            cur_codes = set(s['code'] for s in th['stocks'])
+            if prev_codes is None:
+                th['promo'] = 0
+                th['same_stock'] = False
+                continue
+            th['same_stock'] = bool(cur_codes & prev_codes)
+            n = 1
+            j = i - 1
+            while j >= 0:
+                if any(t2['theme'] == th['theme'] for t2 in cols[j]['themes']):
+                    n += 1
+                    j -= 1
+                else:
+                    break
+            th['promo'] = n - 1
+    return {'days': cols}
 _ZT_LADDER_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'zt_ladder_cache')
 # 主线标签 → ETF 名关键词（用于关联 ETF 过滤）。键与 reason_tag 拆分后的标签匹配
 _REVIEW_ETF_TAG_KEYWORDS = {
@@ -8082,6 +8195,44 @@ td.lt-trajectory-cell {
 .tws-tl-theme { color: #4fc3f7; font-size: 0.92em; }
 .tws-tl-chip.tws-tl-ladder .tws-tl-theme { color: #fde68a; }
 .tws-tl-chip.tws-tl-restart .tws-tl-theme { color: #a5f3fc; }
+/* 细分题材晋级（4日连续观察 · 时间轴下方）：题材为主角（金大字）+ 股票配角（小字），配色与时间轴和谐 */
+.tws-tp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; margin-bottom: 2px; }
+.tws-tp-col { background: linear-gradient(135deg, rgba(15,52,96,0.25), rgba(15,52,96,0.1)); border: 1px solid #1e3a5f; border-radius: 10px; padding: 6px 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+.tws-tp-col-today { border-color: rgba(255,215,0,0.55); box-shadow: 0 0 10px rgba(255,215,0,0.18); }
+.tws-tp-col-head { font-size: 0.76em; font-weight: 700; color: #4fc3f7; border-bottom: 1px solid rgba(79,195,247,0.3); padding-bottom: 3px; margin-bottom: 5px; white-space: nowrap; }
+.tws-tp-col-today .tws-tp-col-head { color: #ffd700; border-bottom-color: rgba(255,215,0,0.35); }
+.tws-tp-today-tag { font-size: 0.9em; color: #ffd700; background: rgba(255,215,0,0.15); border: 1px solid rgba(255,215,0,0.5); border-radius: 6px; padding: 0 5px; margin-left: 4px; }
+.tws-tp-theme { margin-bottom: 5px; padding: 3px 5px; border-radius: 8px; background: rgba(30,41,59,0.5); border-left: 3px solid rgba(79,195,247,0.6); }
+.tws-tp-first-tm { font-size: 0.72em; font-weight: 700; color: #fbbf24; background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.4); border-radius: 6px; padding: 0 5px; margin-right: 4px; white-space: nowrap; }
+.tws-tp-t { font-size: 0.85em; font-weight: 800; color: #ffd700; text-decoration: underline; text-decoration-style: dotted; text-decoration-color: rgba(255,215,0,0.5); cursor: pointer; }
+.tws-tp-t:hover { color: #fff; text-shadow: 0 0 8px rgba(255,215,0,0.6); text-decoration-color: rgba(255,255,255,0.9); }
+.tws-tp-cnt { font-size: 0.7em; color: #4fc3f7; background: rgba(79,195,247,0.12); border: 1px solid rgba(79,195,247,0.35); border-radius: 6px; padding: 0 5px; margin-left: 3px; }
+.tws-tp-promo { font-size: 0.66em; font-weight: 700; border-radius: 6px; padding: 0 5px; margin-left: 3px; white-space: nowrap; }
+/* 同股连板晋级：呼吸灯/跑马灯动画，每级颜色不同（+1橙/+2紫/+3金红） */
+.tws-tp-lb-1 { color: #fff7ed; background: linear-gradient(135deg, rgba(249,115,22,0.45), rgba(251,146,60,0.3)); border: 1px solid rgba(251,146,60,0.7); animation: twsTpBreath 1.8s ease-in-out infinite; }
+.tws-tp-lb-2 { color: #faf5ff; background: linear-gradient(135deg, rgba(168,85,247,0.5), rgba(192,132,252,0.32)); border: 1px solid rgba(192,132,252,0.7); animation: twsTpBreath 1.4s ease-in-out infinite; }
+.tws-tp-lb-3 { color: #fff5f5; background: linear-gradient(135deg, rgba(220,38,38,0.55), rgba(255,215,0,0.45)); border: 1px solid rgba(248,113,113,0.75); animation: twsTpMarquee 1.1s ease-in-out infinite; }
+/* 题材维持（新股票接力）：静态色，每级不同（+1青/+2蓝/+3青绿） */
+.tws-tp-kp-1 { color: #ecfeff; background: rgba(6,182,212,0.28); border: 1px solid rgba(34,211,238,0.55); }
+.tws-tp-kp-2 { color: #eff6ff; background: rgba(59,130,246,0.32); border: 1px solid rgba(96,165,250,0.55); }
+.tws-tp-kp-3 { color: #f0fdfa; background: rgba(20,184,166,0.3); border: 1px solid rgba(45,212,191,0.55); }
+@keyframes twsTpBreath {
+    0%, 100% { box-shadow: 0 0 2px rgba(255,180,0,0.2); opacity: 0.85; }
+    50% { box-shadow: 0 0 10px rgba(255,180,0,0.8); opacity: 1; }
+}
+@keyframes twsTpMarquee {
+    0%, 100% { box-shadow: 0 0 3px rgba(255,80,80,0.3); filter: brightness(1); }
+    50% { box-shadow: 0 0 12px rgba(255,215,0,0.9); filter: brightness(1.3); }
+}
+.tws-tp-stocks { display: block; margin-top: 2px; line-height: 1.6; }
+.tws-tp-stock { font-size: 0.66em; color: #cbd5e1; white-space: nowrap; cursor: pointer; }
+.tws-tp-stock:hover { color: #fff; text-shadow: 0 0 6px rgba(255,215,0,0.4); }
+.tws-tp-tm { color: #4fc3f7; font-weight: 600; }
+.tws-tp-lb { color: #fbbf24; font-weight: 700; font-size: 0.95em; }
+.tws-tp-bd { font-size: 0.7em; border-radius: 4px; padding: 0 3px; margin-left: 2px; }
+.tws-tp-bd-gem { color: #22d3ee; border: 1px solid rgba(34,211,238,0.4); }
+.tws-tp-bd-star { color: #a78bfa; border: 1px solid rgba(167,139,250,0.4); }
+.tws-tp-empty { font-size: 0.72em; color: #94a3b8; padding: 4px 0; }
 /* 连板涨停表现天梯：纵向 每档一行（等级徽标 + 今日晋级/昨日断板两组），对齐 .tws-summary 视觉 */
 .tws-ladder { display: flex; flex-direction: column; gap: 6px; }
 .tws-ladder-row { display: flex; align-items: flex-start; gap: 8px; background: rgba(15,52,96,0.25); border: 1px solid #1e3a5f; border-radius: 10px; padding: 6px 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.12); }
@@ -17273,9 +17424,7 @@ function renderThemeWindStrength(sectorData, twsData) {
         h += '<div class="lt-trajectory-loading">' + (twsData && twsData.fallback ? '实时板块数据不可用，已用历史涨停兜底' : '暂无板块数据，非交易时段或数据加载失败') + '</div>';
         return h;
     }
-    for (var i = 0; i < twsData.plates.length; i++) {
-        h += _twsRenderPlateTree(twsData.plates[i], false);   // 全部默认折叠，用户手动展开
-    }
+    // 板块树（芯片/医药等折叠目录）已移至机会推演前方（_twsRenderArchDiagrams 内），此处不再渲染
     return h;
 }
 
@@ -17285,6 +17434,7 @@ function _twsRenderBoardSummary(twsData) {
     if (!twsData || !twsData.plates || !twsData.plates.length) return '';
     var h = '<div class="tws-summary">';
     h += _twsRenderTimeline(twsData);
+    h += _twsRenderThemePromotion(twsData);   // 细分题材晋级（4日连续观察）置于时间轴下方
     h += _twsRenderLadder(twsData);
     // ---- 连板速览：遍历 plates→themes(max_lianban>=2)，取每题材最高档股票，按 code 合并 ----
     var lbMap = {};
@@ -17405,8 +17555,8 @@ function _twsTlChip(it, leftPct, stackTop) {
     var badge = '';
     if (it.type === 'ladder') { cls += ' tws-tl-ladder'; badge = '<span class="tws-tl-badge">' + (it.lianban >= 5 ? '高连板' : (it.lianban + '连板')) + '</span>'; }
     else if (it.type === 'restart') { cls += ' tws-tl-restart'; badge = '<span class="tws-tl-badge">重启</span>'; }
-    var mabHtml = (it.mab && it.mab.length) ? _twsMabChips(it.mab, '', false)
-        : (it.theme ? '<span class="tws-tl-theme">' + _kplEsc(it.theme) + '</span>' : '');
+    var mabHtml = (it.mab && it.mab.length) ? _twsMabChips(it.mab, it.plate || '', true)
+        : (it.theme ? '<span class="tws-tl-theme" data-jump-plate="' + _kplEsc(it.plate || '') + '" data-jump-theme="' + _kplEsc(it.theme) + '" onclick="event.stopPropagation();_twsJumpToTheme(this)" title="点击跳转到下方题材卡">' + _kplEsc(it.theme) + '</span>' : '');
     return '<span class="' + cls + '" style="left:' + leftPct.toFixed(2) + '%;top:' + (stackTop * ROW_H) + 'px" data-code="' + it.code + '" data-name="' + (it.name || '').replace(/'/g, '') + '" onclick="_twsSumOpenStock(this)" title="' + tm + ' ' + (it.name || '') + ' ' + (it.theme || '') + '">' + badge + '<b class="tws-tl-tm">' + tm + '</b><span class="tws-tl-name">' + _kplEsc(it.name) + '</span>' + _twsHotBadge(it.code) + mabHtml + '</span>';
 }
 function _twsRenderTimeline(twsData, boxId) {
@@ -17488,6 +17638,68 @@ function _twsRenderTimeline(twsData, boxId) {
     }
     h += '</div></div></div>';
     return h;
+}
+// ===== 细分题材晋级（4日连续观察 · 时间轴下方）=====
+// 4 列 = 上上上/上上/上一/今日，每列严格按涨停时间排序；题材为主角（金大字）、股票为配角（小字）。
+// promo>=1 时对比前一日：同股连板晋级(金红「同股连板 +N」) vs 新股票接力维持细分热度(青「题材维持 +N」)
+function _twsTpTheme(th) {
+    // 题材首个涨停股出现时间（联动套利关键：该细分题材今日的封板起点，stocks 已按 first_time 升序）
+    var ft0 = th.stocks && th.stocks.length ? (th.stocks[0].first_time || 0) : 0;
+    var ftHtml = (ft0 && ft0 < 999999) ? '<span class="tws-tp-first-tm" title="今日该细分题材首个涨停股封板时间">' + _kplLevelFormatTime(ft0) + '</span>' : '';
+    var promoHtml = '';
+    if (th.promo && th.promo >= 1) {
+        var plv = th.promo >= 3 ? 3 : th.promo;   // 分级：+1/+2/+3以上 各一种颜色
+        var pcls = th.same_stock ? 'tws-tp-lb tws-tp-lb-' + plv : 'tws-tp-kp tws-tp-kp-' + plv;
+        var ptxt = th.same_stock ? '同股连板 +' + th.promo : '题材维持 +' + th.promo;
+        promoHtml = '<span class="tws-tp-promo ' + pcls + '" title="' + (th.same_stock ? '同一股票连续涨停晋级（呼吸灯/跑马灯动画）' : '今日为新股票接力，细分题材热度维持') + '">' + ptxt + '</span>';
+    }
+    var stocks = [];
+    for (var i = 0; i < th.stocks.length; i++) {
+        var s = th.stocks[i];
+        var tm = _kplLevelFormatTime(s.first_time);
+        var lbTag = s.lianban >= 2 ? '<b class="tws-tp-lb">' + s.lianban + '板</b>' : '';
+        var bdTag = s.board === '创' ? '<span class="tws-tp-bd tws-tp-bd-gem">创</span>' : (s.board === '科' ? '<span class="tws-tp-bd tws-tp-bd-star">科</span>' : '');
+        stocks.push('<span class="tws-tp-stock" data-code="' + s.code + '" data-name="' + (s.name || '').replace(/'/g, '') + '" onclick="_twsSumOpenStock(this)">' + (tm ? '<span class="tws-tp-tm">' + tm + '</span>' : '') + _kplEsc(s.name) + bdTag + lbTag + '</span>');
+    }
+    var themeKey = (th.theme || '').replace(/'/g, '');
+    return '<div class="tws-tp-theme">' + ftHtml + '<a class="tws-tp-t" href="javascript:void(0)" onclick="event.stopPropagation();_twsTpJump(\\x27' + themeKey + '\\x27)" title="点击跳转：下方板块-题材（含强度） 或 KPL涨停深挖">' + _kplEsc(th.theme) + '</a><span class="tws-tp-cnt">×' + th.cnt + '</span>' + promoHtml + '<span class="tws-tp-stocks">' + stocks.join('、') + '</span></div>';
+}
+function _twsRenderThemePromotion(twsData) {
+    var days = twsData && twsData.promotion && twsData.promotion.days;
+    if (!days || !days.length) return '';
+    var h = '<div class="tws-summary-sec-head">🚀 细分题材晋级 <span style="font-size:0.7em;color:#4fc3f7;font-weight:600;">（4日连续观察 · 题材为主 · 按涨停时间）</span></div>';
+    h += '<div class="tws-tp-grid">';
+    // 展示顺序反转：今日在最左，右侧依次往前推（days = [旧→新]，倒序遍历）
+    for (var i = days.length - 1; i >= 0; i--) {
+        var d = days[i];
+        var dshort = (d.date || '').slice(5);
+        h += '<div class="tws-tp-col' + (d.today ? ' tws-tp-col-today' : '') + '">';
+        h += '<div class="tws-tp-col-head">' + dshort + (d.today ? ' <span class="tws-tp-today-tag">今日</span>' : '') + '</div>';
+        if (!d.themes || !d.themes.length) {
+            h += '<div class="tws-tp-empty">—</div>';
+        } else {
+            for (var j = 0; j < d.themes.length; j++) h += _twsTpTheme(d.themes[j]);
+        }
+        h += '</div>';
+    }
+    h += '</div>';
+    return h;
+}
+// 细分题材名点击：先找下方板块-题材（含强度）目录，命中则跳转（展开+滚动+闪烁）；未命中则跳 KPL涨停深挖搜索该题材
+function _twsTpJump(theme) {
+    if (!theme) return;
+    var target = _twsFindThemeTarget('', theme);
+    if (target) {
+        var probe = document.createElement('span');
+        probe.setAttribute('data-jump-plate', '');
+        probe.setAttribute('data-jump-theme', theme);
+        probe.style.display = 'none';
+        document.body.appendChild(probe);
+        _twsJumpToTheme(probe);
+        probe.parentNode.removeChild(probe);
+        return;
+    }
+    jumpToKplSearch(theme);
 }
 // 刷新门控：仅北京时间 9:25~15:30 自动刷新（盘后停止自动网络请求，手动↻随时可用）
 function _twsRefreshGate() {
@@ -17578,6 +17790,9 @@ function _twsRenderArchDiagrams(twsData) {
         h += '<span class="tws-arch-nav-item" data-theme="' + themeKey + '" onclick="_twsArchNavJump(this)"><span class="tws-arch-nav-lv ' + lvCls + '">' + a.max_lb + '板</span>' + _kplEsc(a.theme) + newDot + '</span>';
     }
     h += '</div>';
+    // 板块树（芯片/医药等折叠目录）置于机会推演之前：题材风向精选板块整体前移
+    var twPlates = (twsData && twsData.plates) || [];
+    for (var pi = 0; pi < twPlates.length; pi++) h += _twsRenderPlateTree(twPlates[pi], false);
     h += _twsRenderOpportunities(arch);   // 机会推演（天梯目录下方，卡之前）
     for (var j = 0; j < arch.length; j++) h += _twsRenderArchCard(arch[j]);
     h += '</div>';
