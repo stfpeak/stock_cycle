@@ -267,6 +267,367 @@ def _send_feishu_webhook():
     except Exception:
         pass
 
+# ===== 实时盯盘 · 飞书推送（新细分题材 / 题材新增股票）=====
+_RTW_ENABLED = True          # 总开关（False 关闭推送）
+_RTW_INTERVAL = 60           # 轮询间隔（秒）
+_RTW_PUSH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'rtw_seen.json')  # 已通知状态（跨重启持久化，防重启重复推送）
+_rtw_seen = {}               # {date: {theme: {code: {code,name,first_time,lianban,board}}}} 已推送过的 题材→股票
+_rtw_lock = threading.Lock()
+_rtw_live_cache = None
+_rtw_live_ts = 0.0
+
+
+def _rtw_level_time(ft):
+    """HHMMSS 整数 → HH:MM（无时间/异常 → ''）。"""
+    try:
+        ft_i = int(ft)
+    except (ValueError, TypeError):
+        return ''
+    if ft_i >= 999999 or ft_i <= 0:
+        return ''
+    s = str(ft_i).zfill(6)
+    return s[:2] + ':' + s[2:4]
+
+
+def _send_feishu_realtime(text):
+    """发送【实时盯盘】飞书推送，静默处理所有异常。"""
+    try:
+        requests.post(_FEISHU_WEBHOOK_URL, json={'msg_type': 'text', 'content': {'text': text}}, timeout=10)
+    except Exception:
+        pass
+
+
+def _rtw_load_seen():
+    global _rtw_seen
+    try:
+        if os.path.exists(_RTW_PUSH_FILE):
+            with open(_RTW_PUSH_FILE, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                _rtw_seen = loaded
+    except Exception:
+        _rtw_seen = {}
+
+
+def _rtw_save_seen():
+    try:
+        tmp = _RTW_PUSH_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(_rtw_seen, f, ensure_ascii=False)
+        os.replace(tmp, _RTW_PUSH_FILE)
+    except Exception:
+        pass
+
+
+def _rtw_live_rows(today_ymd, today_fmt):
+    """实时盯盘专用涨停池：交易时段 = akshare 实时涨停池（60s 独立缓存，无视 KPL 日文件门控，保证盘中最新）；
+    非交易时段回退今日 KPL 文件行（无则空）。"""
+    global _rtw_live_cache, _rtw_live_ts
+    now = time.time()
+    if not _is_trading_hours():
+        _rtw_live_cache = None
+        return _kpl_rows_by_date.get(today_fmt) or []
+    if _rtw_live_cache is not None and now - _rtw_live_ts < 60:
+        return _rtw_live_cache
+    rows = []
+    try:
+        import akshare as ak
+        df = ak.stock_zt_pool_em(date=today_ymd)
+        rows = _kpl_build_akshare_rows(df, today_fmt)
+    except Exception:
+        rows = []
+    _rtw_live_cache = rows
+    _rtw_live_ts = now
+    return rows
+
+
+def _rtw_today_snapshot(today_fmt, today_ymd):
+    """今日题材快照：{theme: {code: {code,name,first_time,lianban,board}}}，与细分题材晋级今日列同口径
+    （_traj_valid_tags 多标签归属 + first_time/lianban/board）。返回空 dict 表示无数据。"""
+    _kpl_ensure_loaded()
+    rows = _rtw_live_rows(today_ymd, today_fmt)
+    if not rows and today_fmt in _kpl_day_cache:
+        rows = _kpl_rows_by_date.get(today_fmt) or []
+    ft = _kpl_akshare_first_times(today_ymd)
+    snap = {}
+    for r in rows:
+        code = r.get('stock_code', '')
+        if not code:
+            continue
+        tags = _traj_valid_tags(r.get('reason_tag', '') or '', r.get('reason_brief', '') or '')
+        if not tags:
+            continue
+        ft_v = r.get('first_time')
+        try:
+            ft_i = int(ft_v) if ft_v else 999999
+        except (ValueError, TypeError):
+            ft_i = 999999
+        if (ft_i >= 999999 or ft_i <= 0) and code in ft:
+            ft_i = ft.get(code, 999999)
+        lb = _kpl_true_lianban(r, today_fmt)
+        entry = {
+            'code': code,
+            'name': r.get('stock_name', '') or _elastic_stock_name(code) or code,
+            'first_time': ft_i,
+            'lianban': lb,
+            'board': _kpl_board_of_code(code),
+        }
+        for t in tags:
+            snap.setdefault(t, {})[code] = entry
+    return snap
+
+
+def _rtw_promo(today_ymd, theme, cur_stocks):
+    """题材晋级标记：与细分题材晋级同口径——promo=该题材当日涨停股最高连板数（全首板→0）。
+    same_stock=今日代码∩前一交易日同题材代码非空（同一股票连板晋级）。
+    返回 (promo, same_stock)：promo=最高连板数（<2 归0不显示）；same 判定沿交易日回溯最近有该题材的一日。"""
+    cur_codes = set(cur_stocks.keys())
+    max_lb = 0
+    for s in cur_stocks.values():
+        lb = s.get('lianban', 0) or 0
+        if lb > max_lb:
+            max_lb = lb
+    promo = max_lb if max_lb >= 2 else 0
+    prev_codes = None
+    cur = today_ymd
+    for _ in range(3):
+        p = _kpl_lagged_day(cur, -1)
+        if not p:
+            break
+        df = f"{p[:4]}-{p[4:6]}-{p[6:]}"
+        rows = _kpl_rows_by_date.get(df) or []
+        if not rows:
+            rows = _kpl_akshare_zt_rows(p)
+        codes = set()
+        for r in rows:
+            sc = r.get('stock_code', '')
+            if not sc:
+                continue
+            tags = _traj_valid_tags(r.get('reason_tag', '') or '', r.get('reason_brief', '') or '')
+            if theme in tags:
+                codes.add(sc)
+        if not codes:
+            break
+        if prev_codes is None:
+            prev_codes = codes
+        cur = p
+    same = bool(cur_codes & prev_codes) if (promo >= 1 and prev_codes) else False
+    return (promo, same)
+
+
+def _rtw_stock_txt(s):
+    """单只涨停股文本：· HH:MM 名称 [板块] N板（连板才显示 N板，首板不带板数）。每只一行，便于扫读。"""
+    parts = []
+    tm = _rtw_level_time(s.get('first_time'))
+    if tm:
+        parts.append(tm)
+    parts.append(s.get('name', '') or s.get('code', ''))
+    bd = s.get('board', '')
+    if bd == '创':
+        parts.append('[创业板]')
+    elif bd == '科':
+        parts.append('[科创]')
+    elif bd == '主':
+        parts.append('[主板]')
+    lb = s.get('lianban', 0) or 0
+    if lb >= 2:
+        parts.append(str(lb) + '板')
+    return '· ' + ' '.join(parts)
+
+
+def _rtw_promo_line(promo, same):
+    if promo >= 2:
+        return '晋级：' + ('同股连板 +' + str(promo) if same else '题材维持 +' + str(promo))
+    return ''
+
+
+def _rtw_format_new_theme(today_ymd, theme, stocks, promo_info):
+    """新题材出现消息：首封时间 + 涨停股数 + 全部涨停股（每只一行）+ 晋级标记。"""
+    s_list = sorted(stocks.values(), key=lambda x: (x['first_time'], -x['lianban'], x['name']))
+    promo, same = promo_info
+    lines = ['🆕 新题材：' + theme + '（' + str(len(s_list)) + '只涨停）']
+    if s_list:
+        lines.append('  首封 ' + (_rtw_level_time(s_list[0].get('first_time')) or '--') + ' · ' + (s_list[0].get('name') or ''))
+    pl = _rtw_promo_line(promo, same)
+    if pl:
+        lines.append('  ⚡ ' + pl)
+    lines.append('  涨停股：')
+    for s in s_list:
+        lines.append('  ' + _rtw_stock_txt(s))
+    return '\n'.join(lines)
+
+
+def _rtw_format_new_stock(today_ymd, theme, entry, all_stocks, promo_info):
+    """题材新增股票消息：新涨停股 + 该题材当前全部涨停股（每只一行）。"""
+    s_list = sorted(all_stocks.values(), key=lambda x: (x['first_time'], -x['lianban'], x['name']))
+    promo, same = promo_info
+    lines = ['➕ 题材新增：' + theme + '（现有' + str(len(s_list)) + '只涨停）']
+    lines.append('  新涨停：' + ' '.join(_rtw_stock_txt(entry).lstrip('· ').split()))
+    pl = _rtw_promo_line(promo, same)
+    if pl:
+        lines.append('  ⚡ ' + pl)
+    lines.append('  该题材涨停股：')
+    for s in s_list:
+        lines.append('  ' + _rtw_stock_txt(s))
+    return '\n'.join(lines)
+
+
+def _rtw_check_once():
+    """单次实时盯盘检查：构建今日题材快照，与已通知状态比对，推送 新题材/新股票。"""
+    now_bj = datetime.now(timezone(timedelta(hours=8)))
+    today_fmt = now_bj.strftime('%Y-%m-%d')
+    today_ymd = now_bj.strftime('%Y%m%d')
+    snap = _rtw_today_snapshot(today_fmt, today_ymd)
+    if not snap:
+        return
+    with _rtw_lock:
+        day_seen = _rtw_seen.setdefault(today_fmt, {})
+        new_themes = []
+        new_stocks = []   # (theme, code)
+        for theme in sorted(snap.keys()):
+            stocks = snap[theme]
+            prev_codes = day_seen.get(theme)
+            if prev_codes is None:
+                new_themes.append(theme)
+            else:
+                for code in stocks:
+                    if code not in prev_codes:
+                        new_stocks.append((theme, code))
+        # 合并已通知状态（只增不删，防接口波动导致旧股票被误当新增重复推送）
+        for theme, stocks in snap.items():
+            d = day_seen.setdefault(theme, {})
+            for code, entry in stocks.items():
+                d[code] = entry
+    # 锁外推送
+    promo_cache = {}
+    for theme in new_themes:
+        stocks = snap[theme]
+        if theme not in promo_cache:
+            promo_cache[theme] = _rtw_promo(today_ymd, theme, stocks)
+        _send_feishu_realtime(_rtw_format_new_theme(today_ymd, theme, stocks, promo_cache[theme]))
+    for theme, code in new_stocks:
+        stocks = snap[theme]
+        if theme not in promo_cache:
+            promo_cache[theme] = _rtw_promo(today_ymd, theme, stocks)
+        _send_feishu_realtime(_rtw_format_new_stock(today_ymd, theme, stocks[code], stocks, promo_cache[theme]))
+    _rtw_save_seen()
+
+
+def _rtw_next_open_seconds(now_bj):
+    """距下一交易日 9:25（北京时间）的秒数；非交易日/盘后休眠用。找不到交易日回退 1800s。"""
+    today_ymd = now_bj.strftime('%Y%m%d')
+    for d in _trading_days:
+        if d > today_ymd:
+            y = int(d[:4]); m = int(d[4:6]); day = int(d[6:])
+            target = datetime(y, m, day, 9, 25, 0, tzinfo=timezone(timedelta(hours=8)))
+            return max(int((target - now_bj).total_seconds()), 1)
+    return 1800
+
+
+def _rtw_send_final(today_fmt, today_ymd):
+    """15:00 收盘推送全天最终状态：当日全部细分题材及全部涨停股（全量不遗漏），按题材排序后分块发送。
+    数据源=akshare 当日最终涨停池（收盘后数据完整），失败回退 KPL 文件。"""
+    rows = []
+    try:
+        import akshare as ak
+        df = ak.stock_zt_pool_em(date=today_ymd)
+        rows = _kpl_build_akshare_rows(df, today_fmt)
+    except Exception:
+        rows = _kpl_rows_by_date.get(today_fmt) or []
+    if not rows:
+        return
+    ft = _kpl_akshare_first_times(today_ymd)
+    theme_map = {}
+    for r in rows:
+        code = r.get('stock_code', '')
+        if not code:
+            continue
+        tags = _traj_valid_tags(r.get('reason_tag', '') or '', r.get('reason_brief', '') or '')
+        if not tags:
+            continue
+        ft_v = r.get('first_time')
+        try:
+            ft_i = int(ft_v) if ft_v else 999999
+        except (ValueError, TypeError):
+            ft_i = 999999
+        if (ft_i >= 999999 or ft_i <= 0) and code in ft:
+            ft_i = ft.get(code, 999999)
+        lb = _kpl_true_lianban(r, today_fmt)
+        entry = {
+            'code': code,
+            'name': r.get('stock_name', '') or _elastic_stock_name(code) or code,
+            'first_time': ft_i,
+            'lianban': lb,
+            'board': _kpl_board_of_code(code),
+        }
+        for t in tags:
+            theme_map.setdefault(t, {})[code] = entry
+    if not theme_map:
+        return
+    themes = sorted(theme_map.items(), key=lambda kv: min((s['first_time'] for s in kv[1].values()), default=999999))
+    chunks = []
+    cur = ['📊 全天最终状态 ' + today_fmt + ' · ' + str(len(themes)) + '个细分题材']
+    cur_len = len(cur[0])
+    for t, stocks in themes:
+        s_list = sorted(stocks.values(), key=lambda x: (x['first_time'], -x['lianban'], x['name']))
+        promo, same = _rtw_promo(today_ymd, t, stocks)
+        lines = ['【' + t + '】' + str(len(s_list)) + '只 · 首封 ' + (_rtw_level_time(s_list[0].get('first_time')) or '--') + ' · ' + (s_list[0].get('name') or '')]
+        pl = _rtw_promo_line(promo, same)
+        if pl:
+            lines.append('  ⚡ ' + pl)
+        for s in s_list:
+            lines.append('  ' + _rtw_stock_txt(s))
+        block = '\n'.join(lines)
+        if cur_len + len(block) > 900:   # 按字符数分块（中文 UTF-8 3字节/字，900 字符≈2700 字节，留足余量防超 4096）
+            chunks.append('\n'.join(cur))
+            cur = ['📊 全天最终状态 ' + today_fmt + '（续）']
+            cur_len = len(cur[0])
+        cur.append(block)
+        cur.append('')
+        cur_len += len(block) + 1
+    if len(cur) > 1:
+        chunks.append('\n'.join(cur))
+    for text in chunks:
+        _send_feishu_realtime(text)
+
+
+def _rtw_loop():
+    """实时盯盘后台线程：仅交易日北京时区 9:25~15:00 每 60s 增量推送；15:00~15:30 推送全天最终状态（一次）；
+    15:30 后与非交易日休眠至下一交易日开盘（不检查不推送）；跨日自动重置已通知状态。"""
+    global _rtw_seen
+    _rtw_load_seen()
+    last_date = None
+    final_sent = False   # 当日 15:00 全天最终状态是否已推送
+    while True:
+        try:
+            now_bj = datetime.now(timezone(timedelta(hours=8)))
+            today_fmt = now_bj.strftime('%Y-%m-%d')
+            today_ymd = now_bj.strftime('%Y%m%d')
+            total = now_bj.hour * 60 + now_bj.minute
+            # 跨日重置
+            if last_date != today_fmt:
+                last_date = today_fmt
+                final_sent = False
+                with _rtw_lock:
+                    _rtw_seen = {today_fmt: _rtw_seen.get(today_fmt, {})}
+                _rtw_save_seen()
+            is_trade_day = today_ymd in _trading_days
+            if not is_trade_day or not _RTW_ENABLED:
+                # 非交易日或功能关闭：休眠到下一交易日开盘
+                time.sleep(min(_rtw_next_open_seconds(now_bj), 1800))
+                continue
+            if total >= 930:   # 15:30 后不再运行该功能
+                time.sleep(min(_rtw_next_open_seconds(now_bj), 1800))
+                continue
+            if 565 <= total < 900:   # 9:25~15:00 增量推送
+                _rtw_check_once()
+            elif 900 <= total < 930 and not final_sent:   # 15:00~15:30 全天最终状态（一次）
+                final_sent = True
+                _rtw_send_final(today_fmt, today_ymd)
+            time.sleep(_RTW_INTERVAL)
+        except Exception:
+            time.sleep(_RTW_INTERVAL)
+
 _industry_chain_data = None     # 产业链数据缓存
 
 # 启动时加载索引文件
@@ -972,6 +1333,28 @@ def _kpl_compute_lianban(stock_code, date_str):
         else:
             break
     return lb
+
+
+def _kpl_true_lianban(r, date_fmt):
+    """从 KPL/akshare 涨停行取「真实连续连板数」。
+    akshare 合成行/live 行带 lianban_computed（akshare「连板数」列=连续涨停天数，可靠）；
+    KPL 文件行的 lianban_count 是「N天M板」的 M（近期累计涨停次数，非连续连板，如 哈森股份 5天4板→4 实际 2连板）
+    → 用 _kpl_compute_lianban 沿 KPL 实际数据重算连续涨停天数。date_fmt: YYYY-MM-DD。"""
+    if r.get('lianban_computed') is not None:
+        try:
+            return int(r.get('lianban_computed') or 0)
+        except (ValueError, TypeError):
+            return 0
+    code = r.get('stock_code', '')
+    if code and date_fmt:
+        try:
+            return int(_kpl_compute_lianban(code, date_fmt))
+        except (ValueError, TypeError):
+            return 0
+    try:
+        return int(r.get('lianban_count', 0) or 0)
+    except (ValueError, TypeError):
+        return 0
 
 
 def _kpl_lagged_day(date_ymd, lag):
@@ -3447,7 +3830,7 @@ def _build_theme_promotion(date_fmt):
     列内严格按涨停时间排序（题材为主角、股票为配角）。
     返回 {'days': [{date, today, themes: [{theme, cnt, promo, same_stock, stocks: [{code,name,first_time,lianban,board}]}]}]}
     - cnt = 当日该题材涨停只数（当日出现次数）
-    - promo = 连续晋级天数-1（该题材连续出现 N 天 → +N-1，中断归 0）
+    - promo = 该题材当日涨停股最高连板数（全首板为 0 不显示；就算 2 只 2 连板也是 +2）
     - same_stock = 该题材今日涨停股 ∩ 前一列同题材涨停股 非空（同一股票连板晋级 vs 新股票接力维持细分热度）"""
     if not date_fmt:
         return {'days': []}
@@ -3485,10 +3868,7 @@ def _build_theme_promotion(date_fmt):
                 ft_i = 999999
             if (ft_i >= 999999 or ft_i <= 0) and code in ft:
                 ft_i = ft.get(code, 999999)
-            try:
-                lb = int(r.get('lianban_count', 0) or 0)
-            except (ValueError, TypeError):
-                lb = 0
+            lb = _kpl_true_lianban(r, df)
             entry = {
                 'code': code,
                 'name': r.get('stock_name', '') or _elastic_stock_name(code) or code,
@@ -3523,15 +3903,21 @@ def _build_theme_promotion(date_fmt):
                 th['same_stock'] = False
                 continue
             th['same_stock'] = bool(cur_codes & prev_codes)
-            n = 1
-            j = i - 1
-            while j >= 0:
-                if any(t2['theme'] == th['theme'] for t2 in cols[j]['themes']):
-                    n += 1
-                    j -= 1
-                else:
-                    break
-            th['promo'] = n - 1
+            # promo = 该题材当日涨停股最高连板数（全首板→0 不显示；就算 2 只 2 连板也是 +2）
+            max_lb = 0
+            for s in th['stocks']:
+                lb = s.get('lianban', 0) or 0
+                if lb > max_lb:
+                    max_lb = lb
+            th['promo'] = max_lb if max_lb >= 2 else 0
+    # is_new：前3个交易日（前3列）均未出现的题材 → 今日首次出现，前端在同股连板同位置标 New
+    if cols:
+        prev_themes = set()
+        for c in cols[:-1]:
+            for th in c['themes']:
+                prev_themes.add(th['theme'])
+        for th in cols[-1]['themes']:
+            th['is_new'] = th['theme'] not in prev_themes
     return {'days': cols}
 _ZT_LADDER_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'zt_ladder_cache')
 # 主线标签 → ETF 名关键词（用于关联 ETF 过滤）。键与 reason_tag 拆分后的标签匹配
@@ -8202,31 +8588,26 @@ td.lt-trajectory-cell {
 .tws-tp-col-head { font-size: 0.76em; font-weight: 700; color: #4fc3f7; border-bottom: 1px solid rgba(79,195,247,0.3); padding-bottom: 3px; margin-bottom: 5px; white-space: nowrap; }
 .tws-tp-col-today .tws-tp-col-head { color: #ffd700; border-bottom-color: rgba(255,215,0,0.35); }
 .tws-tp-today-tag { font-size: 0.9em; color: #ffd700; background: rgba(255,215,0,0.15); border: 1px solid rgba(255,215,0,0.5); border-radius: 6px; padding: 0 5px; margin-left: 4px; }
-.tws-tp-theme { margin-bottom: 5px; padding: 3px 5px; border-radius: 8px; background: rgba(30,41,59,0.5); border-left: 3px solid rgba(79,195,247,0.6); }
+.tws-tp-theme { margin-bottom: 5px; padding: 3px 5px; border-radius: 8px; background: rgba(30,41,59,0.5); border-left: 3px solid rgba(79,195,247,0.6); display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; }
 .tws-tp-first-tm { font-size: 0.72em; font-weight: 700; color: #fbbf24; background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.4); border-radius: 6px; padding: 0 5px; margin-right: 4px; white-space: nowrap; }
 .tws-tp-t { font-size: 0.85em; font-weight: 800; color: #ffd700; text-decoration: underline; text-decoration-style: dotted; text-decoration-color: rgba(255,215,0,0.5); cursor: pointer; }
 .tws-tp-t:hover { color: #fff; text-shadow: 0 0 8px rgba(255,215,0,0.6); text-decoration-color: rgba(255,255,255,0.9); }
 .tws-tp-cnt { font-size: 0.7em; color: #4fc3f7; background: rgba(79,195,247,0.12); border: 1px solid rgba(79,195,247,0.35); border-radius: 6px; padding: 0 5px; margin-left: 3px; }
-.tws-tp-promo { font-size: 0.66em; font-weight: 700; border-radius: 6px; padding: 0 5px; margin-left: 3px; white-space: nowrap; }
-/* 同股连板晋级：呼吸灯/跑马灯动画，每级颜色不同（+1橙/+2紫/+3金红） */
-.tws-tp-lb-1 { color: #fff7ed; background: linear-gradient(135deg, rgba(249,115,22,0.45), rgba(251,146,60,0.3)); border: 1px solid rgba(251,146,60,0.7); animation: twsTpBreath 1.8s ease-in-out infinite; }
-.tws-tp-lb-2 { color: #faf5ff; background: linear-gradient(135deg, rgba(168,85,247,0.5), rgba(192,132,252,0.32)); border: 1px solid rgba(192,132,252,0.7); animation: twsTpBreath 1.4s ease-in-out infinite; }
-.tws-tp-lb-3 { color: #fff5f5; background: linear-gradient(135deg, rgba(220,38,38,0.55), rgba(255,215,0,0.45)); border: 1px solid rgba(248,113,113,0.75); animation: twsTpMarquee 1.1s ease-in-out infinite; }
-/* 题材维持（新股票接力）：静态色，每级不同（+1青/+2蓝/+3青绿） */
-.tws-tp-kp-1 { color: #ecfeff; background: rgba(6,182,212,0.28); border: 1px solid rgba(34,211,238,0.55); }
-.tws-tp-kp-2 { color: #eff6ff; background: rgba(59,130,246,0.32); border: 1px solid rgba(96,165,250,0.55); }
-.tws-tp-kp-3 { color: #f0fdfa; background: rgba(20,184,166,0.3); border: 1px solid rgba(45,212,191,0.55); }
-@keyframes twsTpBreath {
-    0%, 100% { box-shadow: 0 0 2px rgba(255,180,0,0.2); opacity: 0.85; }
-    50% { box-shadow: 0 0 10px rgba(255,180,0,0.8); opacity: 1; }
-}
-@keyframes twsTpMarquee {
-    0%, 100% { box-shadow: 0 0 3px rgba(255,80,80,0.3); filter: brightness(1); }
-    50% { box-shadow: 0 0 12px rgba(255,215,0,0.9); filter: brightness(1.3); }
-}
-.tws-tp-stocks { display: block; margin-top: 2px; line-height: 1.6; }
+.tws-tp-theme .tws-tp-promo { font-size: 0.55em; font-weight: 700; border-radius: 5px; padding: 0 4px; margin-left: auto; white-space: nowrap; }
+/* New 徽标：前3交易日未出现的今日新题材，与 promo 同位置（靠右），红金渐变比 promo 醒目 */
+.tws-tp-theme .tws-tp-new { font-size: 0.6em; font-weight: 800; border-radius: 5px; padding: 0 5px; margin-left: auto; white-space: nowrap; color: #fff; background: linear-gradient(135deg, rgba(220,38,38,0.85), rgba(249,115,22,0.65)); border: 1px solid rgba(248,113,113,0.85); box-shadow: 0 0 6px rgba(249,115,22,0.45); letter-spacing: 0.5px; }
+/* 同股连板晋级：静态色（呼吸灯已取消），每级颜色不同（+2橙/+3紫/更高金红） */
+.tws-tp-lb-2 { color: #fff7ed; background: linear-gradient(135deg, rgba(249,115,22,0.45), rgba(251,146,60,0.3)); border: 1px solid rgba(251,146,60,0.7); }
+.tws-tp-lb-3 { color: #faf5ff; background: linear-gradient(135deg, rgba(168,85,247,0.5), rgba(192,132,252,0.32)); border: 1px solid rgba(192,132,252,0.7); }
+.tws-tp-lb-4 { color: #fff5f5; background: linear-gradient(135deg, rgba(220,38,38,0.55), rgba(255,215,0,0.45)); border: 1px solid rgba(248,113,113,0.75); }
+/* 题材维持（新股票接力）：静态色，每级不同（+2青/+3蓝/更高青绿） */
+.tws-tp-kp-2 { color: #ecfeff; background: rgba(6,182,212,0.28); border: 1px solid rgba(34,211,238,0.55); }
+.tws-tp-kp-3 { color: #eff6ff; background: rgba(59,130,246,0.32); border: 1px solid rgba(96,165,250,0.55); }
+.tws-tp-kp-4 { color: #f0fdfa; background: rgba(20,184,166,0.3); border: 1px solid rgba(45,212,191,0.55); }
+.tws-tp-stocks { display: block; margin-top: 2px; line-height: 1.6; flex-basis: 100%; }
 .tws-tp-stock { font-size: 0.66em; color: #cbd5e1; white-space: nowrap; cursor: pointer; }
 .tws-tp-stock:hover { color: #fff; text-shadow: 0 0 6px rgba(255,215,0,0.4); }
+.tws-tp-stock-lb { color: #ffd700; }   /* 连板股票金色标识 */
 .tws-tp-tm { color: #4fc3f7; font-weight: 600; }
 .tws-tp-lb { color: #fbbf24; font-weight: 700; font-size: 0.95em; }
 .tws-tp-bd { font-size: 0.7em; border-radius: 4px; padding: 0 3px; margin-left: 2px; }
@@ -17647,22 +18028,28 @@ function _twsTpTheme(th) {
     var ft0 = th.stocks && th.stocks.length ? (th.stocks[0].first_time || 0) : 0;
     var ftHtml = (ft0 && ft0 < 999999) ? '<span class="tws-tp-first-tm" title="今日该细分题材首个涨停股封板时间">' + _kplLevelFormatTime(ft0) + '</span>' : '';
     var promoHtml = '';
-    if (th.promo && th.promo >= 1) {
-        var plv = th.promo >= 3 ? 3 : th.promo;   // 分级：+1/+2/+3以上 各一种颜色
+    if (th.promo && th.promo >= 2) {   // promo = 该题材涨停股最高连板数，全首板不显示
+        var plv = th.promo >= 4 ? 4 : th.promo;   // 分级：+2橙/+3紫/+4+金红 各一种颜色
         var pcls = th.same_stock ? 'tws-tp-lb tws-tp-lb-' + plv : 'tws-tp-kp tws-tp-kp-' + plv;
         var ptxt = th.same_stock ? '同股连板 +' + th.promo : '题材维持 +' + th.promo;
-        promoHtml = '<span class="tws-tp-promo ' + pcls + '" title="' + (th.same_stock ? '同一股票连续涨停晋级（呼吸灯/跑马灯动画）' : '今日为新股票接力，细分题材热度维持') + '">' + ptxt + '</span>';
+        promoHtml = '<span class="tws-tp-promo ' + pcls + '" title="' + (th.same_stock ? '同一股票连续涨停晋级（+N=该题材最高连板数）' : '今日为新股票接力，细分题材热度维持（+N=该题材最高连板数）') + '">' + ptxt + '</span>';
+    }
+    // is_new：前3个交易日均未出现、今日首次出现的细分题材 → 与 promo 同位置标 New
+    var newHtml = '';
+    if (th.is_new) {
+        newHtml = '<span class="tws-tp-new" title="前3个交易日未出现，今日首次出现的细分题材">New</span>';
     }
     var stocks = [];
     for (var i = 0; i < th.stocks.length; i++) {
         var s = th.stocks[i];
         var tm = _kplLevelFormatTime(s.first_time);
-        var lbTag = s.lianban >= 2 ? '<b class="tws-tp-lb">' + s.lianban + '板</b>' : '';
+        var isLb = s.lianban >= 2;
+        var lbTag = isLb ? '<b class="tws-tp-lb">' + s.lianban + '板</b>' : '';
         var bdTag = s.board === '创' ? '<span class="tws-tp-bd tws-tp-bd-gem">创</span>' : (s.board === '科' ? '<span class="tws-tp-bd tws-tp-bd-star">科</span>' : '');
-        stocks.push('<span class="tws-tp-stock" data-code="' + s.code + '" data-name="' + (s.name || '').replace(/'/g, '') + '" onclick="_twsSumOpenStock(this)">' + (tm ? '<span class="tws-tp-tm">' + tm + '</span>' : '') + _kplEsc(s.name) + bdTag + lbTag + '</span>');
+        stocks.push('<span class="tws-tp-stock' + (isLb ? ' tws-tp-stock-lb' : '') + '" data-code="' + s.code + '" data-name="' + (s.name || '').replace(/'/g, '') + '" onclick="_twsSumOpenStock(this)">' + (tm ? '<span class="tws-tp-tm">' + tm + '</span>' : '') + _kplEsc(s.name) + bdTag + lbTag + '</span>');
     }
     var themeKey = (th.theme || '').replace(/'/g, '');
-    return '<div class="tws-tp-theme">' + ftHtml + '<a class="tws-tp-t" href="javascript:void(0)" onclick="event.stopPropagation();_twsTpJump(\\x27' + themeKey + '\\x27)" title="点击跳转：下方板块-题材（含强度） 或 KPL涨停深挖">' + _kplEsc(th.theme) + '</a><span class="tws-tp-cnt">×' + th.cnt + '</span>' + promoHtml + '<span class="tws-tp-stocks">' + stocks.join('、') + '</span></div>';
+    return '<div class="tws-tp-theme">' + ftHtml + '<a class="tws-tp-t" href="javascript:void(0)" onclick="event.stopPropagation();_twsTpJump(\\x27' + themeKey + '\\x27)" title="点击跳转：下方板块-题材（含强度） 或 KPL涨停深挖">' + _kplEsc(th.theme) + '</a><span class="tws-tp-cnt">×' + th.cnt + '</span>' + newHtml + promoHtml + '<span class="tws-tp-stocks">' + stocks.join('、') + '</span></div>';
 }
 function _twsRenderThemePromotion(twsData) {
     var days = twsData && twsData.promotion && twsData.promotion.days;
@@ -31227,10 +31614,11 @@ def main():
         threading.Thread(target=_warm_data_status, daemon=True),
         threading.Thread(target=_warm_kpl_top_tags, daemon=True),
         threading.Thread(target=_sentiment_bg_refresh, daemon=True),
+        threading.Thread(target=_rtw_loop, daemon=True),
     ]
     for t in threads:
         t.start()
-    print("[缓存预热] 6线程并行启动...")
+    print("[缓存预热] 7线程并行启动...")
 
     server.serve_forever()
 
