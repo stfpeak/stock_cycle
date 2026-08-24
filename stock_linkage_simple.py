@@ -4221,26 +4221,21 @@ def _build_market_structure(ndays=30, date_end=None):
     # 题材排序：最近 3板+ 活跃日 新→旧（今日题材在前）；同日 当天题材最高板 降序；同题材去重（如医药只归一组）
     # 注意：summary_theme_last 只统计 3板+ 砖 —— 今日仅 1/2板 砖不能把历史10板老龙头误标「今日活跃」（存储 08-24 仅 1/2板 砖被误排第一的根因）
     # 每股：窗口内最高层 max_level + 最后涨停日 last_date + 断板天数 break_days（= 距最后涨停的交易日数）
+    # 20cm 补充：以总结题材为锚定，列出题材内 科创板/创业板 且窗口峰值 1/2板 的涨停股（潜在套利/接力，标注板块+断板天数）
     summary_theme_last = {}    # theme -> 最近 3板+ 活跃日(YYYYMMDD)
     summary_theme_last_lv = {} # theme -> 最近 3板+ 活跃日当天 题材最高板
-    summary_theme_codes = {}   # theme -> set(code)
-    code_info = {}             # code -> {name, max_level, last_date, board, themes}
+    summary_theme_codes = {}   # theme -> set(code)  3板+ 股票
+    code_info = {}             # code -> {name, max_level, last_date, board, themes}（全部股票，含 1/2板）
     for di in day_infos:       # 升序 旧→新
         d_ymd = di['date'].replace('-', '')
         for lv, groups in di['levels'].items():
             ilv = int(lv)
-            if ilv < 3:
-                continue
             for g in groups:
                 gth = g['theme']
-                if gth not in summary_theme_last or d_ymd > summary_theme_last[gth]:
-                    summary_theme_last[gth] = d_ymd
-                    summary_theme_last_lv[gth] = ilv
-                elif d_ymd == summary_theme_last[gth] and ilv > summary_theme_last_lv.get(gth, 0):
-                    summary_theme_last_lv[gth] = ilv
+                # 全部砖都记录 code_info（含 1/2板，供 20cm 标注）；3板+ 砖另记 summary_theme_codes
+                is_summary_level = ilv >= 3
                 for s in g['stocks']:
                     c = s['code']
-                    summary_theme_codes.setdefault(gth, set()).add(c)
                     ci = code_info.get(c)
                     if ci is None:
                         ci = code_info[c] = {'name': s['name'], 'max_level': 0, 'last_date': '', 'board': s['board'], 'themes': []}
@@ -4249,6 +4244,22 @@ def _build_market_structure(ndays=30, date_end=None):
                     ci['last_date'] = d_ymd      # 升序覆盖 = 最后涨停日
                     if gth not in ci['themes']:
                         ci['themes'].append(gth)
+                    if is_summary_level:
+                        summary_theme_codes.setdefault(gth, set()).add(c)
+                if not is_summary_level:
+                    continue
+                if gth not in summary_theme_last or d_ymd > summary_theme_last[gth]:
+                    summary_theme_last[gth] = d_ymd
+                    summary_theme_last_lv[gth] = ilv
+                elif d_ymd == summary_theme_last[gth] and ilv > summary_theme_last_lv.get(gth, 0):
+                    summary_theme_last_lv[gth] = ilv
+    # 20cm 首板/2板：以总结题材为锚定，题材内 科创板/创业板 且窗口峰值 ≤2板 的股票
+    summary_theme_gem = {}     # theme -> list(code)
+    for gth in summary_theme_codes:
+        gem = [c for c, ci in code_info.items()
+               if ci['board'] in ('创', '科') and ci['max_level'] <= 2 and gth in ci['themes']]
+        if gem:
+            summary_theme_gem[gth] = gem
     ref_ymd = recent[-1] if recent else ''
     summary = []
     for gth, codes in summary_theme_codes.items():
@@ -4268,6 +4279,23 @@ def _build_market_structure(ndays=30, date_end=None):
                 'themes': list(ci['themes']),
             })
         stocks.sort(key=lambda s: (s['break_days'], -s['max_level'], s['name']))
+        # 20cm 首板/2板（科创板/创业板，窗口峰值 1/2板）——同样带断板天数，板块以 创/科 徽标标注
+        gem_stocks = []
+        for c in summary_theme_gem.get(gth, []):
+            ci = code_info[c]
+            if not ci['last_date'] or ci['last_date'] == ref_ymd:
+                break_days = 0
+            else:
+                break_days = sum(1 for d in recent if d > ci['last_date'])
+            gem_stocks.append({
+                'code': c, 'name': ci['name'],
+                'max_level': ci['max_level'],
+                'last_date': ci['last_date'][:4] + '-' + ci['last_date'][4:6] + '-' + ci['last_date'][6:] if ci['last_date'] else '',
+                'break_days': break_days,
+                'board': ci['board'],
+                'themes': list(ci['themes']),
+            })
+        gem_stocks.sort(key=lambda s: (s['break_days'], -s['max_level'], s['name']))
         last_ymd = summary_theme_last.get(gth, '')
         summary.append({
             'theme': gth,
@@ -4275,6 +4303,7 @@ def _build_market_structure(ndays=30, date_end=None):
             'max_level': summary_theme_last_lv.get(gth, 0),
             'n_stocks': len(stocks),
             'stocks': stocks,
+            'gem_stocks': gem_stocks,
         })
     summary.sort(key=lambda t: (-(int(t['last_date'].replace('-', '')) if t['last_date'] else 0), -t['max_level'], t['theme']))
     return {
@@ -8852,19 +8881,23 @@ td.lt-trajectory-cell {
 .ms-brick.climbed { box-shadow: inset 0 3px 0 #ffd700; }
 .ms-brick.climbed::before { content: '▲'; font-size: 0.6em; color: #ffd700; margin-right: 1px; vertical-align: middle; }
 .ms-summary { margin-top: 12px; }
-.ms-sum-scroll { overflow-x: auto; overflow-y: hidden; border: 1px solid #1e3a5f; border-radius: 10px; background: rgba(15,52,96,0.2); padding: 6px 8px; }
-.ms-sum-scroll::-webkit-scrollbar { height: 8px; }
-.ms-sum-scroll::-webkit-scrollbar-thumb { background: rgba(148,163,184,.4); border-radius: 4px; }
-.ms-sum-scroll::-webkit-scrollbar-track { background: rgba(30,41,59,.3); }
-.ms-sum-cols { display: flex; align-items: flex-start; gap: 10px; }
-.ms-sum-theme { flex: 0 0 auto; min-width: 224px; max-width: 264px; border-right: 1px dashed rgba(148,163,184,.18); padding: 0 8px 4px 2px; }
-.ms-sum-theme:last-child { border-right: none; }
-.ms-sum-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; flex-wrap: wrap; }
+.ms-sum-scroll { border: 1px solid #1e3a5f; border-radius: 10px; background: rgba(15,52,96,0.2); padding: 4px 8px; }
+.ms-sum-list { display: flex; flex-direction: column; }
+.ms-sum-theme { padding: 5px 4px; border-bottom: 1px dashed rgba(148,163,184,.14); }
+.ms-sum-theme:last-child { border-bottom: none; }
+.ms-sum-row { display: flex; align-items: center; gap: 10px; }
+.ms-sum-head { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; flex-wrap: wrap; white-space: nowrap; }
 .ms-sum-name { color: #22d3ee; font-size: 0.82em; font-weight: 800; }
 .ms-sum-lv { color: #ffd700; font-size: 0.72em; font-weight: 700; }
 .ms-sum-count { color: #8b949e; font-size: 0.72em; }
-.ms-sum-stocks { display: flex; flex-wrap: wrap; gap: 3px; }
+.ms-sum-stocks { display: flex; flex-wrap: wrap; gap: 3px; flex: 1 1 auto; }
 .ms-sum-stock { cursor: pointer; margin: 0; font-size: 0.74em; }
+.ms-sum-gem { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; margin-top: 4px; padding-top: 3px; border-top: 1px dotted rgba(148,163,184,.12); }
+.ms-sum-gem-tag { font-size: 0.66em; font-weight: 800; color: #22d3ee; border: 1px solid rgba(34,211,238,.4); border-radius: 4px; padding: 0 4px; margin-right: 3px; white-space: nowrap; background: rgba(34,211,238,.08); }
+.ms-sum-gem-stock { cursor: pointer; margin: 0; font-size: 0.74em; }
+.ms-sum-gb { font-style: normal; font-size: 0.66em; font-weight: 800; border-radius: 3px; padding: 0 3px; margin-left: 2px; }
+.ms-sum-gb-gem { color: #22d3ee; border: 1px solid rgba(34,211,238,.45); }
+.ms-sum-gb-star { color: #a78bfa; border: 1px solid rgba(167,139,250,.45); }
 .ms-sum-stock b { color: #ffd700; }
 .ms-sum-bd { font-style: normal; color: #94a3b8; font-size: 0.7em; background: rgba(100,116,139,.16); border-radius: 4px; padding: 0 4px; margin-left: 2px; }
 .ms-sum-bd.on { color: #ffd700; background: rgba(255,215,0,.14); border: 1px solid rgba(255,215,0,.5); font-weight: 700; }
@@ -8925,6 +8958,39 @@ td.lt-trajectory-cell {
 .tws-tl-chip.tws-tl-restart .tws-tl-theme { color: #a5f3fc; }
 .tws-tl-chip .tws-tl-theme:hover { color: #ffd700; text-decoration: underline; }
 .tws-tl-chip .tws-mab-tag { cursor: pointer; }
+/* 核心池联动推荐（时间轴下方、细分题材晋级上方）：今日涨停 → 老龙头核心标的 */
+.cpr-box { margin-top: 6px; border: 1px solid #1e3a5f; border-radius: 10px; background: rgba(15,52,96,0.2); padding: 6px 10px; }
+.cpr-theme { padding: 4px 0; border-bottom: 1px dashed rgba(148,163,184,.14); }
+.cpr-theme:last-child { border-bottom: none; }
+/* 触发行：题材名 + 时间 + 名称 + N板 各自成 flex 项，gap 空格分隔 */
+.cpr-trigger { font-size: 0.78em; display: flex; flex-wrap: wrap; align-items: center; gap: 3px 10px; }
+.cpr-theme-link { color: #22d3ee; font-weight: 800; cursor: pointer; white-space: nowrap; }
+.cpr-theme-link:hover { color: #ffd700; text-decoration: underline; }
+.cpr-trigger-main, .cpr-assist { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.cpr-trigger-main { cursor: pointer; color: #e6edf3; }
+.cpr-trigger-main:hover { color: #fff; text-shadow: 0 0 6px rgba(255,215,0,0.4); }
+.cpr-tm { color: #7dd3fc; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 700; }
+.cpr-name { color: #fff; font-weight: 600; }
+.cpr-lv { color: #fbbf24; font-weight: 800; }
+.cpr-lv-restart { color: #22d3ee; }
+.cpr-assist { color: #94a3b8; cursor: pointer; }
+.cpr-assist:hover { color: #fff; }
+.cpr-assist .cpr-tm { color: #7dd3fc; }
+.cpr-assist-dot { color: #64748b; font-weight: 700; }
+.cpr-assist .cpr-name { color: #cbd5e1; }
+.cpr-assist-txt { opacity: 0.75; }
+.cpr-groups { margin-top: 4px; display: flex; flex-direction: column; gap: 2px; }
+.cpr-group { display: flex; align-items: center; gap: 3px; flex-wrap: wrap; }
+.cpr-glabel { font-size: 0.66em; font-weight: 800; color: #22d3ee; white-space: nowrap; }
+.cpr-chip { cursor: pointer; font-size: 0.72em; padding: 1px 6px; }
+.cpr-chip:hover { filter: brightness(1.2); }
+.cpr-chip b { color: #ffd700; font-weight: 700; }
+.cpr-gb { font-style: normal; font-size: 0.68em; font-weight: 800; border-radius: 3px; padding: 0 3px; margin-left: 2px; }
+.cpr-gb-gem { color: #22d3ee; border: 1px solid rgba(34,211,238,.45); }
+.cpr-gb-star { color: #a78bfa; border: 1px solid rgba(167,139,250,.45); }
+.cpr-bd { font-style: normal; color: #94a3b8; font-size: 0.7em; background: rgba(100,116,139,.16); border-radius: 4px; padding: 0 4px; margin-left: 2px; }
+.cpr-bd.on { color: #ffd700; background: rgba(255,215,0,.14); border: 1px solid rgba(255,215,0,.5); font-weight: 700; }
+.cpr-loading { color: #94a3b8; font-size: 0.75em; padding: 2px 0; }
 /* 细分题材晋级（4日连续观察 · 时间轴下方）：题材为主角（金大字）+ 股票配角（小字），配色与时间轴和谐 */
 .tws-tp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 8px; margin-bottom: 2px; }
 .tws-tp-col { background: linear-gradient(135deg, rgba(15,52,96,0.25), rgba(15,52,96,0.1)); border: 1px solid #1e3a5f; border-radius: 10px; padding: 6px 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
@@ -18170,6 +18236,8 @@ function renderTopThemeTrajectory(data) {
 
 // ===== 精选板块强度 · Top10细分题材卡片（题材风向 Section 0） =====
 function renderThemeWindStrength(sectorData, twsData) {
+    _twsLastData = twsData;   // 供核心池联动加载完成后重渲染（含本新区）
+    if (_twsCorePool === null) _twsCorePoolLoad(false);   // 首次渲染触发核心池加载（占位→加载完自动重建）
     var h = '';
     h += _twsRenderPlateTable(sectorData);
     h += _twsRenderBoardSummary(twsData);
@@ -18187,6 +18255,7 @@ function _twsRenderBoardSummary(twsData) {
     if (!twsData || !twsData.plates || !twsData.plates.length) return '';
     var h = '<div class="tws-summary">';
     h += _twsRenderTimeline(twsData);
+    h += _twsRenderCorePoolRecs(twsData);   // 核心池联动推荐（今日涨停 → 老龙头核心标的）置于时间轴下方、细分题材晋级上方
     h += _twsRenderThemePromotion(twsData);   // 细分题材晋级（4日连续观察）置于时间轴下方
     h += _twsRenderLadder(twsData);
     // ---- 连板速览：遍历 plates→themes(max_lianban>=2)，取每题材最高档股票，按 code 合并 ----
@@ -18563,10 +18632,11 @@ function _msRenderSummary() {
     // summary 已按 last_date 降序、同日连板降序、题材名兜底排好：今日题材在前、同日高板在前；同题材只一张卡（股票全历史合并）
     var h = '';
     h += '<div class="ms-summary"><div class="ms-sec-head">🏆 3板+ 老龙头盘点 <span class="ms-date-note">今日题材在前 · 同日连板高者在前 · 断板天数=距最后涨停交易日数</span></div>';
-    h += '<div class="ms-sum-scroll"><div class="ms-sum-cols">';
+    h += '<div class="ms-sum-scroll"><div class="ms-sum-list">';
     for (var j = 0; j < summary.length; j++) {
         var t = summary[j];
         h += '<div class="ms-sum-theme">';
+        h += '<div class="ms-sum-row">';
         h += '<div class="ms-sum-head">';
         h += '<span class="ms-sum-name" title="细分题材（最近出现日 ' + _kplEsc(t.last_date) + '）">' + _kplEsc(t.theme) + '</span>';
         h += '<span class="ms-sum-lv" title="题材内最高连板">' + t.max_level + '板</span>';
@@ -18583,6 +18653,23 @@ function _msRenderSummary() {
             h += '</span>';
         }
         h += '</div>';
+        h += '</div>';
+        if (t.gem_stocks && t.gem_stocks.length) {
+            h += '<div class="ms-sum-gem">';
+            h += '<span class="ms-sum-gem-tag" title="题材内 科创板/创业板 涨停且窗口峰值 1/2板 的股票">20cm 首板·2板</span>';
+            for (var gi = 0; gi < t.gem_stocks.length; gi++) {
+                var gs = t.gem_stocks[gi];
+                var gbd = gs.break_days === 0
+                    ? '<i class="ms-sum-bd on" title="最后涨停日=' + _kplEsc(gs.last_date) + '，未断板">在板</i>'
+                    : '<i class="ms-sum-bd" title="最后涨停日=' + _kplEsc(gs.last_date) + '">断' + gs.break_days + '天</i>';
+                var gbTag = gs.board === '创' ? '<i class="ms-sum-gb ms-sum-gb-gem">创</i>' : (gs.board === '科' ? '<i class="ms-sum-gb ms-sum-gb-star">科</i>' : '');
+                var gbFull = gs.board === '创' ? '创业板' : (gs.board === '科' ? '科创板' : gs.board + '板');
+                h += '<span class="lt-cell-stock ' + _msLbCls(gs.max_level) + ' ms-sum-stock ms-sum-gem-stock" data-code="' + _kplEsc(gs.code) + '" data-name="' + _kplEsc(gs.name) + '" title="' + gbFull + ' · 最高 ' + gs.max_level + '板 · 最后涨停 ' + _kplEsc(gs.last_date) + ' · ' + _kplEsc((gs.themes || []).join('、')) + '" onclick="_msTraceShow(this)">';
+                h += _kplEsc(gs.name) + ' <b>' + gs.max_level + '板</b> ' + gbTag + ' ' + gbd;
+                h += '</span>';
+            }
+            h += '</div>';
+        }
         h += '</div>';
     }
     h += '</div></div></div>';
@@ -18660,6 +18747,97 @@ function _msShowTracePop(code, name) {
 function _msTraceHide() {
     var w = document.getElementById('msTraceWrap');
     if (w && w.parentNode) w.parentNode.removeChild(w);
+}
+// ===== 核心池联动推荐（今日涨停时间轴下方、细分题材晋级上方）=====
+// 今日涨停时间轴每出现一只涨停股 → 细分题材标签去核心池匹配 → 给推荐：
+// 每命中题材一行（题材名可点击跳转 + 首条 HH:MM 名称 N板 风格同时间轴，同题材后续 · HH:MM 名称 涨停助攻 追加同块）；
+// 行下方 主板/创业板/科创板 各一行核心标的 chips（组内横向；该板块无推荐则不显示该行）；
+// 题材名点击 → 跳板块树/KPL（_twsTpJump）；股票名/核心 chip 点击 → 开股票卡（K线+涨停原因，_twsSumOpenStock）。
+// 数据源复用 /api/market_structure summary（_twsCorePoolLoad 已建索引），纯前端实现。
+// 候选题材 = [it.theme] + (it.mab||[]) p===0 标签（去重保序），取第一个 corePool 存在的键；未命中跳过。
+function _twsCoreThemeCands(it) {
+    var cands = [];
+    if (it.theme) cands.push(it.theme);
+    for (var i = 0; i < (it.mab || []).length; i++) {
+        var m = it.mab[i];
+        if (m.p === 0 && m.t && cands.indexOf(m.t) === -1) cands.push(m.t);
+    }
+    for (var j = 0; j < cands.length; j++) {
+        if (_twsCorePool[cands[j]]) return cands[j];
+    }
+    return '';
+}
+// 触发行 N板 徽标（风格同时间轴 chip：连板/重启 判定）
+function _cprLvBadge(it) {
+    if (it.type === 'ladder') return '<span class="cpr-lv">' + (it.lianban >= 5 ? '高连板' : (it.lianban + '连板')) + '</span>';
+    if (it.type === 'restart') return '<span class="cpr-lv cpr-lv-restart">重启</span>';
+    return '';
+}
+// 板块徽标（创青/科紫，复用 .ms-sum-gb-gem/star 色值）
+function _cprBoardBadge(board) {
+    return board === '创' ? '<i class="cpr-gb cpr-gb-gem">创</i>' : (board === '科' ? '<i class="cpr-gb cpr-gb-star">科</i>' : '');
+}
+// 核心标的 chip：层级色（_msLbCls→.lt-lb-*）+ 断N天/在板 + 板块徽标；点击开股票卡（K线+涨停原因）
+function _cprChip(s) {
+    var bd = s.break_days === 0
+        ? '<i class="cpr-bd on" title="最后涨停日=' + _kplEsc(s.last_date) + '，未断板">在板</i>'
+        : '<i class="cpr-bd" title="最后涨停日=' + _kplEsc(s.last_date) + '">断' + s.break_days + '天</i>';
+    return '<span class="cpr-chip lt-cell-stock ' + _msLbCls(s.max_level) + '" data-code="' + _kplEsc(s.code) + '" data-name="' + _kplEsc(s.name) + '" title="' + _kplEsc(s.name) + ' 最高' + s.max_level + '板 · 最后涨停 ' + _kplEsc(s.last_date) + ' · ' + _kplEsc((s.themes || []).join('、')) + '" onclick="_twsSumOpenStock(this)">' + _kplEsc(s.name) + ' <b>' + s.max_level + '板</b>' + _cprBoardBadge(s.board) + ' ' + bd + '</span>';
+}
+// 单板块一行（组内横向 chips）；该板块无推荐时不渲染该行
+function _cprGroup(pool, gkey, label) {
+    var list = (pool && pool[gkey]) || [];
+    if (!list.length) return '';
+    var h = '<div class="cpr-group"><span class="cpr-glabel">' + label + ':</span>';
+    for (var i = 0; i < list.length; i++) h += _cprChip(list[i]);
+    h += '</div>';
+    return h;
+}
+function _twsRenderCorePoolRecs(twsData) {
+    if (!_twsCorePool) {
+        return '<div class="cpr-box"><div class="tws-summary-sec-head">🎯 核心池联动 <span style="font-size:0.7em;color:#4fc3f7;font-weight:600;">今日涨停 → 老龙头核心标的</span></div><div class="cpr-loading">核心池加载中…</div></div>';
+    }
+    var tl = (twsData && twsData.timeline) || [];
+    if (!tl.length) return '';
+    var groups = {}, order = [];
+    for (var i = 0; i < tl.length; i++) {
+        var it = tl[i];
+        var key = _twsCoreThemeCands(it);
+        if (!key) continue;
+        if (!groups[key]) { groups[key] = { theme: key, items: [] }; order.push(key); }
+        groups[key].items.push(it);
+    }
+    if (!order.length) return '';
+    var h = '<div class="cpr-box"><div class="tws-summary-sec-head">🎯 核心池联动 <span style="font-size:0.7em;color:#4fc3f7;font-weight:600;">今日涨停 → 老龙头核心标的</span></div>';
+    for (var gi = 0; gi < order.length; gi++) {
+        var g = groups[order[gi]];
+        var pool = _twsCorePool[g.theme];
+        h += '<div class="cpr-theme"><div class="cpr-trigger">';
+        var themeKey = (g.theme || '').replace(/'/g, '');
+        for (var ti = 0; ti < g.items.length; ti++) {
+            var it = g.items[ti];
+            var tm = _twsTlFmt(it.minute);
+            var nameSafe = (it.name || '').replace(/'/g, '');
+            if (ti === 0) {
+                // 首条：题材名（可点击跳板块树/KPL，同细分题材晋级 _twsTpJump 语义）+ 时间 + 名称 + N板（空格分隔）
+                h += '<span class="cpr-theme-link" onclick="event.stopPropagation();_twsTpJump(\\x27' + themeKey + '\\x27)" title="点击跳转：板块目录 或 KPL涨停深挖">' + _kplEsc(g.theme) + '</span>';
+                h += '<span class="cpr-trigger-main" data-code="' + it.code + '" data-name="' + nameSafe + '" onclick="_twsSumOpenStock(this)">';
+                h += '<span class="cpr-tm">' + tm + '</span><span class="cpr-name">' + _kplEsc(it.name) + '</span>';
+                h += _cprLvBadge(it);
+                h += '</span>';
+            } else {
+                // 同题材后续 → 追加助攻（淡色，空格分隔）
+                h += '<span class="cpr-assist" data-code="' + it.code + '" data-name="' + nameSafe + '" onclick="_twsSumOpenStock(this)"><span class="cpr-assist-dot">·</span><span class="cpr-tm">' + tm + '</span><span class="cpr-name">' + _kplEsc(it.name) + '</span><span class="cpr-assist-txt">涨停助攻</span></span>';
+            }
+        }
+        h += '</div><div class="cpr-groups">';
+        h += _cprGroup(pool, 'main', '主板');
+        h += _cprGroup(pool, 'gem', '创业板');
+        h += _cprGroup(pool, 'star', '科创板');
+        h += '</div></div>';
+    }
+    h += '</div>';
+    return h;
 }
 // ===== 细分题材晋级（4日连续观察 · 时间轴下方）=====
 // 4 列 = 上上上/上上/上一/今日，每列严格按涨停时间排序；题材为主角（金大字）、股票为配角（小字）。
@@ -18741,6 +18919,45 @@ function _twsRefreshGate() {
 // 盘中实时刷新整个汇总区：随 2分钟 行情轮询，重拉 theme_wind_strength（盘中 30s 缓存）重建 .tws-summary
 // （时间轴+连板涨停表现+连板速览+断板重启+天梯 一并同步，各节与天梯同一份数据；实时 tab 的 rtTimelineBox 不在 .tws-summary 内，仍单独替换）
 var _twsTlLastRefresh = 0;
+// 核心池联动推荐：模块级缓存 + 加载（/api/market_structure summary → _twsCorePool 题材索引）
+var _twsCorePool = null;      // {theme: {main:[], gem:[], star:[]}}  主板3板+ / 创科1/2板
+var _twsPoolLoading = false;  // 防止并发重复加载
+var _twsPoolLastRefresh = 0;  // 盘中节流（5分钟）
+var _twsLastData = null;      // 最近一次 theme_wind_strength 数据（池加载完成后重渲染用）
+function _twsCorePoolLoad(force) {
+    if (_twsPoolLoading) return;                       // 加载中 → 跳过（防并发）
+    if (!force && _twsCorePool && Date.now() - _twsPoolLastRefresh < 300000) return;   // 已有池且5分钟内 → 跳过
+    var url = '/api/market_structure?ndays=30';
+    if (force) url += '&no_cache=1&_t=' + Date.now();
+    _twsPoolLoading = true;
+    fetch(url).then(function(r) { return r.json(); }).catch(function() { return null; }).then(function(data) {
+        _twsPoolLoading = false;
+        if (!data || data.error || !data.summary) return;
+        _twsPoolLastRefresh = Date.now();
+        _msData = data;                 // 复用市场结构数据 → _msTraceShow 追踪弹层对触发股/核心标的可用
+        _msBuildIndexes();
+        var pool = {};
+        for (var i = 0; i < data.summary.length; i++) {
+            var t = data.summary[i];
+            var b = pool[t.theme] = { main: [], gem: [], star: [] };
+            for (var j = 0; j < (t.stocks || []).length; j++) {
+                var s = t.stocks[j];
+                (s.board === '创' ? b.gem : (s.board === '科' ? b.star : b.main)).push(s);
+            }
+            for (var k = 0; k < (t.gem_stocks || []).length; k++) {
+                var gs = t.gem_stocks[k];
+                (gs.board === '创' ? b.gem : (gs.board === '科' ? b.star : b.main)).push(gs);
+            }
+        }
+        _twsCorePool = pool;
+        // 池加载完成 → 若汇总区已渲染则整区重建（含本新区，替换占位）
+        var summary = document.querySelector('.tws-summary');
+        if (summary && _twsLastData) {
+            var sh = _twsRenderBoardSummary(_twsLastData);
+            if (sh) summary.outerHTML = sh;
+        }
+    });
+}
 function _twsRefreshBoardLive() {
     if (!_twsRefreshGate()) return;   // 盘后不自动拉网络
     var summary = document.querySelector('.tws-summary');
@@ -18750,7 +18967,9 @@ function _twsRefreshBoardLive() {
     _twsTlLastRefresh = now;
     fetch('/api/theme_wind_strength?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }).then(function(d) {
         if (!d) return;
-        // 整个汇总区（时间轴+连板涨停表现+连板速览+断板重启+天梯）一并重建，各节与天梯同步
+        _twsLastData = d;
+        _twsCorePoolLoad(false);   // 盘中节流 5 分钟（内部判断），核心池随时间轴同步更新
+        // 整个汇总区（时间轴+核心池联动+连板涨停表现+连板速览+断板重启+天梯）一并重建，各节与天梯同步
         if (summary) {
             var sh = _twsRenderBoardSummary(d);
             if (sh) summary.outerHTML = sh;
