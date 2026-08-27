@@ -3672,6 +3672,22 @@ def _build_theme_wind_strength(top_n=10):
         })
         today_zt_codes.add(code)
 
+    # 封板时间补充：akshare 实时池缺失 first_time（远程池空回退 KPL 行无时间 → 时间轴全排一列）时，
+    # 复用 _kpl_akshare_first_times（与细分题材晋级补充同一来源，akshare 历史涨停池含首次封板时间），
+    # 同时回填 ft_map 与 zt_stocks 条目（时间轴/天梯/架构图共用）
+    _missing_ft = [s['code'] for s in zt_stocks if not (0 < s['first_time'] < 999999)]
+    if _missing_ft:
+        _supp_ft = _kpl_akshare_first_times(date_fmt.replace('-', ''))
+        for _c in _missing_ft:
+            _v = _supp_ft.get(_c)
+            if _v and 0 < _v < 999999:
+                ft_map[_c] = _v
+        for _s in zt_stocks:
+            if not (0 < _s['first_time'] < 999999):
+                _v = ft_map.get(_s['code'], 999999)
+                if _v and 0 < _v < 999999:
+                    _s['first_time'] = _v
+
     # 板块 → 细分题材（reason_tag）聚合（同一涨停股可命中多板块=双归属）
     plate_themes = []
     for p in rows:
