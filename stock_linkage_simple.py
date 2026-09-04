@@ -4292,25 +4292,154 @@ def _build_theme_map(ndays=40):
             pn = _kpl_stock_latest_tag.get(code, {}).get('plate_name', '') or '其他'
         today_plate_count[pn] = today_plate_count.get(pn, 0) + 1
 
+    # ===== 创/科 大涨纳入 + 断板刷新 + 股票 P1/P2 日涨幅（K线覆盖层）=====
+    # 创业板/科创板 20% 涨停稀发 → 单日涨幅 >=10% 视为「有效强势日」(等效于主板涨停的意义)：
+    #   ① 图内(窗口内曾涨停)创/科股：最新有效日 = max(窗口内最近涨停日, 窗口内最新>=10%大涨日) → 据此刷新断板天数；
+    #   ② 窗口内从未涨停、但存在>=10%大涨日的创/科股：整只纳入地图（用其历史最近一次涨停的 板块+细分题材 归类；
+    #      历史无涨停记录 / 仅泛概念标签 无法归类者跳过）；
+    #   ③ 所有入图股票附加 p1/p2 = 最近两个有K线交易日的涨跌幅（chip 第2行 P1大/P2小 展示）。
+    _bar_of = {}     # code -> {trade_date('YYYY-MM-DD'): change_pct}  仅窗口内
+    _big_codes = set()  # 窗口内 创/科 单日涨幅>=10% 的代码集合
+    try:
+        _kline_db = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
+        if os.path.exists(_kline_db):
+            _win_ph = ','.join('?' * len(recent_fmt))
+            _kconn = sqlite3.connect(_kline_db)
+            _kcur = _kconn.cursor()
+            # 1) 扫描窗口内所有 >=10% 的创/科代码（含已入图曾涨停者：创/科涨停约20%必然>=10）
+            try:
+                _kcur.execute("SELECT DISTINCT stock_code FROM kline_daily WHERE trade_date IN (%s) AND change_pct >= ? AND (stock_code LIKE '30%%' OR stock_code LIKE '68%%')" % _win_ph,
+                              recent_fmt + [10.0])
+                _big_codes = {r[0] for r in _kcur.fetchall()}
+            except Exception:
+                _big_codes = set()
+            # 2) 图内全部 + 创/科大涨代码，统一拉窗口内 (stock_code, trade_date, change_pct)
+            _need_codes = set(stock_meta.keys()) | _big_codes
+            for _sc in stock_meta:
+                if _kpl_board_of_code(_sc) in ('创', '科'):
+                    _need_codes.add(_sc)
+            for _i in range(0, len(_need_codes), 500):
+                _chunk = sorted(_need_codes)[_i:_i + 500]
+                _ph2 = ','.join('?' * len(_chunk))
+                try:
+                    _kcur.execute("SELECT stock_code, trade_date, change_pct FROM kline_daily WHERE trade_date IN (%s) AND stock_code IN (%s)" % (_win_ph, _ph2),
+                                  recent_fmt + _chunk)
+                    for _c, _d, _p in _kcur.fetchall():
+                        try:
+                            _bar_of.setdefault(_c, {})[_d] = float(_p)
+                        except (ValueError, TypeError):
+                            pass
+                except Exception:
+                    pass
+            _kconn.close()
+    except Exception:
+        _bar_of = {}
+        _big_codes = set()
+
+    # 插入窗口内从未涨停、仅>10%大涨的创/科股（历史无板块/题材记录或仅泛概念 → 跳过）
+    for _sc in sorted(_big_codes):
+        if _sc in stock_meta:
+            continue
+        _bd = _bar_of.get(_sc)
+        if not _bd:
+            continue
+        _big_dates = [d for d, _p in _bd.items() if _p >= 10.0]
+        if not _big_dates:
+            continue
+        _lt = _kpl_stock_latest_tag.get(_sc) or {}
+        _tag = (_lt.get('tag', '') or '').strip()
+        if not _tag or _tag == '未分类' or _tag in _TM_NON_THEME:
+            continue
+        _pn = (_lt.get('plate_name', '') or '').strip() or '其他'
+        _eff = max(_big_dates)
+        _rec = {
+            'stock_code': _sc,
+            'stock_name': (_kpl_stock_index.get(_sc, {}).get('stock_name', '') or _sc),
+            'plate_name': _pn,
+            'reason_tag': _tag,
+            'reason_brief': (_lt.get('reason_brief', '') or ''),
+            '_date': _eff, '_src': 'big',
+        }
+        stock_meta[_sc] = {'last_date': _eff, 'record': _rec, 'plates': {_pn: dict(_rec)}}
+
     plates = {}        # plate → {'count':0, 'themes':{theme:{'count':0,'stocks':[stock]}}}
     theme_plates = {}  # theme → {plate,...}  跨板块关系
+
+    def _eff_active_date(sc, last_date, bd):
+        """有效强势日：取「最后KPL涨停日 ∪ 窗口内最新K线强势日」更近者（刷新断板）。
+        强势日按板阈：创/科单日>=10%（20cm稀发，等效主板涨停）；主板单日>=9.8%（10cm涨停）。
+        —— 目的：KPL日文件(涨停原因)偶有缺失（如 08-31..09-04 无文件）时，K线里的真实涨停仍能刷新断板，
+        避免把前几天涨停的股误判成几十天前断板（例：西子洁能 08-31 +9.99 涨停但 KPL 止于 08-28 → 曾错显断26）。"""
+        _bd = bd or {}
+        if not _bd:
+            return last_date
+        _thr = 10.0 if _kpl_board_of_code(sc) in ('创', '科') else 9.8
+        _bigs = [d for d, _p in _bd.items() if _p >= _thr]
+        if _bigs:
+            _m = max(_bigs)
+            if not last_date or _m > last_date:
+                return _m
+        return last_date
+
+    def _big_streak(bd, eff_date):
+        """创/科 自 eff_date 沿窗口交易日向前连续 >=10% 的强势日数(等效连板；本身须>=10才起算)"""
+        n = 0
+        if not bd or bd.get(eff_date, 0) < 10.0:
+            return n
+        _i = recent_index.get(eff_date)
+        _walk = eff_date
+        while True:
+            if _walk not in bd or bd.get(_walk, 0) < 10.0:
+                break
+            n += 1
+            if _i is None or _i <= 0:
+                break
+            _i -= 1
+            _walk = recent_fmt[_i]
+        return n
+
     for sc, m in stock_meta.items():
         last_record = m['record']
         name = last_record.get('stock_name', '') or sc
         last_date = m['last_date']
         is_today = sc in today_codes
-        break_days = (last_idx - recent_index.get(last_date, last_idx)) if last_date in recent_index else 0
-        if is_today:
+        board = _kpl_board_of_code(sc)
+        bd = _bar_of.get(sc) or {}
+        eff_date = _eff_active_date(sc, last_date, bd)
+        # 断板天数（以有效强势日为基准；今日涨停/大涨强制 0）
+        if eff_date in recent_index:
+            break_days = last_idx - recent_index[eff_date]
+        else:
             break_days = 0
-        try:
-            lianban = int(_kpl_compute_lianban(sc, last_date)) if last_date else 1
-        except Exception:
-            lianban = 1
-        if is_today and sc in today_lb:
-            lianban = today_lb[sc]
         if break_days < 0:
             break_days = 0
-        stock = {'code': sc, 'name': name, 'lianban': lianban, 'break_days': break_days, 'is_today': is_today, 'board': _kpl_board_of_code(sc)}
+        if is_today:
+            break_days = 0
+        # 连板数：今日涨停优先实时池连板；创/科用连续>=10%强势日数(等效连板)；主板用KPL真实涨停连板
+        if is_today and sc in today_lb:
+            lianban = today_lb[sc]
+        elif board in ('创', '科') and bd:
+            lianban = max(1, _big_streak(bd, eff_date))
+        else:
+            try:
+                lianban = int(_kpl_compute_lianban(sc, last_date)) if last_date else 1
+            except Exception:
+                lianban = 1
+        # P1/P2 = 最近两个有K线交易日的涨跌幅（chip 第2行展示）
+        _keys = sorted(bd.keys())
+        p1 = None
+        p2 = None
+        if _keys:
+            p1 = bd[_keys[-1]]
+        if len(_keys) >= 2:
+            p2 = bd[_keys[-2]]
+        stock = {
+            'code': sc, 'name': name, 'lianban': lianban, 'break_days': break_days,
+            'is_today': is_today, 'board': board,
+            'p1': (round(p1, 2) if p1 is not None else None),
+            'p2': (round(p2, 2) if p2 is not None else None),
+            'src': last_record.get('_src', ''),
+        }
 
         # 多板块归属：窗口内任意涨停日的板块都归属该股（理清盘根错节：一股可跨多板块）
         for pn, rec in m['plates'].items():
@@ -8111,22 +8240,51 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 .tmm-cards { display:grid;grid-template-columns:repeat(auto-fill,minmax(272px,1fr));gap:6px; }
 .tmm-card {
     background:rgba(255,255,255,0.025);border:1px solid rgba(255,255,255,0.08);
-    border-radius:8px;padding:7px 10px;
+    border-radius:8px;padding:0 0 8px;overflow:hidden;
 }
-.tmm-card.attack { border-left:3px solid #ff9800; }
-.tmm-card.defense { border-left:3px solid #00d4ff; }
-.tmm-card.neutral { border-left:3px solid #666; }
+.tmm-card.attack { border-top:3px solid #ff9800; }
+.tmm-card.defense { border-top:3px solid #00d4ff; }
+.tmm-card.neutral { border-top:3px solid #666; }
+/* 板块卡头 = 通栏色带（色块占满板块列、内容居中），板块名大而醒目；
+   进攻=暖橙 / 防御=冷青 / 中性=灰蓝，与分类区一致 */
 .tmm-card-head {
-    display:flex;align-items:center;gap:8px;cursor:pointer;
-    font-weight:bold;color:#eee;font-size:0.92em;margin-bottom:3px;
+    display:flex;align-items:center;justify-content:center;gap:6px;cursor:pointer;
+    font-weight:bold;color:#fff;font-size:1.04em;letter-spacing:0.4px;
+    padding:6px 10px;margin-bottom:6px;border-radius:8px 8px 0 0;
+    border-bottom:1px solid rgba(255,255,255,0.1);
 }
-.tmm-card-head:hover { color:#fff; }
-.tmm-card-head .tmm-pcount { font-size:0.72em;color:#8aa;font-weight:normal;margin-left:auto; }
-.tmm-card-head .tmm-pcount b { color:#4fc3f7; }
-.tmm-themes { display:flex;flex-direction:column;gap:2px; }
+.tmm-card-head:hover { filter:brightness(1.18); }
+.tmm-card.attack .tmm-card-head { background:linear-gradient(135deg, rgba(255,152,0,0.34), rgba(255,152,0,0.10)); border-bottom-color:rgba(255,152,0,0.45); }
+.tmm-card.defense .tmm-card-head { background:linear-gradient(135deg, rgba(0,212,255,0.26), rgba(0,212,255,0.06)); border-bottom-color:rgba(0,212,255,0.4); }
+.tmm-card.neutral .tmm-card-head { background:linear-gradient(135deg, rgba(148,163,184,0.20), rgba(148,163,184,0.05)); border-bottom-color:rgba(148,163,184,0.3); }
+.tmm-card-head .tmm-pcount { font-size:0.72em;color:rgba(255,255,255,0.72);font-weight:normal;margin-left:4px; }
+.tmm-card-head .tmm-pcount b { color:#ffd700; }
+.tmm-themes { display:flex;flex-direction:column;gap:2px;padding:0 7px; }
 .tmm-theme-row {
     display:flex;align-items:flex-start;gap:4px;flex-wrap:wrap;
     padding:1px 2px;border-radius:4px;
+}
+/* 板块卡内块布局（req4：细分题材与股票不同行）：
+   细分题材名单独一行放块首，股票改等宽网格排其下；
+   上下游结构章节行(无 tmm-tb) 保持原内联样式不受影响 */
+.tmm-theme-row.tmm-tb {
+    flex-direction:column;align-items:stretch;
+    padding:2px 4px;margin-bottom:2px;border-radius:6px;
+    background:rgba(255,255,255,0.02);
+}
+.tmm-theme-row.tmm-tb > .tmm-theme-chip { align-self:flex-start; }
+.tmm-theme-row.tmm-tb > .tmm-stocks { width:100%;margin-top:3px; }
+.tmm-theme-row.tmm-tb .tmm-stocks {
+    display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));
+    gap:3px;flex:1 1 100%;
+}
+/* req2 等宽卡：块模式股票占满网格列，长名称省略号收尾 → 无论名称长短每个卡一样宽、整行对齐 */
+.tmm-theme-row.tmm-tb .tmm-stock { box-sizing:border-box;min-width:0;width:100%; }
+.tmm-theme-row.tmm-tb .tmm-stock .tmm-r1 {
+    display:flex;align-items:baseline;min-width:0;white-space:nowrap;
+}
+.tmm-theme-row.tmm-tb .tmm-stock .tmm-name {
+    flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
 }
 /* 细分题材名称标签：醒目有标识度（粗体大字 + 高亮底 + 左色条 + 发光），与股票 chip（0.7em 小圆角渐变底）明显区分 */
 .tmm-theme-chip {
@@ -8160,12 +8318,27 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
     padding:0 4px;font-size:0.8em;cursor:help;
 }
 .tmm-theme-chip.attack .tmm-cross { background:rgba(255,215,0,0.18); }
-.tmm-stocks { display:flex;flex-wrap:wrap;gap:2px;margin-top:1px; }
-/* 股票 chip 基础：背景色由下方 lt-lb-N 层色（涨停原因标签轨迹同款配色）提供 */
+.tmm-stocks { display:flex;flex-wrap:wrap;gap:2px;margin-top:1px;align-items:flex-start; }
+/* 股票 chip 基础：2行小方块（第1行身份 + 第2行 P1/P2 涨跌幅）；
+   背景色冷暖双色系：当前连板(在板/今日)=暖 lt-lb-{1..4/high}（今日叠五彩），历史连板(断板)=冷内联透明白底（见下方 .tmm-hist） */
 .tmm-stock {
-    display:inline-block;padding:0 4px;border-radius:4px;
-    font-size:0.7em;line-height:1.6;color:#fff;cursor:pointer;white-space:nowrap;
+    display:inline-flex;flex-direction:column;vertical-align:top;
+    padding:1px 5px;border-radius:5px;
+    font-size:0.7em;line-height:1.5;color:#fff;cursor:pointer;white-space:nowrap;
 }
+.tmm-stock .tmm-r1 { display:inline; }
+/* 第2行 P1/P2/断板 深色药丸底（req1：断板暖/冷任何底上都保证红色上涨清晰）——居中、圆角、浅黑衬底 */
+.tmm-stock .tmm-pct {
+    display:flex;align-items:baseline;justify-content:center;gap:6px;
+    background:rgba(8,6,20,0.35);border-radius:4px;
+    margin-top:2px;padding:0 4px;line-height:1.5;
+    font-family:"SF Mono",Menlo,Consolas,monospace;
+}
+/* P1/P2 用固定 px（不用 em——em 在该 em-继承链下解析异常，见调试：0.62em 继承态算出 12px）；P1 大 + P2 小 */
+.tmm-stock .tmm-pct .tmm-p1 { font-size:13px;font-weight:800;font-style:normal; }
+.tmm-stock .tmm-pct .tmm-p2 { font-size:8px;font-weight:600;font-style:normal;opacity:0.72;align-self:flex-end; }
+.tmm-stock .tmm-pct .tmm-p1.up, .tmm-stock .tmm-pct .tmm-p2.up { color:#ff5c6b; }
+.tmm-stock .tmm-pct .tmm-p1.down, .tmm-stock .tmm-pct .tmm-p2.down { color:#2fd07e; }
 .tmm-stock:hover { filter:brightness(1.2); }
 /* 复用涨停原因标签轨迹 lt-lb-N 层色（需 tmm 作用域自包含：lt-lb-N 原规则限定在 .lt-cell-stock 下） */
 /* 1板占比最大，背景调透明（半透明金）、外框不配色（中性边框），避免过于亮眼淹没 2/3 板 */
@@ -8193,8 +8366,8 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
     padding:0 6px;font-size:0.72em;margin-right:6px;vertical-align:1px;
 }
 .tmm-today b { color:#ff5c8a;font-weight:bold; }
-/* 股票 chip 标注（简洁，参照天梯/轨迹）：连板数加粗，断板股附「(+N)」，今日涨停五彩色+「今」tag */
-.tmm-stock .tmm-lb { font-weight:700;margin-left:2px;color:#ffd700; }
+/* 股票 chip 标注：连板数加粗，与股票名称间留空格分开（req5）；断板股附「(+N)」，今日涨停五彩色+「今」tag */
+.tmm-stock .tmm-lb { font-weight:700;margin-left:6px;color:#ffd700; }
 .tmm-stock .tmm-bd {
     display:inline-block;background:rgba(0,0,0,0.28);color:rgba(255,255,255,0.85);
     border-radius:3px;padding:0 2px;font-size:0.72em;font-style:normal;margin-left:2px;
@@ -8221,6 +8394,22 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 .tmm-bd-mk.tmm-bd-main { background:rgba(148,163,184,0.2);color:#b6c2cf;border:1px solid rgba(148,163,184,0.35); }
 .tmm-bd-mk.tmm-bd-gem { background:rgba(0,212,255,0.16);color:#4fc3f7;border:1px solid rgba(0,212,255,0.4); }
 .tmm-bd-mk.tmm-bd-star { background:rgba(168,85,247,0.16);color:#c084fc;border:1px solid rgba(168,85,247,0.4); }
+/* ===== 历史连板（断板股）—— 冷暖双色系 =====
+   当前连板(在板/今日 断0) = 暖·vivid lt-lb-{1..4/high}（今日叠五彩），已在上方 lt-lb-N 组定义，保持不动
+   历史连板(断板 断>=1)   = 冷·translucent：具体底色/边框由 _tmmStock 内联 linear-gradient(rgba(曾N档色, alpha)) 提供，
+                           断板越久 alpha 越低（曾N档：1灰蓝/2青/3蓝/4靛/5+暗金），断16+ 附 .bd-far 走淡
+   本组只管文本与对比：曾N档徽标颜色已内联 _TMM_LB，名称/正文随 chip 基底淡亮 */
+.tmm-stock.tmm-hist { color:#e8f0f8; }
+.tmm-stock.tmm-hist .tmm-name { color:rgba(255,255,255,0.92); }
+.tmm-stock.tmm-hist .tmm-pct { background:rgba(8,6,20,0.30); }
+/* 断16+：整卡更暗更灰蓝，避免大段远期历史淹没主线（仍保留曾连板数与断板天信息） */
+.tmm-stock.tmm-hist.bd-far { color:#9fb2c6; }
+.tmm-stock.tmm-hist.bd-far .tmm-name { color:rgba(255,255,255,0.62); }
+/* 第2行 pct 内的断板「(+N)」不再叠二次药丸：直接融入深色 pct 底（第1行无 p1 时的 tmm-bd 仍用上方圆角药丸） */
+.tmm-stock .tmm-pct .tmm-bd {
+    background:transparent;color:rgba(255,255,255,0.6);border-radius:0;
+    padding:0 1px;margin-left:2px;font-size:0.66em;
+}
 /* 过滤器（题材地图头下 / 进攻板块上）：市场·连板数·断板天数 */
 .tmm-filter {
     display:flex;align-items:center;gap:8px;flex-wrap:wrap;
@@ -27371,7 +27560,7 @@ function _tmmRender(data, sectorData, sentData) {
     var h = '<div class="tmm-box">';
     h += '<div class="tmm-head"><span class="tmm-title">\U0001F5FA \u9898\u6750\u5730\u56fe</span>';
     h += '<span class="tmm-sub">\u677f\u5757 \u2192 \u7ec6\u5206\u9898\u6750 \u00b7 \u8fd1' + w.days + '\u4e2a\u4ea4\u6613\u65e5 ' + _kplEsc(w.start) + ' ~ ' + _kplEsc(w.end) + '</span>';
-    h += '<span class="tmm-stats"><b>' + w.plates + '</b>\u677f\u5757 \u00b7 <b>' + w.themes + '</b>\u7ec6\u5206\u9898\u6750 \u00b7 <b>' + w.stocks + '</b>\u53ea\u6da8\u505c\u80a1 \u00b7 \u4eca\u65e5\u6da8\u505c <b>' + (w.today || 0) + '</b></span>';
+    h += '<span class="tmm-stats"><b>' + w.plates + '</b>\u677f\u5757 \u00b7 <b>' + w.themes + '</b>\u7ec6\u5206\u9898\u6750 \u00b7 <b>' + w.stocks + '</b>\u53ea\u6da8\u505c/\u5927\u6da8\u80a1 \u00b7 \u4eca\u65e5\u6da8\u505c <b>' + (w.today || 0) + '</b></span>';
     h += '<span class="tmm-reload" onclick="loadKplThemeMap(true)" title="\u91cd\u65b0\u8ba1\u7b97">\u21bb \u5237\u65b0</span></div>';
     // 市场情绪 · 大盘指数（精准狙击同源，置于 Top10 上方）+ 精选板块强度 · Top10细分题材卡片（题材风向同源），均盘中实时刷新
     h += '<div class="tmm-wind">';
@@ -27419,7 +27608,7 @@ function _tmmCard(p, cls) {
     h += '<b>' + p.count + '</b>\u53ea</span></div>';
     h += '<div class="tmm-themes">';
     if (p.themes && p.themes.length) {
-        for (var i = 0; i < p.themes.length; i++) h += _tmmTheme(p.themes[i], cls);
+        for (var i = 0; i < p.themes.length; i++) h += _tmmTheme(p.themes[i], cls, true);
     } else {
         h += '<div class="tmm-empty">\u65e0\u660e\u786e\u7ec6\u5206\u9898\u6750</div>';
     }
@@ -27430,8 +27619,8 @@ function tmmToggleCard(el) {
     var card = el.parentElement;
     if (card) card.classList.toggle('collapsed');
 }
-function _tmmTheme(t, cls) {
-    var h = '<div class="tmm-theme-row"><span class="tmm-theme-chip ' + cls + '"';
+function _tmmTheme(t, cls, block) {
+    var h = '<div class="tmm-theme-row' + (block ? ' tmm-tb' : '') + '"><span class="tmm-theme-chip ' + cls + '"';
     // 点击细分题材 → 跳转 KPL涨停深挖 搜索该题材（跳 tab + 搜索，区别于仅填充输入框）
     var tmmT = '\u70b9\u51fb\u8df3\u8f6cKPL\u6da8\u505c\u6df1\u6316\u641c\u7d22';
     if (t.plates && t.plates.length > 1) tmmT += ' \u00b7 \u8de8 ' + t.plates.length + ' \u4e2a\u677f\u5757\uff1a' + _kplEsc(t.plates.join('\u3001'));
@@ -27443,20 +27632,65 @@ function _tmmTheme(t, cls) {
     h += '</span></div>';
     return h;
 }
-// 股票 chip：配色复用 涨停原因标签轨迹 的 lt-lb-N 层色（1板金→2板橙→3板红→4板紫→5板+金红）；
-// 标注最简 = 名称前主/创/科标识 + 连板数 N，断板股附「(+N)」（即 1板断10 → 1(+10)）；今日涨停五彩色+「今」tag
+// 股票 chip（冷暖双色系，2 行块）：
+//   · 当前连板(在板/今日 断0) = 暖·vivid lt-lb-{1..4/high} 层色（今日另叠五彩+「今」tag），徽标「N连板/首板」
+//   · 历史连板(断板 断>=1)   = 冷·translucent（曾1灰蓝/2青/3蓝/4靛/5+暗金 按曾N板档取色），断板越久 alpha 越低，16+ 走淡(.bd-far)
+//   · 断板标注 (+N) 移到第2行 pct 尾部（不再挤第1行）；名称包 <span class="tmm-name"> 便于等宽卡内省略
+//   · 市场标只留 创/科（主板省宽）；连板徽标前置空格（与股票名称分开）
+var _TMM_HIST = {1:[115,145,175],2:[64,205,235],3:[96,150,255],4:[124,96,238],5:[212,166,70]};
+var _TMM_LB   = {1:[200,214,232],2:[140,240,255],3:[170,205,255],4:[190,165,255],5:[240,208,150]};
 function _tmmStock(s) {
     var lb = s.lianban >= 2 ? s.lianban : 1;
+    var lv = lb >= 5 ? 5 : lb;
     var lbCls = lb >= 5 ? 'lt-lb-high' : 'lt-lb-' + lb;
-    var cls = 'tmm-stock ' + lbCls;
+    var bd = s.break_days || 0;
+    var broken = !s.is_today && bd > 0;
+    var cls = 'tmm-stock';
+    var styl = '';
+    var isFar = false;
+    if (broken) {
+        var C = _TMM_HIST[lv];
+        var A = bd >= 16 ? 0.16 : (bd >= 11 ? 0.30 : (bd >= 6 ? 0.47 : 0.62));
+        if (bd >= 16) isFar = true;
+        var C2 = [Math.min(255, C[0] + 45), Math.min(255, C[1] + 45), Math.min(255, C[2] + 45)];
+        styl = 'background:linear-gradient(135deg, rgba(' + C[0] + ',' + C[1] + ',' + C[2] + ',' + A + '), rgba(' + C2[0] + ',' + C2[1] + ',' + C2[2] + ',' + Math.round(A * 50) / 100 + '));' +
+               'border:1px dashed rgba(' + C[0] + ',' + C[1] + ',' + C[2] + ',' + Math.min(0.95, A + 0.3) + ');';
+        cls += ' tmm-hist' + (isFar ? ' bd-far' : '');
+    } else {
+        cls += ' ' + lbCls;
+        if (s.is_today) cls += ' tmm-today-stock';
+    }
     var tagHtml = '';
-    if (s.is_today) { cls += ' tmm-today-stock'; tagHtml = '<span class="tmm-tag">\u4eca</span>'; }
-    var bdHtml = (!s.is_today && s.break_days > 0) ? '<i class="tmm-bd">(+' + s.break_days + ')</i>' : '';
-    var bdTitle = (s.break_days > 0) ? ' \u00b7 \u65ad' + s.break_days + '\u5929' : (s.is_today ? ' \u00b7 \u4eca\u65e5\u6da8\u505c' : ' \u00b7 \u5728\u677f');
-    var bdMk = s.board ? '<span class="tmm-bd-mk tmm-bd-' + (s.board === '\u521b' ? 'gem' : (s.board === '\u79d1' ? 'star' : 'main')) + '">' + s.board + '</span>' : '';
-    return '<span class="' + cls + '" onclick="showEnlargedCardDetail(\\x27' + s.code + '\\x27)" title="' + _kplEsc(s.name) + ' ' + s.code + ' \u00b7 ' + lb + '\u677f' + bdTitle + '">' +
-        tagHtml + bdMk + _kplEsc(s.name) +
-        '<b class="tmm-lb">' + lb + '</b>' + bdHtml + '</span>';
+    if (s.is_today) tagHtml = '<span class="tmm-tag">\u4eca</span>';
+    var bdHtml = broken ? '<i class="tmm-bd">(+' + bd + ')</i>' : '';
+    var bdTitle = (bd > 0) ? ' \u00b7 \u65ad' + bd + '\u5929' : (s.is_today ? ' \u00b7 \u4eca\u65e5\u6da8\u505c' : ' \u00b7 \u5728\u677f');
+    if (s.src === 'big') bdTitle += ' \u00b7 \u5927\u6da8>10%\u7eb3\u5165';
+    var bdMk = '';
+    if (s.board === '\u521b') bdMk = '<span class="tmm-bd-mk tmm-bd-gem">\u521b</span>';
+    else if (s.board === '\u79d1') bdMk = '<span class="tmm-bd-mk tmm-bd-star">\u79d1</span>';
+    // 连板徽标：当前(暖) 金/层色；历史(冷) 仅曾2板+显示「曾N连板」且用冷色亮化，曾1板(单日)不标以减噪
+    var lbl = '';
+    if (!broken) lbl = lb >= 2 ? lb + '\u8fde\u677f' : '\u9996\u677f';
+    else if (lb >= 2) lbl = '\u66fe' + lb + '\u8fde\u677f';
+    var lbHtml = '';
+    if (lbl) {
+        var lc = broken ? ' color:rgb(' + _TMM_LB[lv][0] + ',' + _TMM_LB[lv][1] + ',' + _TMM_LB[lv][2] + ');' : '';
+        lbHtml = '<b class="tmm-lb"' + (lc ? ' style="' + lc + '"' : '') + '>' + lbl + '</b>';
+    }
+    var pct = '';
+    if (s.p1 !== null && s.p1 !== undefined && !isNaN(s.p1)) {
+        var p1h = '<b class="tmm-p1 ' + (s.p1 >= 0 ? 'up' : 'down') + '">' + (s.p1 > 0 ? '+' : '') + Number(s.p1).toFixed(1) + '</b>';
+        var p2h = '';
+        if (s.p2 !== null && s.p2 !== undefined && !isNaN(s.p2)) {
+            p2h = '<i class="tmm-p2 ' + (s.p2 >= 0 ? 'up' : 'down') + '">' + (s.p2 > 0 ? '+' : '') + Number(s.p2).toFixed(1) + '</i>';
+        }
+        pct = '<span class="tmm-pct">' + p1h + p2h + bdHtml + '</span>';
+        bdHtml = '';
+    }
+    var bdTxt = (lbl || (broken ? '\u66fe\u9996\u677f' : '\u9996\u677f'));
+    return '<span class="' + cls + '"' + (styl ? ' style="' + styl + '"' : '') + ' onclick="showEnlargedCardDetail(\\x27' + s.code + '\\x27)" title="' + _kplEsc(s.name) + ' ' + s.code + ' \u00b7 ' + bdTxt + bdTitle + '">' +
+        '<span class="tmm-r1">' + tagHtml + bdMk + '<span class="tmm-name">' + _kplEsc(s.name) + '</span>' + lbHtml + bdHtml + '</span>' +
+        pct + '</span>';
 }
 
 // ===== 细分题材上下游结构章节（每板块内部：环节列 + SVG箭头 + 旁置关联概念）=====
