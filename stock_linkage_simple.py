@@ -1705,6 +1705,10 @@ def _kpl_today_live_rows():
     today_fmt = now_bj.strftime('%Y-%m-%d')
     if today_fmt in _kpl_day_cache:
         return _kpl_today_live_cache
+    if not _trading_days or today_ymd not in _trading_days:
+        # 非交易日（周末/节假日）：akshare 无当日实时涨停池，只会回退上一交易日数据，
+        # 若仍注入会把上一交易日涨停污染成「今日=0904重复拷贝列」。只有真实交易日开盘后才注入当日池。
+        return _kpl_today_live_cache
     trading = _is_trading_hours()
     try:
         import akshare as ak
@@ -2590,7 +2594,7 @@ def _kpl_search_cache_load(cache_key):
     if not os.path.exists(path): return None
     try:
         entry = json.load(open(path, 'r', encoding='utf-8'))
-        if entry.get('version', 0) < 8:
+        if entry.get('version', 0) < 9:
             return None
         return entry.get('data')
     except:
@@ -2600,7 +2604,7 @@ def _kpl_search_cache_save(cache_key, data):
     os.makedirs(_KPL_SEARCH_CACHE_DIR, exist_ok=True)
     path = os.path.join(_KPL_SEARCH_CACHE_DIR, f"{cache_key}.json")
     try:
-        json.dump({'data': data, 'timestamp': time.time(), 'version': 8},
+        json.dump({'data': data, 'timestamp': time.time(), 'version': 9},
                   open(path, 'w', encoding='utf-8'), ensure_ascii=False)
     except Exception as e:
         print(f"[KPL搜索缓存] 写入失败: {e}")
@@ -2783,6 +2787,34 @@ def _kpl_full_search(q, date_start, date_end, no_st, strict, gem_extra=True, lia
         result['total_hits'] = _orig_hits
     except Exception as e:
         print(f"[KPL 链条补齐] 失败: {e}")
+
+    # 细分题材过滤候选（供前端"搜索选项"上方复选框，题材地图同源：reason_tag + brief 拆分语义）
+    # 每行附加 sub_tags（该行归属的细分题材集合，勾选过滤按行是否命中任一选中细分）；聚合 top 候选带行计数。
+    try:
+        _sf_cnt = {}
+        def _kpl_row_sub_tags(_r):
+            _rt = (_r.get('reason_tag', '') or '').strip()
+            _rb = (_r.get('reason_brief', '') or '').strip()
+            _tags = _split_reason_tag(_rt, _rb)
+            _tags = [t for t in _tags if t and t != '未分类' and t not in SNIPER_EXCLUDE_TAGS and t not in _TM_NON_THEME]
+            if not _tags and _rt:
+                _tags = [_rt] if _rt not in SNIPER_EXCLUDE_TAGS and _rt not in _TM_NON_THEME else []
+            return _tags
+        for _r in result.get('results', []):
+            _st = _kpl_row_sub_tags(_r)
+            _r['sub_tags'] = _st
+            for _t in _st:
+                _sf_cnt[_t] = _sf_cnt.get(_t, 0) + 1
+        _kw2 = result.get('kw_results')
+        if _kw2:
+            for _k2, _rows2 in _kw2.items():
+                for _r in _rows2:
+                    _r['sub_tags'] = _kpl_row_sub_tags(_r)
+        _sf_sorted = sorted(_sf_cnt.items(), key=lambda x: (-x[1], x[0]))
+        result['sub_filters'] = [{'tag': t, 'count': c} for t, c in _sf_sorted[:30]]
+    except Exception as e:
+        print(f"[KPL sub_filters] 失败: {e}")
+        result['sub_filters'] = []
     return result
 
 
@@ -6854,6 +6886,31 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
     margin-bottom: 6px;
     letter-spacing: 0.3px;
 }
+/* KPL 细分题材过滤条（题材地图同源数据 sub_filters/sub_tags） */
+.subfilter-chk {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 10px;
+    border: 1px solid rgba(145, 215, 255, 0.22);
+    border-radius: 12px;
+    background: rgba(10, 35, 70, 0.35);
+    cursor: pointer;
+    font-size: 0.76em;
+    color: #cfe8ff;
+    user-select: none;
+    white-space: nowrap;
+}
+.subfilter-chk input { accent-color: #4fc3f7; margin: 0; }
+.subfilter-chk .subfilter-cnt {
+    background: rgba(79, 195, 247, 0.16);
+    color: #4fc3f7;
+    border-radius: 8px;
+    padding: 0 5px;
+    font-size: 0.78em;
+    line-height: 1.4;
+}
+.subfilter-chk:has(input:not(:checked)) { opacity: 0.5; }
 .kpl-topic-list {
     display: flex;
     flex-wrap: wrap;
@@ -8429,8 +8486,10 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
     width:56px;background:#0f2238;color:#e6edf3;
     border:1px solid rgba(0,212,255,0.3);border-radius:5px;padding:1px 5px;font-size:0.78em;
 }
-.tmm-f-clear { cursor:pointer;margin-left:auto;color:#80d8ff;background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.2);border-radius:5px;padding:1px 8px; }
+.tmm-f-clear { cursor:pointer;color:#80d8ff;background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.2);border-radius:5px;padding:1px 8px; }
 .tmm-f-clear:hover { background:rgba(0,212,255,0.2); }
+.tmm-f-export { cursor:pointer;margin-left:auto;color:#ffe082;background:rgba(255,213,79,0.12);border:1px solid rgba(255,213,79,0.35);border-radius:5px;padding:1px 9px;white-space:nowrap; }
+.tmm-f-export:hover { background:rgba(255,213,79,0.26);color:#fff3c4; }
 .tmm-f-stat { color:#8aa; }
 .tmm-f-stat b { color:#ffd700; }
 /* 过滤条搜索框：板块/细分题材/股票名称 搜索过滤 + 自动补全（断板天数后） */
@@ -10926,6 +10985,17 @@ td.lt-trajectory-cell {
             <div class="input-item" style="position:relative;margin-top:6px;">
                 <input type="text" id="kplSearchInput2" placeholder="支持单关键词、OR(|)、AND(&)。如: 机器人、算力|金属、芯片&军工" autocomplete="off" style="width:100%;">
                 <div class="suggestions" id="kplSearchSuggestions"></div>
+            </div>
+        </div>
+
+        <!-- Group 1.5: 细分题材过滤（搜索板块/细分题材后动态出现，默认全选=不过滤；题材地图同源 reason_tag+brief 拆分） -->
+        <div class="kpl-search-group" id="kplSubFilterGroup" style="display:none;">
+            <div class="group-label">细分题材过滤 <span id="kplSubFilterHint" style="color:#888;font-weight:normal;font-size:0.75em;"></span></div>
+            <div id="kplSubFilterList" style="display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;"></div>
+            <div style="margin-top:6px;font-size:0.74em;color:#888;display:flex;gap:16px;align-items:center;">
+                <span style="cursor:pointer;color:#4fc3f7;" onclick="kplSubFilterAll(true)">☑ 全选</span>
+                <span style="cursor:pointer;color:#888;" onclick="kplSubFilterAll(false)">全不选</span>
+                <span>勾选部分细分题材 = 只显示这些细分的结果；默认全选等于不过滤</span>
             </div>
         </div>
 
@@ -23385,6 +23455,10 @@ var _kplUseRace = false;            // 是否使用赛马
 var _multiRaceInstances = {};       // tag -> 多赛马实例
 // KPL搜索前端缓存（同页面session内避免重复请求）
 var _kplSearchCache = {};
+// 细分题材过滤状态（KPL搜索结果按细分筛，题材地图同源数据 sub_filters/sub_tags）
+var _kplSubChecked = {};        // tag -> true/false（勾选集；全勾=不过滤）
+var _kplSubLastData = null;     // 最近一次搜索 data（勾选变化后重渲染源）
+var _kplSubLastQuery = '';      // 最近一次搜索词
 
 function loadKplTopTags(retries) {
     if (retries === undefined) retries = 3;
@@ -23580,6 +23654,87 @@ function doKplSearch(q) {
         .catch(function(e) {
             el.innerHTML = '<div class="error">搜索失败: ' + e.message + '</div>';
         });
+}
+
+// ===== 细分题材过滤（题材地图同源：后端按 reason_tag + brief 拆分提供 sub_filters/sub_tags）=====
+function _kplSubHasFilter(data) {
+    return data && Array.isArray(data.sub_filters) && data.sub_filters.length > 0;
+}
+
+function _kplSubEsc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// 渲染复选框条（#kplSubFilterGroup 位于「搜索选项」上方）；每次按当前候选重建状态（同词刷新保留勾选，换词重置默认全选）
+function _kplSubRender(data, rawQuery) {
+    var group = document.getElementById('kplSubFilterGroup');
+    var list = document.getElementById('kplSubFilterList');
+    var hint = document.getElementById('kplSubFilterHint');
+    if (!group || !list) return;
+    if (!_kplSubHasFilter(data)) { group.style.display = 'none'; return; }
+    group.style.display = '';
+    var filters = data.sub_filters;
+    var _newState = {};
+    for (var i = 0; i < filters.length; i++) {
+        var t = filters[i].tag;
+        _newState[t] = (t in _kplSubChecked) ? _kplSubChecked[t] !== false : true;
+    }
+    _kplSubChecked = _newState;
+    var h = '';
+    for (var j = 0; j < filters.length; j++) {
+        var tag = filters[j].tag;
+        var on = _kplSubChecked[tag] !== false;
+        h += '<label class="checkbox-label subfilter-chk" data-tag="' + String(tag).replace(/"/g, '') + '" title="细分题材：' + _kplSubEsc(tag) + '">'
+           + '<input type="checkbox" ' + (on ? 'checked' : '') + ' onchange="kplSubToggleTag(this)">'
+           + '<span class="subfilter-tag-text">' + _kplSubEsc(tag) + '</span>'
+           + '<span class="subfilter-cnt">' + filters[j].count + '</span></label>';
+    }
+    list.innerHTML = h;
+    if (hint) hint.textContent = (filters.length >= 30 ? '（细分较多，取 Top' + filters.length + '）' : '');
+}
+
+// 按勾选集过滤行：默认全选=不过滤（保留原结果与命中数）；有取消项时只留「命中任一勾选细分」的行
+function _kplSubFilterRows(rows) {
+    if (!rows) return rows;
+    var anyOff = false;
+    for (var k in _kplSubChecked) { if (_kplSubChecked[k] === false) { anyOff = true; break; } }
+    if (!anyOff) return rows;
+    var out = [];
+    for (var i = 0; i < rows.length; i++) {
+        var r = rows[i];
+        var st = r.sub_tags;
+        if (!st || !st.length) st = r.reason_tag ? [r.reason_tag] : [];
+        for (var s = 0; s < st.length; s++) {
+            if (_kplSubChecked[st[s]]) { out.push(r); break; }
+        }
+    }
+    return out;
+}
+
+function _kplSubFilterData(data) {
+    if (!_kplSubHasFilter(data)) return data;
+    var out = {};
+    for (var k in data) { if (k !== 'results' && k !== 'kw_results') out[k] = data[k]; }
+    out.results = _kplSubFilterRows(data.results || []);
+    var kw = data.kw_results;
+    if (kw) { out.kw_results = {}; for (var k2 in kw) out.kw_results[k2] = _kplSubFilterRows(kw[k2]); }
+    out.total_hits = out.results.length;
+    return out;
+}
+
+function kplSubToggleTag(cb) {
+    var label = cb && cb.closest ? cb.closest('.subfilter-chk') : null;
+    var tag = label ? label.getAttribute('data-tag') : '';
+    if (!tag) return;
+    _kplSubChecked[tag] = cb.checked;
+    _kplSubRerender();
+}
+function kplSubFilterAll(v) {
+    for (var k in _kplSubChecked) _kplSubChecked[k] = v;
+    _kplSubRerender();
+}
+function _kplSubRerender() {
+    if (_kplSubLastData) renderFullKplSearch(_kplSubLastData, _kplSubLastQuery);
 }
 
 function _kplSplitByBoard(rows) {
@@ -23894,6 +24049,13 @@ function _renderKplMergedSection(mergedRows, mergedSecId, kw, topLianban) {
 }
 
 function renderFullKplSearch(data, rawQuery) {
+    // 细分题材过滤：更新复选框条 + 按勾选集过滤视图（默认全选=不过滤）
+    _kplSubLastData = data;
+    var _kplQ = rawQuery || '';
+    if (_kplSubLastQuery !== _kplQ) _kplSubChecked = {};   // 换搜索词 → 过滤默认全选重置；同词刷新/勾选重渲染保留
+    _kplSubLastQuery = _kplQ;
+    _kplSubRender(data, _kplQ);
+    data = _kplSubFilterData(data);
     var results = data.results || [];
     var totalHits = data.total_hits || 0;
     var mode = data.mode || 'single';
@@ -24120,6 +24282,15 @@ function resetKplSearch() {
     _kplSearchHits = [];
     _kplSectionHits = {};
     _kplSearchCache = {};
+
+    // 重置细分题材过滤
+    _kplSubChecked = {};
+    _kplSubLastData = null;
+    _kplSubLastQuery = '';
+    var subGroup = document.getElementById('kplSubFilterGroup');
+    if (subGroup) subGroup.style.display = 'none';
+    var subList = document.getElementById('kplSubFilterList');
+    if (subList) subList.innerHTML = '';
 
     // 重置复选框
     _kplCheckedTopics = {};
@@ -27328,6 +27499,98 @@ function tmmFilterClear() {
     _tmmFilter.search = '';
     _tmmFilterReRender();
 }
+// ===== 导出题材地图 3 层架构（板块-细分题材-股票名称）=====
+// 仅导出 3 层名称，不含任何计数/连板/断板/涨跌/来源等属性。
+// JSON 结构（顶层按题材地图板块分类 进攻/防御/中性 分组）:
+//   { 进攻: { 板块名: { 细分题材名: [股票名, ...], ... }, ... }, 防御: {...}, 中性: {...} }
+// CSV 结构: 每行一条 (板块, 细分题材, 股票名称) 三元组。
+function _tmmNameTree() {
+    var tree = { '\u8fdb\u653b': {}, '\u9632\u5fa1': {}, '\u4e2d\u6027': {} };
+    var zoneKeys = { 'attack': '\u8fdb\u653b', 'defense': '\u9632\u5fa1', 'neutral': '\u4e2d\u6027' };
+    ['attack', 'defense', 'neutral'].forEach(function(k) {
+        var zoneObj = tree[zoneKeys[k]];
+        var plates = (_tmmData && _tmmData[k]) || [];
+        for (var i = 0; i < plates.length; i++) {
+            var p = plates[i];
+            var pname = (p.name || '').trim();
+            if (!pname) continue;
+            if (!zoneObj[pname]) zoneObj[pname] = {};
+            var themes = p.themes || [];
+            for (var j = 0; j < themes.length; j++) {
+                var t = themes[j];
+                var tname = (t.name || '').trim();
+                if (!tname) continue;
+                var arr = zoneObj[pname][tname];
+                if (!arr) { arr = zoneObj[pname][tname] = []; }
+                var seen = {};
+                for (var x = 0; x < arr.length; x++) seen[arr[x]] = 1;
+                var stocks = t.stocks || [];
+                for (var y = 0; y < stocks.length; y++) {
+                    var sn = (stocks[y].name || '').trim();
+                    if (sn && !seen[sn]) { arr.push(sn); seen[sn] = 1; }
+                }
+            }
+        }
+    });
+    return tree;
+}
+// CSV 字段转义（含逗号/引号/换行时加引号并双写内部引号）
+function _tmmCsvField(v) {
+    var s = String(v == null ? '' : v);
+    if (/[",\\r\\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+    return s;
+}
+function _tmmCsvText(tree) {
+    var rows = [];
+    rows.push(['\u677f\u5757', '\u7ec6\u5206\u9898\u6750', '\u80a1\u7968\u540d\u79f0'].map(_tmmCsvField).join(','));
+    ['\u8fdb\u653b', '\u9632\u5fa1', '\u4e2d\u6027'].forEach(function(zoneName) {
+        var plates = tree[zoneName] || {};
+        Object.keys(plates).forEach(function(pname) {
+            var themes = plates[pname] || {};
+            Object.keys(themes).forEach(function(tname) {
+                var stocks = themes[tname] || [];
+                for (var i = 0; i < stocks.length; i++) {
+                    rows.push(_tmmCsvField(pname) + ',' + _tmmCsvField(tname) + ',' + _tmmCsvField(stocks[i]));
+                }
+            });
+        });
+    });
+    return rows.join('\\r\\n') + '\\r\\n';
+}
+function _tmmDownloadFile(name, text, mime) {
+    try {
+        var blob = new Blob([text], { type: mime });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 4000);
+    } catch (e) { alert('\u5bfc\u51fa\u5931\u8d25: ' + e); }
+}
+function tmmExportMap() {
+    if (!_tmmData) { alert('\u9898\u6750\u5730\u56fe\u6570\u636e\u672a\u52a0\u8f7d'); return; }
+    var base = '';
+    var end = _tmmData.window && _tmmData.window.end;
+    if (end) {
+        var m = String(end).match(/(\d{4})-?(\d{2})-?(\d{2})/);
+        if (m) base = m[1] + m[2] + m[3];
+    }
+    if (!base) {
+        var d = new Date();
+        var p2 = function(n) { return (n < 10 ? '0' : '') + n; };
+        base = '' + d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate());
+    }
+    var tree = _tmmNameTree();
+    var fname = '\u9898\u6750\u5730\u56fe_' + base + '\u4e09\u5c42';
+    _tmmDownloadFile(fname + '.json', JSON.stringify(tree, null, 2), 'application/json;charset=utf-8');
+    // CSV 前置 UTF-8 BOM，Excel 直接打开中文不乱码；稍延时避免浏览器拦截同批双击下载
+    setTimeout(function() {
+        _tmmDownloadFile(fname + '.csv', String.fromCharCode(0xFEFF) + _tmmCsvText(tree), 'text/csv;charset=utf-8');
+    }, 400);
+}
 // 过滤器 HTML（题材地图头下 / 进攻板块上）
 function _tmmFilterBar(matched) {
     var h = '<div class="tmm-filter">';
@@ -27357,6 +27620,7 @@ function _tmmFilterBar(matched) {
     h += '<div class="suggestions" id="tmmSearchSuggestions"></div>';
     h += '</span>';
     if (typeof matched === 'number') h += '<span class="tmm-f-stat">\u5339\u914d <b>' + matched + '</b> \u53ea</span>';
+    h += '<span class="tmm-f-export" onclick="tmmExportMap()" title="\u5bfc\u51fa\u9898\u6750\u5730\u56fe\u4e09\u5c42\u7ed3\u6784\uff08\u677f\u5757-\u7ec6\u5206\u9898\u6750-\u80a1\u7968\u540d\u79f0\uff0c\u4ec5\u540d\u79f0\u65e0\u5c5e\u6027\uff09\uff0c\u540c\u65f6\u4e0b\u8f7d JSON \u4e0e CSV \u4e24\u4e2a\u6587\u4ef6">\u2b07 \u5bfc\u51fa\u9898\u6750\u5730\u56fe</span>';
     h += '<span class="tmm-f-clear" onclick="tmmFilterClear()">\u21bb \u91cd\u7f6e</span>';
     h += '</div>';
     return h;
