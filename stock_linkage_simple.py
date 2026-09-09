@@ -4903,9 +4903,9 @@ def _build_theme_map(ndays=40):
         eff_date = _eff_active_date(sc, last_date, bd)
         # 断板天数（以有效强势日为基准；今日涨停/大涨强制 0）
         if eff_date in recent_index:
-            # 断板日只计两次涨停之间的交易日，不能把最后涨停日和当前日也算进去。
-            # 例如周一涨停、周三仍未涨停，显示断1日而非断2日。
-            break_days = last_idx - recent_index[eff_date] - 1
+            # 今日未涨停时，从最后一次涨停后的第一个交易日开始计数。
+            # 因此“昨天涨停、今天未涨停”应显示断板(+1)，符合盯盘卡片口径。
+            break_days = last_idx - recent_index[eff_date]
         else:
             break_days = 0
         if break_days < 0:
@@ -9283,6 +9283,22 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
     padding:0 4px;font-size:0.8em;cursor:help;
 }
 .tmm-theme-chip.attack .tmm-cross { background:rgba(255,215,0,0.18); }
+.tmm-theme-stats {
+    display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;
+    font-size:0.68em;line-height:1.45;color:rgba(220,230,240,0.74);
+}
+.tmm-theme-stats i { font-style:normal;white-space:nowrap; }
+.tmm-theme-stats .zt { color:#ff8b99; }
+.tmm-theme-stats .dt { color:#50d99a; }
+.tmm-theme-stats .up { color:#ffb0b9; }
+.tmm-theme-stats .down { color:#82e2b0; }
+.tmm-theme-stats .avg {
+    margin-left:4px;padding:0 5px;border-radius:4px;
+    background:rgba(255,255,255,0.08);color:#dbe7f0;
+    font-size:1.22em;font-weight:800;letter-spacing:0.1px;
+}
+.tmm-theme-stats .avg.up { color:#ff8b99; }
+.tmm-theme-stats .avg.down { color:#50d99a; }
 .tmm-stocks { display:flex;flex-wrap:wrap;gap:2px;margin-top:1px;align-items:flex-start; }
 /* 股票 chip 基础：2行小方块（第1行身份 + 第2行 P1/P2 涨跌幅）；
    背景色冷暖双色系：当前连板(在板/今日)=暖 lt-lb-{1..4/high}（今日叠五彩），历史连板(断板)=冷内联透明白底（见下方 .tmm-hist） */
@@ -20402,8 +20418,9 @@ function _twsTlFmt(minute) {
 }
 var ROW_H = 24;   // 时间轴每行 chip 高度（px），lane 高度 = 该 lane 最大同分钟堆叠数 * ROW_H
 // MAB 概念标签渲染：M=板块(金, p=1) / A·B=理由·简述(青, p=0)，去泛概念去重后由后端给出
-// canJump=true 时板块标签→板块树、理由标签→题材卡（跳转），否则纯展示
-function _twsMabChips(mab, jumpPlate, canJump) {
+// canJump=true 时板块标签→板块树、理由标签→题材卡（跳转）；mapSearch=true 时
+// 盯盘时间轴的全部题材标签（板块 + 细分）均改为驱动下方搜索栏。
+function _twsMabChips(mab, jumpPlate, canJump, mapSearch) {
     if (!mab || !mab.length) return '';
     var h = '';
     for (var i = 0; i < mab.length; i++) {
@@ -20412,12 +20429,16 @@ function _twsMabChips(mab, jumpPlate, canJump) {
         if (!t) continue;
         var cls = 'tws-mab-tag' + (it.p ? ' tws-mab-plate' : '');
         var js = '', attrs = '';
-        if (canJump) {
+        if (mapSearch) {
+            js = ' onclick="event.stopPropagation();tmmTimelineSearchTheme(this)"';
+            attrs = ' data-tmm-search-theme="' + _kplEsc(t) + '"';
+        } else if (canJump) {
             js = ' onclick="event.stopPropagation();_twsJumpToTheme(this)"';
             if (it.p) attrs = ' data-jump-plate="' + _kplEsc(t) + '" data-jump-theme=""';
             else attrs = ' data-jump-plate="' + _kplEsc(jumpPlate || '') + '" data-jump-theme="' + _kplEsc(t) + '"';
         }
-        h += '<span class="' + cls + '"' + attrs + js + ' title="' + (it.p ? '板块：' : '题材：') + _kplEsc(t) + (canJump ? '（点击跳转：板块目录 或 KPL涨停深挖）' : '') + '">' + _kplEsc(t) + '</span>';
+        var hint = mapSearch ? '（点击在下方盯盘搜索）' : (canJump ? '（点击跳转：板块目录 或 KPL涨停深挖）' : '');
+        h += '<span class="' + cls + '"' + attrs + js + ' title="' + (it.p ? '板块：' : '题材：') + _kplEsc(t) + hint + '">' + _kplEsc(t) + '</span>';
     }
     return h;
 }
@@ -20427,18 +20448,21 @@ function _twsHotBadge(code) {
     var r = window._thsHotCodes && window._thsHotCodes[code];
     return r ? '<span class="tws-hot-badge">R' + r + '</span>' : '';
 }
-function _twsTlChip(it, leftPct, stackTop) {
+function _twsTlChip(it, leftPct, stackTop, mapSearch) {
     var tm = it.minute == null || it.minute >= 9999 ? '--:--' : _twsTlFmt(it.minute);
     var cls = 'tws-tl-chip';
     var badge = '';
     if (it.type === 'ladder') { cls += ' tws-tl-ladder'; badge = '<span class="tws-tl-badge">' + it.lianban + '连板</span>'; }
     else if (it.type === 'restart') { cls += ' tws-tl-restart'; badge = '<span class="tws-tl-badge">重启</span>'; }
-    var mabHtml = (it.mab && it.mab.length) ? _twsMabChips(it.mab, it.plate || '', true)
-        : (it.theme ? '<span class="tws-tl-theme" data-jump-plate="' + _kplEsc(it.plate || '') + '" data-jump-theme="' + _kplEsc(it.theme) + '" onclick="event.stopPropagation();_twsJumpToTheme(this)" title="点击跳转：下方板块-题材（含强度） 或 KPL涨停深挖">' + _kplEsc(it.theme) + '</span>' : '');
+    var mabHtml = (it.mab && it.mab.length) ? _twsMabChips(it.mab, it.plate || '', true, mapSearch)
+        : (it.theme ? (mapSearch
+            ? '<span class="tws-tl-theme" data-tmm-search-theme="' + _kplEsc(it.theme) + '" onclick="event.stopPropagation();tmmTimelineSearchTheme(this)" title="点击在下方盯盘搜索">' + _kplEsc(it.theme) + '</span>'
+            : '<span class="tws-tl-theme" data-jump-plate="' + _kplEsc(it.plate || '') + '" data-jump-theme="' + _kplEsc(it.theme) + '" onclick="event.stopPropagation();_twsJumpToTheme(this)" title="点击跳转：下方板块-题材（含强度） 或 KPL涨停深挖">' + _kplEsc(it.theme) + '</span>') : '');
     return '<span class="' + cls + '" style="left:' + leftPct.toFixed(2) + '%;top:' + (stackTop * ROW_H) + 'px" data-code="' + it.code + '" data-name="' + (it.name || '').replace(/'/g, '') + '" onclick="_twsSumOpenStock(this)" title="' + tm + ' ' + (it.name || '') + ' ' + (it.theme || '') + '">' + badge + '<b class="tws-tl-tm">' + tm + '</b><span class="tws-tl-name">' + _kplEsc(it.name) + '</span>' + _twsHotBadge(it.code) + mabHtml + '</span>';
 }
 function _twsRenderTimeline(twsData, boxId) {
     boxId = boxId || 'twTimelineBox';
+    var mapSearch = boxId === 'tmmTimelineBox';
     var AXIS_START = 25;   // 轴起点 = 距9:00分钟数（9:25）：A股9:25集合竞价后才产生涨停，9:00~9:25无数据，轴从9:25开始
     var AXIS_LEN = 360 - AXIS_START;   // 轴总长 = 9:25~15:00 = 335 分钟（minute 基准仍为距9:00，展示起点=25）
     var tl = (twsData && twsData.timeline) || [];
@@ -20511,7 +20535,7 @@ function _twsRenderTimeline(twsData, boxId) {
             var leftPct = g.minute >= 9999 ? 98.5 : ((Math.max(g.minute, AXIS_START) - AXIS_START) / AXIS_LEN * 100);
             g.items.sort(function(a, b2) { return (b2.lianban || 0) - (a.lianban || 0) || a.name.localeCompare(b2.name); });
             for (var q = 0; q < g.items.length; q++) {
-                h += _twsTlChip(g.items[q], leftPct, q);
+                h += _twsTlChip(g.items[q], leftPct, q, mapSearch);
             }
         }
         h += '</div>';
@@ -29094,6 +29118,19 @@ function tmmSearchPick(label) {
     if (sug) sug.classList.remove('active');
     tmmSearchApply(label);
 }
+// 盯盘「今日涨停时间轴」细分题材：直接替换过滤条搜索词。
+// 每次从时间轴点击都走同一入口，因此“军工 → 化工”会清除军工并仅保留化工。
+function tmmTimelineSearchTheme(el) {
+    var q = (el && el.getAttribute('data-tmm-search-theme') || '').trim();
+    if (!q) return;
+    tmmSearchApply(q);
+    // 重新渲染后将过滤条带回视野；时间轴仍保留，可继续点击其他题材快速切换。
+    requestAnimationFrame(function() {
+        var inp = document.getElementById('tmmSearchBox');
+        if (!inp) return;
+        try { inp.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (e) {}
+    });
+}
 // 应用搜索过滤（整块重渲染；渲染后恢复搜索框焦点+光标到末尾，便于连续输入）
 function tmmSearchApply(q) {
     q = (q || '').trim();
@@ -29427,6 +29464,38 @@ function tmmToggleCard(el) {
     var card = el.parentElement;
     if (card) card.classList.toggle('collapsed');
 }
+// 细分题材当日表现：统计范围严格限定为当前题材行下方展示的股票。
+// 涨停以 akshare 实时涨停池标记为准；上涨/下跌排除涨跌停，保证四类数量互不重叠。
+function _tmmThemeLiveStats(t) {
+    var out = {upLimit: 0, downLimit: 0, up: 0, down: 0, total: 0, sum: 0};
+    var stocks = (t && t.stocks) || [];
+    for (var i = 0; i < stocks.length; i++) {
+        var s = stocks[i] || {};
+        var pct = s.quote_change_pct !== null && s.quote_change_pct !== undefined ? Number(s.quote_change_pct) : NaN;
+        // 涨停池带有封板状态，较单纯以涨幅阈值判断更准确（可覆盖不同涨停幅度品种）。
+        var isUpLimit = !!s.is_today;
+        // 创/科按 20cm，主板按 10cm；名称含 ST 时按 5cm 识别跌停。
+        var limitDown = (s.board === '\u521b' || s.board === '\u79d1') ? -19.5 : (/\*?ST/i.test(s.name || '') ? -4.8 : -9.5);
+        var isDownLimit = !isNaN(pct) && pct <= limitDown;
+        if (!isNaN(pct)) { out.total++; out.sum += pct; }
+        if (isUpLimit) out.upLimit++;
+        else if (isDownLimit) out.downLimit++;
+        else if (!isNaN(pct) && pct > 0) out.up++;
+        else if (!isNaN(pct) && pct < 0) out.down++;
+    }
+    out.avg = out.total ? out.sum / out.total : null;
+    return out;
+}
+function _tmmThemeStatsHtml(t) {
+    var s = _tmmThemeLiveStats(t);
+    // 保留两位小数：题材均值接近 0 时不再因一位小数四舍五入而误显示为 0.0%。
+    var avg = s.avg === null ? '--' : (s.avg > 0 ? '+' : '') + s.avg.toFixed(2) + '%';
+    var avgCls = s.avg === null ? '' : (s.avg >= 0 ? ' up' : ' down');
+    return '<span class="tmm-theme-stats" title="仅统计该细分题材下方股票的今日涨跌幅；均涨=有实时涨跌幅股票的涨跌幅之和 ÷ 有实时涨跌幅股票数；上涨/下跌不含涨跌停">' +
+        '<i class="zt">涨停 ' + s.upLimit + '</i><i class="dt">跌停 ' + s.downLimit + '</i>' +
+        '<i class="up">上涨 ' + s.up + '</i><i class="down">下跌 ' + s.down + '</i>' +
+        '<i class="avg' + avgCls + '">均涨 ' + avg + '</i></span>';
+}
 function _tmmTheme(t, cls, block) {
     var h = '<div class="tmm-theme-row' + (block ? ' tmm-tb' : '') + '"><span class="tmm-theme-chip ' + cls + '"';
     // 点击细分题材 → 跳转 KPL涨停深挖 搜索该题材（跳 tab + 搜索，区别于仅填充输入框）
@@ -29435,7 +29504,7 @@ function _tmmTheme(t, cls, block) {
     h += ' onclick="jumpToKplSearch(\\x27' + (t.name || '').replace(/'/g, '') + '\\x27)" title="' + tmmT + '"';
     h += '>' + _kplEsc(t.name) + '<span class="tmm-tcount">' + t.count + '</span>';
     if (t.plates && t.plates.length > 1) h += '<span class="tmm-cross">\u00d7' + t.plates.length + '</span>';
-    h += '</span><span class="tmm-stocks">';
+    h += '</span>' + _tmmThemeStatsHtml(t) + '<span class="tmm-stocks">';
     for (var i = 0; i < t.stocks.length; i++) h += _tmmStock(t.stocks[i]);
     h += '</span></div>';
     return h;
