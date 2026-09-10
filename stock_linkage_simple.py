@@ -4227,31 +4227,157 @@ def _build_theme_wind_strength(top_n=10):
 
 
 # ===== 细分题材晋级（时间轴下方 · 4日连续观察）=====
-_kpl_ak_ft_cache = {}
+_KPL_FIRST_ZT_TIME_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'kpl_first_zt_times.db')
+_kpl_zt_first_time_cache = {}  # YYYYMMDD -> {code: HHMMSS}，仅是 SQLite 的进程内热缓存
+_kpl_zt_first_time_lock = threading.RLock()
+_kpl_first_zt_db_ready = False
+
+
+def _kpl_first_zt_db_init():
+    """初始化独立的首次涨停时间库，不混入体积较大的 K 线库。"""
+    global _kpl_first_zt_db_ready
+    if _kpl_first_zt_db_ready:
+        return
+    with _kpl_zt_first_time_lock:
+        if _kpl_first_zt_db_ready:
+            return
+        os.makedirs(os.path.dirname(_KPL_FIRST_ZT_TIME_DB), exist_ok=True)
+        with sqlite3.connect(_KPL_FIRST_ZT_TIME_DB) as conn:
+            conn.execute('''CREATE TABLE IF NOT EXISTS first_zt_times (
+                trade_date TEXT NOT NULL,
+                stock_code TEXT NOT NULL,
+                first_zt_time INTEGER NOT NULL,
+                PRIMARY KEY (trade_date, stock_code)
+            )''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS first_zt_sync_days (
+                trade_date TEXT PRIMARY KEY,
+                synced_at INTEGER NOT NULL
+            )''')
+        _kpl_first_zt_db_ready = True
+
+
+def _kpl_first_zt_db_get(date_ymd):
+    date_ymd = str(date_ymd or '').replace('-', '')
+    if len(date_ymd) != 8 or not date_ymd.isdigit():
+        return {}
+    with _kpl_zt_first_time_lock:
+        cached = _kpl_zt_first_time_cache.get(date_ymd)
+        if cached is not None:
+            return cached
+    try:
+        _kpl_first_zt_db_init()
+        with sqlite3.connect(_KPL_FIRST_ZT_TIME_DB) as conn:
+            rows = conn.execute(
+                'SELECT stock_code, first_zt_time FROM first_zt_times WHERE trade_date=?', (date_ymd,)
+            ).fetchall()
+        result = {str(code).zfill(6): int(first_time) for code, first_time in rows}
+        # 只缓存已同步的日期；尚未被后台补齐的日期须在后续查询中重新读库。
+        if result or _kpl_first_zt_db_is_synced(date_ymd):
+            with _kpl_zt_first_time_lock:
+                _kpl_zt_first_time_cache[date_ymd] = result
+        return result
+    except Exception:
+        return {}
+
+
+def _kpl_first_zt_db_is_synced(date_ymd):
+    try:
+        _kpl_first_zt_db_init()
+        with sqlite3.connect(_KPL_FIRST_ZT_TIME_DB) as conn:
+            return conn.execute('SELECT 1 FROM first_zt_sync_days WHERE trade_date=?', (date_ymd,)).fetchone() is not None
+    except Exception:
+        return False
+
+
+def _kpl_first_zt_db_save(date_ymd, first_times):
+    """写入单日 levistock 涨停池结果；空池也记录完成，避免反复请求。"""
+    rows = [(date_ymd, code, value) for code, value in (first_times or {}).items()]
+    _kpl_first_zt_db_init()
+    with sqlite3.connect(_KPL_FIRST_ZT_TIME_DB) as conn:
+        # 同步当天的完整快照，先清理旧行，避免某只股票的旧时间残留。
+        conn.execute('DELETE FROM first_zt_times WHERE trade_date=?', (date_ymd,))
+        if rows:
+            conn.executemany(
+                'INSERT OR REPLACE INTO first_zt_times (trade_date, stock_code, first_zt_time) VALUES (?, ?, ?)', rows
+            )
+        conn.execute(
+            'INSERT OR REPLACE INTO first_zt_sync_days (trade_date, synced_at) VALUES (?, ?)',
+            (date_ymd, int(time.time()))
+        )
+    with _kpl_zt_first_time_lock:
+        _kpl_zt_first_time_cache[date_ymd] = dict(first_times or {})
+
+
+def _kpl_fetch_first_zt_times_levistock(date_ymd):
+    """唯一允许访问 levistock 的写入路径：供后台 100 日预取任务调用。"""
+    first_times = {}
+    try:
+        import levistock as lk
+        for row in lk.stock_zt_pool_em(date=date_ymd) or []:
+            code = str(row.get('stock_code', '') or '').strip().zfill(6)
+            raw_time = str(row.get('first_zt_time', '') or '').strip()
+            try:
+                value = int(raw_time.zfill(6)) if raw_time.isdigit() else 999999
+            except (TypeError, ValueError):
+                value = 999999
+            if code and 0 < value < 999999:
+                first_times[code] = value
+    except Exception as e:
+        print(f'[KPL首次涨停时间] levistock {date_ymd} 获取失败: {e}')
+        return None
+    return first_times
+
+
+def _kpl_refresh_current_first_zt_times(date_ymd):
+    """收盘后刷新当天首封时间快照。
+
+    仅在 levistock 返回有效涨停池时覆盖本地库：数据源延迟或短暂空池不会清掉已有记录，
+    调用方可在下一轮继续重试。"""
+    first_times = _kpl_fetch_first_zt_times_levistock(date_ymd)
+    if not first_times:
+        return False
+    _kpl_first_zt_db_save(date_ymd, first_times)
+    return True
+
+
+def _kpl_first_zt_time_prefetch(days=100):
+    """启动后后台补齐近 100 个交易日。题材复盘只读 SQLite，不在用户搜索时联网。"""
+    try:
+        anchor = _traj_anchor_ymd()
+        targets = [d for d in _trading_days if d <= anchor][-days:]
+        # 先补最近日期，让当前题材复盘最快显示；其余历史数据继续在后台补齐。
+        missing = [d for d in reversed(targets) if not _kpl_first_zt_db_is_synced(d)]
+        if not missing:
+            print(f'[首次涨停时间] 本地库已覆盖近{len(targets)}个交易日')
+            return
+        print(f'[首次涨停时间] 后台补齐 {len(missing)}/{len(targets)} 个交易日…')
+        completed = 0
+        for date_ymd in missing:
+            first_times = _kpl_fetch_first_zt_times_levistock(date_ymd)
+            if first_times is None:
+                continue  # 网络异常不标记完成，后续启动可续传
+            _kpl_first_zt_db_save(date_ymd, first_times)
+            completed += 1
+            time.sleep(0.08)  # 对数据源保持温和节奏
+        print(f'[首次涨停时间] 已写入 {completed} 个交易日，本地查询就绪')
+    except Exception as e:
+        print(f'[首次涨停时间] 后台预取异常: {e}')
+
+
+def _kpl_levistock_first_times(date_ymd):
+    """兼容既有调用：查询阶段只从本地 SQLite / 热缓存读取，不触发联网。"""
+    return _kpl_first_zt_db_get(date_ymd)
+
+
 def _kpl_akshare_first_times(date_ymd):
-    """akshare 某交易日涨停池 first_time 索引 {code: first_time}（HHMMSS int，无时间 999999）。
-    供 KPL 日文件行（无封板时间）补充涨停时间；复用 _kpl_akshare_zt_rows 的日期缓存。
-    空结果不落缓存（云主机 akshare 偶发空返回时下一次请求自动重试）。"""
-    if date_ymd in _kpl_ak_ft_cache:
-        return _kpl_ak_ft_cache[date_ymd]
-    ft = {}
-    for r in _kpl_akshare_zt_rows(date_ymd):
-        v = r.get('first_time')
-        try:
-            v = int(v) if v else 999999
-        except (ValueError, TypeError):
-            v = 999999
-        if v < 999999 and r.get('stock_code'):
-            ft[r['stock_code']] = v
-    if ft:
-        _kpl_ak_ft_cache[date_ymd] = ft
-    return ft
+    """兼容旧调用名：首次涨停时间统一改由 levistock 获取。"""
+    return _kpl_levistock_first_times(date_ymd)
 
 
 def _kpl_patch_dayfile_first_times(date_ymd, ft_map):
-    """把 akshare 涨停池拉到的首次封板时间回写 KPL 日文件（data/zt_data/YYYY-MM-DD.json）与内存行，落盘持久化。
+    """把首次封板时间回写 KPL 日文件（data/zt_data/YYYY-MM-DD.json）与内存行，落盘持久化。
 
-    Session 61 Req3：云主机 akshare 请求不稳（偶发空返回/仅部分时间），若只在请求时现拉，
+    云主机数据源请求偶发空返回/仅部分时间，若只在请求时现拉，
     时间轴涨停时间标签会时有时无。回写后：只要某次请求成功拉到时间即写入日文件，
     之后任何接口（时间轴/天梯/细分晋级）读 KPL 日文件行都能拿到稳定 first_time，不再依赖请求期 akshare。
     幂等：文件不存在 / 无变更自动跳过；仅接受 0<v<999999 的有效时间。"""
@@ -7279,9 +7405,12 @@ def _zt_auto_startup():
 
 
 def _zt_after_close_loop():
-    """收盘后统一自动更新：交易日北京 15:05 后自动补全当日涨停日文件（每日一次）。
-    与标题🔄更新按钮的 doKplUpdate 同一执行路径（_kpl_fetch_missing_days）。"""
+    """收盘后统一自动更新。
+
+    交易日北京 15:05 后补全当日涨停日文件；15:10 起同步 levistock 当日首次封板时间。
+    首封池若尚未可用，每 3 分钟重试直至成功，当天成功后不再重复联网。"""
     last_fired = None
+    last_first_time_fired = None
     while True:
         try:
             now_bj = _bj_now()
@@ -7295,6 +7424,14 @@ def _zt_after_close_loop():
                     _kpl_fetch_missing_days(missing, source='收盘')
                 else:
                     print('[涨停自动更新-收盘] 当日数据已完整')
+            # 首封时间通常在收盘后数分钟才稳定；成功前保留重试，避免写入空池覆盖已有数据。
+            if today_ymd in _trading_days and total >= 910 and last_first_time_fired != today_ymd:
+                if _kpl_refresh_current_first_zt_times(today_ymd):
+                    last_first_time_fired = today_ymd
+                    print('[首次涨停时间-收盘] %s 已同步 %s 的 levistock 首封时间' % (
+                        now_bj.strftime('%H:%M'), today_ymd))
+                else:
+                    print('[首次涨停时间-收盘] %s 暂无有效涨停池，3分钟后重试' % now_bj.strftime('%H:%M'))
             time.sleep(180)
         except Exception:
             time.sleep(180)
@@ -7971,6 +8108,9 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
 .stock-block { display: inline-flex; flex-direction: column; align-items: center; padding: 5px 8px; border-radius: 6px; font-size: 0.82em; min-width: 54px; position: relative; cursor: pointer; transition: all 0.15s; }
 .stock-block .name { font-weight: 700; margin-bottom: 2px; position: relative; color: #fff; }
 .lb-tag { font-size: 0.65em; padding: 1px 5px; border-radius: 3px; color: #fff; font-weight: 700; display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+/* 题材复盘卡片：首次封板时间在卡片内底部居中，仅带时间的卡片保留一小段底部空间。 */
+.stock-block:has(.rg-first-zt-time) { padding-bottom: 20px; }
+.rg-first-zt-time { position: absolute; left: 50%; bottom: 3px; transform: translateX(-50%) scale(0.78); transform-origin: bottom center; font-size: 0.30em; line-height: 1; font-weight: 700; letter-spacing: 0.01em; color: rgba(255,255,255,0.76); white-space: nowrap; pointer-events: none; text-shadow: 0 1px 1px rgba(0,0,0,0.28); }
 .board-inline { font-size: 0.75em; opacity: 0.7; margin-left: 2px; }
 /* 首板/连板色块内 主板 vs 创业板·科创板 标签颜色区分（实心蓝/金，无灰色底） */
 .merged-section .stock-block .board-inline.board-main { color: #fff; background: #2563eb; border: 1px solid rgba(255,255,255,0.4); border-radius: 3px; padding: 0 4px; opacity: 1; }
@@ -25179,6 +25319,56 @@ function _kplGemStocksOfGrid(rowGridData, skipCodes) {
 
 // 通用行块渲染：把 rowGridData.stockList（或其子集）逐股渲染成行对齐网格（列=allDates 新→旧）
 // 与「涨停节奏/龙头接力」完全同一格式。withRelay=true 时色块带 relay-leader（可点击弹窗），供 20cm套利 区块使用
+function _kplFirstZtTimeSlot(date, code) {
+    // 初次渲染不占位，避免加载中的“--”干扰原有卡片；接口回填后才显示。
+    return '<span class="rg-first-zt-time" data-first-zt-date="' + (date || '').replace(/-/g, '') + '" data-first-zt-code="' + (code || '') + '"></span>';
+}
+
+function _kplFormatFirstZtTime(raw) {
+    var v = Number(raw || 0);
+    if (!v || v >= 999999) return '';
+    var s = String(Math.floor(v)).padStart(6, '0');
+    return /^\d{6}$/.test(s) ? (s.slice(0, 2) + ':' + s.slice(2, 4)) : '';
+}
+
+// 题材复盘首次涨停时间：网格先渲染，随后只读取本地 SQLite 缓存回填。
+// 后台预取尚未完成时短暂重试本地接口，不会因用户搜索而访问外网。
+function _kplLoadFirstZtTimes(attempt) {
+    var nodes = document.querySelectorAll('.rg-first-zt-time[data-first-zt-date][data-first-zt-code]');
+    var dates = {}, hasNode = false;
+    for (var i = 0; i < nodes.length; i++) {
+        var date = nodes[i].getAttribute('data-first-zt-date') || '';
+        if (date) { dates[date] = true; hasNode = true; }
+    }
+    if (!hasNode) return;
+    var days = Object.keys(dates);
+    fetch('/api/kpl_first_zt_times?dates=' + encodeURIComponent(days.join(',')))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var firstTimes = (data && data.first_times) || {};
+            var unavailableDays = (data && data.unavailable_dates) || [];
+            var unavailable = {};
+            for (var u = 0; u < unavailableDays.length; u++) unavailable[unavailableDays[u]] = true;
+            var missing = 0;
+            for (var j = 0; j < nodes.length; j++) {
+                var node = nodes[j];
+                var day = node.getAttribute('data-first-zt-date') || '';
+                var code = node.getAttribute('data-first-zt-code') || '';
+                var text = _kplFormatFirstZtTime(firstTimes[day] && firstTimes[day][code]);
+                if (text) {
+                    node.textContent = text;
+                    node.title = '首次涨停时间 ' + text + '（levistock 本地缓存）';
+                } else if (!unavailable[day]) {
+                    missing++;
+                }
+            }
+            if (missing && (attempt || 0) < 20) {
+                window.setTimeout(function() { _kplLoadFirstZtTimes((attempt || 0) + 1); }, 1200);
+            }
+        })
+        .catch(function() {});
+}
+
 function _kplRenderGridStockRows(rowGridData, stockList, withRelay) {
     var N = rowGridData.allDates.length;
     var cols = '110px repeat(' + N + ', 96px)';
@@ -25211,6 +25401,7 @@ function _kplRenderGridStockRows(rowGridData, stockList, withRelay) {
             html += '<div class="rg-cell"><div class="stock-block ' + blockClass + clickAttr + '" data-code="' + (cell.stock_code || '') + '">';
             html += '<span class="name">' + (cell.stock_name || '') + '</span>';
             html += labelHtml;
+            if (!cell.is_strong_rise) html += _kplFirstZtTimeSlot(day, cell.stock_code || '');
             html += '</div></div>';
         }
         html += '</div>';
@@ -25390,6 +25581,7 @@ function _kplRenderLeaderRelay(rowGridData, klineId, groupId) {
                 html += '<div class="rg-cell"><div class="stock-block ' + blockClass + restartCls + ' relay-leader" data-code="' + ld.code + '" data-name="' + (ld.cell.stock_name || '').replace(/'/g, '') + '" title="' + (ld.restart ? '\u65ad\u677f\u540e\u518d\u9996\u677f\uff08\u91cd\u542f\uff09' : lb + '\u677f') + '">';
                 html += '<span class="name">' + (ld.cell.stock_name || '') + '</span>';
                 html += '<span class="lb-tag">' + lbLabel + (ld.restart ? '<span class="restart-mark">\u91cd\u542f</span>' : '') + '</span>';
+                html += _kplFirstZtTimeSlot(day, ld.code || '');
                 html += '</div></div>';
             }
             html += '</div>';
@@ -25484,6 +25676,8 @@ function renderFullKplSearch(data, rawQuery) {
     }
 
     document.getElementById('kplSearchResult').innerHTML = html;
+    // 首次涨停时间与网格解耦回填，避免历史涨停池查询拖慢题材复盘主体渲染。
+    _kplLoadFirstZtTimes();
     // 行对齐节奏图：hover整行高亮 + 点击弹窗；龙头接力色块点击弹窗
     setTimeout(function() {
         document.querySelectorAll('.rhythm-grid[id^="kpl-rhythm-grid-"]').forEach(function(grid) {
@@ -33260,6 +33454,21 @@ class Handler(BaseHTTPRequestHandler):
             result['ts'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             self._respond_json(result, cors_headers)
 
+        elif path == '/api/kpl_first_zt_times':
+            # 题材复盘股票卡：只读本地 SQLite；levistock 网络请求仅由启动后的后台预取任务执行。
+            raw_dates = query.get('dates', [''])[0].split(',')
+            result = {}
+            unavailable_dates = []
+            for raw_date in raw_dates:
+                day = str(raw_date or '').replace('-', '').strip()
+                if len(day) == 8 and day.isdigit() and day in _trading_days:
+                    first_times = _kpl_first_zt_db_get(day)
+                    result[day] = first_times
+                    # levistock 历史池返回空时，记录为“数据源无该日”，前端不再无效轮询本地接口。
+                    if not first_times and _kpl_first_zt_db_is_synced(day):
+                        unavailable_dates.append(day)
+            self._respond_json({'first_times': result, 'unavailable_dates': unavailable_dates}, cors_headers)
+
         elif path == '/api/kpl_gem_strong_rise':
             codes_str = query.get('codes', [''])[0].strip()
             codes = [c.strip() for c in codes_str.split(',') if c.strip()]
@@ -36036,10 +36245,11 @@ def main():
         threading.Thread(target=_rtw_loop, daemon=True),
         threading.Thread(target=_zt_auto_startup, daemon=True),
         threading.Thread(target=_zt_after_close_loop, daemon=True),
+        threading.Thread(target=_kpl_first_zt_time_prefetch, daemon=True),
     ]
     for t in threads:
         t.start()
-    print("[缓存预热] 9线程并行启动...")
+    print(f"[缓存预热] {len(threads)}线程并行启动...")
 
     server.serve_forever()
 
