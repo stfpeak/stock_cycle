@@ -46,6 +46,7 @@ do_sync() {
         --include="data/zt_data/*.json" \
         --include="data/trade_calendar_2026.json" \
         --include="data/trading_days.csv" \
+        --include="data/kpl_first_zt_times.db" \
         --include="data/industry_chain_data.json" \
         --include="invest_logic/" \
         --include="invest_logic/**" \
