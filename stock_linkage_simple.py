@@ -4566,6 +4566,25 @@ def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
             th['is_new'] = th['theme'] not in prev_themes
     return {'days': cols}
 _ZT_LADDER_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'zt_ladder_cache')
+
+def _get_latest_zt_data_date():
+    """返回本地涨停数据的最新日期，不把 K 线库日期冒充成涨停数据日期。"""
+    candidates = []
+    for folder in (
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'zt_ladder_cache'),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'zt_pool'),
+    ):
+        if not os.path.isdir(folder):
+            continue
+        for name in os.listdir(folder):
+            stem, ext = os.path.splitext(name)
+            if ext.lower() not in ('.json', '.csv') or len(stem) != 8 or not stem.isdigit():
+                continue
+            candidates.append(stem)
+    if not candidates:
+        return ''
+    latest = max(candidates)
+    return latest[:4] + '-' + latest[4:6] + '-' + latest[6:]
 # 主线标签 → ETF 名关键词（用于关联 ETF 过滤）。键与 reason_tag 拆分后的标签匹配
 _REVIEW_ETF_TAG_KEYWORDS = {
     '算力': ['算力', '云计算', 'AI', '服务器', '光模块'],
@@ -4614,8 +4633,13 @@ def _get_zt_ladder(date_fmt):
     ttl = 60 if date_fmt == today_fmt else 86400
     if os.path.exists(cache_path):
         try:
-            if time.time() - os.path.getmtime(cache_path) < ttl:
-                return json.load(open(cache_path, 'r', encoding='utf-8'))
+            cached = json.load(open(cache_path, 'r', encoding='utf-8'))
+            age = time.time() - os.path.getmtime(cache_path)
+            # 盘前/数据源暂未生成时会落一个空文件；收盘后必须允许最近几天
+            # 的空缓存重新请求，否则 9月11日这类“先空后有”的交易日会永久停在旧日期。
+            retry_empty = not (cached.get('StockList') or []) and age >= 60
+            if age < ttl and not retry_empty:
+                return cached
         except Exception:
             pass
     # 今日北京时开盘前：当日涨停池尚不存在，get_zttt 会返回上一交易日数据被误当今日
@@ -5155,7 +5179,39 @@ def _build_theme_map(ndays=40):
     }
 
 
-def _build_market_structure(ndays=30, date_end=None):
+def _market_structure_live_zt_rows(date_fmt):
+    """市场结构当日盘中快照，和 ``/api/realtime_zt`` 使用完全相同的涨停池。
+
+    历史天梯仍使用 levistock 的收盘快照；仅在北京交易日 9:25~15:00，用
+    ``_get_zt_from_akshare`` 覆盖当天一列。这样题材每日总结、题材金字塔与
+    “实时-今日涨停”看到的是同一批股票、同一连板数与同一首次封板时间。
+    """
+    now_bj = _bj_now()
+    if (not _is_trading_hours()) or date_fmt != now_bj.strftime('%Y-%m-%d'):
+        return {}
+    out = {}
+    try:
+        for item in _get_zt_from_akshare() or []:
+            code = str(item.get('code') or '').zfill(6)
+            if not code:
+                continue
+            resolved = _kpl_resolve_stock_kpl(code, date_fmt) or {}
+            tags = _traj_valid_tags(resolved.get('reason_tag', ''), resolved.get('reason_brief', ''))
+            # 和实时页一致：没有 KPL 细分标签时不伪造题材；后续由行业兜底为未分类。
+            out[code] = {
+                'code': code,
+                'name': item.get('name') or code,
+                'level': max(1, int(item.get('lianban') or 1)),
+                'first_time': int(item.get('first_time') or 999999),
+                'themes': tags,
+                'board': _kpl_board_of_code(code),
+            }
+    except Exception as e:
+        print('[市场结构-盘中实时池] 获取失败: %s' % e)
+    return out
+
+
+def _build_market_structure(ndays=30, date_end=None, strict_cutoff=True):
     """市场结构金字塔：逐日 get_zttt 天梯（连板数=层数）+ KPL 题材富化（reason_tag/reason_brief），
     同层同细分题材砖分组（多题材砖进多组），爬升/掉队检测。
     返回 dates/days 均最新在前；dropped 记录窗口内每股首次掉队+首次重回。"""
@@ -5164,20 +5220,27 @@ def _build_market_structure(ndays=30, date_end=None):
     today_fmt = today_ymd[:4] + '-' + today_ymd[4:6] + '-' + today_ymd[6:]
     end = date_end.replace('-', '') if date_end else today_ymd
     recent = [d for d in _trading_days if d <= end]
-    recent = recent[-ndays:] if len(recent) >= ndays else recent
+    # 交易日历会先行包含今天；当日涨停天梯尚未生成时不能把空日期作为
+    # 回放默认页。多取一小段候选，循环中剔除空天梯后再保留最近 ndays 天。
+    recent = recent[-(ndays + 7):] if len(recent) > ndays else recent
     recent_fmt = [d[:4] + '-' + d[4:6] + '-' + d[6:] for d in recent]
     if recent:
         _kpl_ensure_loaded(recent[0], recent[-1])
     partial_today = bool(recent_fmt and recent_fmt[-1] == today_fmt and _is_trading_hours())
 
-    # 逐日组装（升序 旧→新）
+    # 逐日组装（升序 旧→新）。盘中当天一列强制复用实时页涨停池；其他日期仍走历史天梯。
+    live_today = _market_structure_live_zt_rows(today_fmt)
     day_infos = []          # 升序 [{date,label,levels:{lv:[groups]}}]
     day_level = []          # 升序 [{code: level}]
     code_max_level = {}     # code → 窗口内最高层
     prev_day_lv = {}        # 前一交易日的 {code: level}（爬升判定：当日 level == 前一交易日 level+1）
     for d in recent_fmt:
-        data = _get_zt_ladder(d)
+        live_for_day = live_today if d == today_fmt else {}
+        data = {'StockList': []} if live_for_day else _get_zt_ladder(d)
         sl = data.get('StockList', []) or []
+        source_rows = list(live_for_day.values()) if live_for_day else sl
+        if not source_rows:
+            continue
         levels = {}
         day_lv = {}
         kpl_map = {}
@@ -5186,27 +5249,35 @@ def _build_market_structure(ndays=30, date_end=None):
             if sc and sc not in kpl_map:
                 kpl_map[sc] = r
         live_rows = _kpl_today_live_rows() if d == today_fmt else []
-        for row in sl:
-            if len(row) < 6:
+        for row in source_rows:
+            is_live_row = isinstance(row, dict)
+            if not is_live_row and len(row) < 6:
                 continue
-            code = str(row[0])
-            name = str(row[1]) or ''
+            code = str(row.get('code') if is_live_row else row[0])
+            name = str(row.get('name') if is_live_row else row[1]) or ''
             try:
-                level = int(row[2] or 0)
+                level = int(row.get('level') if is_live_row else row[2])
             except (ValueError, TypeError):
                 level = 0
             level = max(1, level)
             # 涨停时间戳(epoch秒, 北京时) → HHMMSS；0/999999 兜底
             first_time = 999999
-            try:
-                ts_i = int(row[3])
-                if ts_i and ts_i > 0:
-                    first_time = int(datetime.fromtimestamp(ts_i, timezone(timedelta(hours=8))).strftime('%H%M%S'))
-            except (ValueError, TypeError):
-                first_time = 999999
-            board = _kpl_board_of_code(code)
-            # 题材富化：KPL当日 → 今日实时池 → 全量历史最新 → get_zttt板块名 → 未分类
-            themes = []
+            if is_live_row:
+                try:
+                    first_time = int(row.get('first_time') or 999999)
+                except (ValueError, TypeError):
+                    first_time = 999999
+            else:
+                try:
+                    ts_i = int(row[3])
+                    if ts_i and ts_i > 0:
+                        first_time = int(datetime.fromtimestamp(ts_i, timezone(timedelta(hours=8))).strftime('%H%M%S'))
+                except (ValueError, TypeError):
+                    first_time = 999999
+            board = row.get('board') if is_live_row else _kpl_board_of_code(code)
+            # 题材富化：KPL当日 → 当日实时池 → get_zttt板块名 → 未分类。
+            # 严格复盘模式禁止用“全量历史最新”标签回填历史日，避免未来标签泄漏。
+            themes = list(row.get('themes') or []) if is_live_row else []
             rr = kpl_map.get(code)
             if rr:
                 themes = _traj_valid_tags(rr.get('reason_tag', ''), rr.get('reason_brief', ''))
@@ -5215,12 +5286,12 @@ def _build_market_structure(ndays=30, date_end=None):
                     if lr.get('stock_code') == code:
                         themes = _traj_valid_tags(lr.get('reason_tag', ''), lr.get('reason_brief', ''))
                         break
-            if not themes:
+            if not themes and not strict_cutoff:
                 lt = _kpl_stock_latest_tag.get(code)
                 if lt:
                     themes = _traj_valid_tags(lt.get('tag', ''), lt.get('reason_brief', ''))
             if not themes:
-                sec = str(row[5] or '').strip()
+                sec = str('' if is_live_row else row[5] or '').strip()
                 if sec and not _tws_is_generic_tag(sec):
                     themes = [sec]
             if not themes:
@@ -5248,6 +5319,11 @@ def _build_market_structure(ndays=30, date_end=None):
         day_infos.append({'date': d, 'label': d[5:], 'levels': levels})
         day_level.append(day_lv)
         prev_day_lv = day_lv
+
+    if len(day_infos) > ndays:
+        day_infos = day_infos[-ndays:]
+        day_level = day_level[-ndays:]
+    recent_fmt = [item['date'] for item in day_infos]
 
     # 掉队检测：day i 有、day i+1 无 → 掉队事件；向前扫首次重回；每股只记首次
     dropped = []
@@ -5403,9 +5479,466 @@ def _build_market_structure(ndays=30, date_end=None):
         'days': list(reversed(day_infos)),
         'dropped': dropped,
         'summary': summary,
+        # 市场结构页面主体：以细分题材组织的、可按日期回看的连板金字塔。
+        # 旧 summary/days 仍保留，供题材风向核心池和个股路径弹层复用。
+        'theme_pyramids': _build_market_theme_pyramids(day_infos, recent_fmt),
+        # 严格以 recent_fmt[-1] 为分析截点：日报生成器不读取任何未来交易日。
+        'daily_review_report': _build_market_daily_review(day_infos, recent_fmt),
         'max_level': max_level,
         'partial_today': partial_today,
     }
+
+
+def _review_market_emotion_for_date(date_fmt):
+    """levistock 市场情绪快照；显式传入复盘日期，禁止使用后续行情。
+
+    炸板率使用“炸板次数 / (封板数 + 炸板次数)”近似，来源为当日涨停池 open_times。
+    """
+    cache_key = 'daily_review_emotion:' + date_fmt
+    cached = _get_cached(cache_key, ttl=300)
+    if cached is not None:
+        return cached
+    result = {'available': False, 'note': '市场情绪数据不足，未做推断。'}
+    try:
+        import levistock as lk
+        emotion = lk.market_emotion_kph(date=date_fmt)
+        pool = lk.stock_zt_pool_em(date=date_fmt.replace('-', '')) or []
+        if isinstance(pool, dict):
+            pool = pool.get('data') or pool.get('rows') or []
+        open_times = 0
+        for row in pool:
+            try:
+                open_times += max(0, int(row.get('open_times') or 0))
+            except (TypeError, ValueError, AttributeError):
+                pass
+        sealed = len(pool)
+        denom = sealed + open_times
+        result = {
+            'available': True,
+            'rise_num': int(emotion.get('rise_num') or 0),
+            'fall_num': int(emotion.get('fall_num') or 0),
+            'flat': int(emotion.get('flat') or 0),
+            'zt': int(emotion.get('sjzt') or emotion.get('zt') or sealed),
+            'dt': int(emotion.get('sjdt') or emotion.get('dt') or 0),
+            'turnover': emotion.get('qscln') or 0,
+            'turnover_prev': emotion.get('q_zrcs') or 0,
+            'sign': emotion.get('sign') or '',
+            'open_times': open_times,
+            'bomb_rate': round(open_times / denom * 100, 1) if denom else None,
+            'note': 'levistock：上涨/下跌、涨跌停来自开盘红；炸板率按当日涨停池炸板次数与封板数计算。',
+        }
+    except Exception as e:
+        result = {'available': False, 'note': 'levistock 市场情绪获取失败：%s' % str(e)}
+    _set_cache(cache_key, result)
+    return result
+
+
+def _build_market_daily_review(day_infos, recent_fmt):
+    """根据指定截止日及其此前数据生成“今日复盘总结”。
+
+    day_infos 必须是升序且已经由 _build_market_structure 按 date_end 截断。
+    这个函数只访问传入窗口，因此历史日期回放不会把未来表现带入报告。
+    """
+    if not day_infos or not recent_fmt:
+        return {'date': '', 'cutoff_note': '数据不足，无法生成复盘报告。'}
+
+    def snapshot(day):
+        themes = {}
+        for lv_raw, groups in (day.get('levels') or {}).items():
+            try:
+                lv = int(lv_raw)
+            except (TypeError, ValueError):
+                continue
+            for group in groups or []:
+                theme = (group.get('theme') or '').strip()
+                if not theme or theme == '未分类' or _tws_is_generic_tag(theme):
+                    continue
+                info = themes.setdefault(theme, {'stocks': {}, 'counts': {}})
+                for stock in group.get('stocks') or []:
+                    code = str(stock.get('code') or '').zfill(6)
+                    if not code:
+                        continue
+                    old = info['stocks'].get(code)
+                    if old is None or lv > old['level']:
+                        info['stocks'][code] = {
+                            'code': code, 'name': stock.get('name') or code, 'level': lv,
+                            'first_time': int(stock.get('first_time') or 999999),
+                        }
+        for info in themes.values():
+            for stock in info['stocks'].values():
+                info['counts'][stock['level']] = info['counts'].get(stock['level'], 0) + 1
+            info['max_level'] = max(info['counts'], default=0)
+            info['count'] = len(info['stocks'])
+        return themes
+
+    timeline = [snapshot(day) for day in day_infos]  # 旧→新，绝不含分析日之后的数据
+    current = timeline[-1]
+    previous = timeline[-2] if len(timeline) > 1 else {}
+    date = recent_fmt[-1]
+    all_current = {}
+    for theme, info in current.items():
+        for code, stock in info['stocks'].items():
+            old = all_current.get(code)
+            if old is None or stock['level'] > old['level']:
+                all_current[code] = dict(stock, theme=theme)
+    emotion = _review_market_emotion_for_date(date)
+    zt_count = len(all_current)
+    market_max = max((stock['level'] for stock in all_current.values()), default=0)
+    current_codes = set(all_current)
+
+    theme_rows = []
+    for theme, info in current.items():
+        prev = previous.get(theme, {})
+        prev_count = int(prev.get('count') or 0)
+        prev_max = int(prev.get('max_level') or 0)
+        historical = [x.get(theme, {}) for x in timeline[:-1]]
+        historical_active = sum(1 for x in historical if x.get('count', 0) > 0)
+        max_level = int(info['max_level'])
+        count = int(info['count'])
+        prev_stocks = prev.get('stocks') or {}
+        promoted = []
+        for code, stock in info['stocks'].items():
+            old = prev_stocks.get(code) or {}
+            if old and int(stock.get('level') or 0) > int(old.get('level') or 0):
+                promoted.append(stock)
+        # 前一日该题材 2板+、今天不再封板：按主流程记录“晋级失败”，
+        # 不把它错当作题材消失；同一股票若在其他题材出现，仍视作该题材掉队。
+        failed = [stock for code, stock in prev_stocks.items()
+                  if int(stock.get('level') or 0) >= 2 and code not in current_codes]
+        first_boards = [stock for stock in info['stocks'].values() if int(stock.get('level') or 0) == 1]
+        straight_first = [stock for stock in first_boards
+                          if 92530 < int(stock.get('first_time') or 999999) <= 93500]
+        if historical_active == 0:
+            stage = 'T0提案 / 点火'
+        elif failed and count == 0:
+            stage = '退潮 / 观察'
+        elif max_level >= 4 and count > prev_count and promoted:
+            stage = '主升 / 加速'
+        elif max_level >= 3 and promoted:
+            stage = '选龙 / 主升验证'
+        elif max_level >= 2 and prev_max <= 1:
+            stage = '次日验证'
+        elif max_level >= 2 and promoted:
+            stage = '核心选举 / 晋级'
+        elif max_level >= 2:
+            stage = '核心选举'
+        elif count < prev_count or failed:
+            stage = '分歧观察'
+        else:
+            stage = '低位供血 / 试错'
+        levels = [{'level': lv, 'count': info['counts'][lv]} for lv in sorted(info['counts'], reverse=True)]
+        complete = max_level >= 2 and all(info['counts'].get(lv, 0) > 0 for lv in range(1, max_level + 1))
+        if complete:
+            structure = '完整梯队'
+        elif count <= 1 and max_level >= 2:
+            structure = '单核抱团'
+        elif max_level >= 3 and info['counts'].get(1, 0) == 0:
+            structure = '低位断血'
+        elif count < prev_count:
+            structure = '梯队收缩'
+        else:
+            structure = '梯队扩张' if count > prev_count else '梯队延续'
+        leaders = sorted(info['stocks'].values(), key=lambda x: (-x['level'], x['first_time'], x['name']))
+        score = max_level * 10 + count * 2 + len(promoted) * 3 - len(failed) * 2 + (2 if count >= prev_count else -1)
+        if promoted:
+            promotion_text = '、'.join('%s%s板' % (x['name'], x['level']) for x in sorted(promoted, key=lambda x: (-x['level'], x['first_time']))[:3])
+        else:
+            promotion_text = ''
+        if failed:
+            failure_text = '、'.join('%s晋级%s板失败' % (x['name'], int(x['level']) + 1)
+                                    for x in sorted(failed, key=lambda x: (-x['level'], x['name']))[:3])
+        else:
+            failure_text = ''
+        theme_rows.append({
+            'theme': theme, 'stage': stage, 'structure': structure, 'score': score,
+            'count': count, 'prev_count': prev_count, 'max_level': max_level,
+            'levels': levels, 'leaders': leaders[:6],
+            'promoted': promotion_text, 'failed': failure_text,
+            'straight_first_count': len(straight_first),
+            'task': ('高位必须承接；中位至少一只晋级；低位继续供血' if max_level >= 3
+                     else ('最强首板完成1进2，且新增首板不断档' if max_level == 1
+                           else '中位率先晋级，低位持续供血；失败股不反包则降级观察')),
+        })
+    theme_rows.sort(key=lambda x: (-x['score'], -x['max_level'], -x['count'], x['theme']))
+    top_themes = theme_rows[:6]
+
+    # 一个股票只归属当前定价权最高的细分题材，角色表不跨题材串联。
+    primary_theme_by_code = {}
+    for theme_row in theme_rows:
+        for stock in theme_row['leaders']:
+            primary_theme_by_code.setdefault(stock['code'], theme_row['theme'])
+    roles = []
+    used_codes = set()
+    for theme_row in top_themes:
+        for stock in theme_row['leaders']:
+            if stock['code'] in used_codes or primary_theme_by_code.get(stock['code']) != theme_row['theme']:
+                continue
+            used_codes.add(stock['code'])
+            lv = stock['level']
+            if lv == market_max and market_max >= 2:
+                role = '空间龙 / 高位核心'
+                task = '强承接或良性换手，继续维持题材定价权'
+            elif lv >= 3:
+                role = '中位核心候选'
+                task = '强于同身位并率先晋级，验证是否身份升级'
+            elif lv == 2:
+                role = '中位竞争者'
+                task = '完成2进3或被淘汰，避免普通跟风'
+            else:
+                role = '低位首板 / 候选'
+                task = '观察能否1进2且板块继续供血'
+            roles.append({'name': stock['name'], 'code': stock['code'], 'theme': theme_row['theme'],
+                          'level': lv, 'role': role, 'task': task})
+            if len(roles) >= 10:
+                break
+        if len(roles) >= 10:
+            break
+
+    # 近10交易日热门题材全量进入观察：即便当前最高板断板、只剩一只首板也不丢弃。
+    hot_10 = {}
+    for day_pos, day_theme_map in enumerate(timeline[-10:]):
+        day_date = recent_fmt[max(0, len(recent_fmt) - 10) + day_pos]
+        for theme, info in day_theme_map.items():
+            row = hot_10.setdefault(theme, {'theme': theme, 'active_days': 0, 'total_zt': 0, 'peak_level': 0, 'last_date': '', 'current_count': 0, 'current_max': 0})
+            row['active_days'] += 1
+            row['total_zt'] += int(info.get('count') or 0)
+            row['peak_level'] = max(row['peak_level'], int(info.get('max_level') or 0))
+            row['last_date'] = day_date
+            if day_pos == len(timeline[-10:]) - 1:
+                row['current_count'] = int(info.get('count') or 0)
+                row['current_max'] = int(info.get('max_level') or 0)
+    watch_themes = sorted(hot_10.values(), key=lambda x: (-x['active_days'], -x['peak_level'], -x['total_zt'], x['theme']))[:10]
+    new_proposals = [x for x in theme_rows if x['prev_count'] == 0 and x['count'] > 0][:5]
+    primary = top_themes[0] if top_themes else None
+    buy_candidates = []
+    for role_item in roles[:5]:
+        if role_item['level'] >= 3:
+            buy_type, trigger = '核心第一次良性分歧', '分歧后承接未失效，并重新转强'
+        elif role_item['level'] == 2:
+            buy_type, trigger = '工具人升级', '竞价与盘中强于同身位，率先完成晋级'
+        else:
+            buy_type, trigger = '首次有效验证', '完成1进2，同时题材继续出现新首板'
+        buy_candidates.append({
+            'name': role_item['name'], 'code': role_item['code'], 'theme': role_item['theme'],
+            'role': role_item['role'], 'type': buy_type, 'trigger': trigger,
+            'falsify': '未完成晋级、承接走弱或题材低位断血',
+        })
+    sell_points = []
+    for row in top_themes[:3]:
+        if row['count'] < row['prev_count'] or '收缩' in row['structure'] or '断血' in row['structure']:
+            sell_points.append({'theme': row['theme'], 'reason': row['structure'],
+                                'trigger': '高位承接失败且中位无人晋级时，反抽优先作为兑现观察。'})
+    if not sell_points and primary:
+        sell_points.append({'theme': primary['theme'], 'reason': '高位一致后的分歧风险',
+                            'trigger': '若高位转弱且板块跟随减少，观察后排被动股的兑现风险。'})
+    old_line = {
+        'theme': primary['theme'] if primary else '数据不足',
+        'state': ('健康 / 延续' if primary and primary['count'] >= primary['prev_count'] and primary['max_level'] >= 2
+                  else ('分歧 / 观察' if primary else '数据不足')),
+        'detail': (('高位%s；中位与低位仍需在下一交易日完成晋级和供血验证。' %
+                    ('存在' if primary and primary['max_level'] >= 3 else '未形成明显空间'))
+                   if primary else '数据不足，无法确认旧主线生命状态。'),
+    }
+    rise_num, fall_num = int(emotion.get('rise_num') or 0), int(emotion.get('fall_num') or 0)
+    state = ('弱势 / 退潮警惕' if emotion.get('available') and fall_num > rise_num * 1.5
+             else ('抱团 / 结构性机会' if market_max >= 4 and zt_count <= 12 else ('存量轮动' if zt_count else '数据不足')))
+    mood = ('差' if emotion.get('available') and fall_num > rise_num
+            else ('好' if emotion.get('available') and rise_num > fall_num * 1.25 else '一般'))
+    watch_names = [x['theme'] for x in watch_themes]
+    observation = [
+        (primary['theme'] + '最高板能否继续强承接' if primary else '高位核心是否出现强承接'),
+        (primary['theme'] + '是否至少出现一只中位晋级' if primary else '中位股是否有人身份升级'),
+        (primary['theme'] + '低位首板是否继续供血' if primary else '低位首板是否持续供血'),
+        ((watch_names[1] if len(watch_names) > 1 else '近10日热门题材') + '断板后是否仍有首板或1进2验证'),
+        ((watch_names[2] if len(watch_names) > 2 else '近10日热门题材') + '是否重新获得板块响应，而非单股反抽'),
+    ]
+    conclusion = ('当前最重要的不是预测高位能否继续加速，而是等待%s完成高位承接与梯队延续任务。'
+                  '如果中位晋级且低位继续供血，则确认题材延续；如果高位失承接、中位无人升职且低位断血，则证伪延续。'
+                  % (primary['theme'] if primary else '核心题材'))
+    return {
+        'date': date,
+        'cutoff_note': '分析截止至 %s 收盘数据；报告未使用该日期之后的任何数据。' % date,
+        'market': {
+            'zt_count': zt_count, 'max_level': market_max, 'theme_count': len(theme_rows),
+            'state': state, 'mood': mood,
+            'rise_num': rise_num, 'fall_num': fall_num, 'zt': int(emotion.get('zt') or 0),
+            'dt': int(emotion.get('dt') or 0), 'bomb_rate': emotion.get('bomb_rate'),
+            'sign': emotion.get('sign') or '', 'note': emotion.get('note') or '',
+        },
+        'themes': top_themes,
+        'roles': roles,
+        'new_proposals': new_proposals,
+        'watch_themes': watch_themes,
+        'old_mainline': old_line,
+        'buy_candidates': buy_candidates,
+        'sell_points': sell_points,
+        'scenarios': [
+            {'name': 'A 继续主升', 'condition': '高位核心强承接；中位至少一只晋级；低位继续出现首板。',
+             'action': '只观察核心、身份升级者与最强低位候选的条件成立。'},
+            {'name': 'B 健康分歧', 'condition': '龙头换手但承接未失效；中位淘汰后仍有胜出者；低位未断血。',
+             'action': '等待核心分歧后承接、再转强的验证。'},
+            {'name': 'C 退潮', 'condition': '高位承接失败；中位无人升职；首板供血明显减少。',
+             'action': '降低题材内新开仓预期，观察新提案是否取得连续验证。'},
+        ],
+        'observations': observation,
+        'conclusion': conclusion,
+    }
+
+
+def _build_market_theme_pyramids(day_infos, recent_fmt, limit=60):
+    """把市场天梯转换为细分题材金字塔所需的紧凑轨迹数据。
+
+    仅追踪窗口内曾达到 2 板及以上的股票；前端按任一日期回放时，亮砖表示当日涨停，
+    暗砖表示截至当日已留下的最高板足迹，0 层则承载断板后的后续涨跌表现。
+    """
+    by_theme = {}
+    all_codes = set()
+    for day in day_infos:  # 升序（旧→新）
+        date = day.get('date', '')
+        for lv, groups in (day.get('levels') or {}).items():
+            try:
+                level = int(lv)
+            except (ValueError, TypeError):
+                continue
+            for group in groups or []:
+                theme = (group.get('theme') or '').strip()
+                if not theme or theme == '未分类' or _tws_is_generic_tag(theme):
+                    continue
+                stocks = by_theme.setdefault(theme, {})
+                for stock in group.get('stocks') or []:
+                    code = str(stock.get('code') or '').zfill(6)
+                    if not code:
+                        continue
+                    rec = stocks.setdefault(code, {
+                        'code': code,
+                        'name': stock.get('name') or code,
+                        'board': stock.get('board') or '',
+                        'events': {},
+                    })
+                    rec['events'][date] = {
+                        'level': level,
+                        'first_time': stock.get('first_time', 999999),
+                        'climbed': bool(stock.get('climbed')),
+                    }
+    # 有 2 板+ 轨迹的题材全部保留；最新交易日出现首板的题材也纳入，
+    # 否则当日首板会被“2板门槛”误过滤。入选题材中的首板股票继续保留，供0层追踪。
+    latest_data_date = max(recent_fmt) if recent_fmt else ''
+    eligible_themes = set()
+    for theme, stock_map in by_theme.items():
+        has_2plus = any(max((int(e.get('level') or 0) for e in rec['events'].values()), default=0) >= 2
+                        for rec in stock_map.values())
+        has_today_first = any(latest_data_date in rec['events'] for rec in stock_map.values())
+        if has_2plus or has_today_first:
+            eligible_themes.add(theme)
+            all_codes.update(rec['code'] for rec in stock_map.values())
+    # 最新交易日优先补充实时/收盘涨跌幅，避免断板卡片显示“涨跌幅待补”。
+    pct_by_day = _review_load_daily_change_pct(sorted(all_codes), recent_fmt, allow_live=True)
+    price_by_code = _review_load_daily_price_rows(sorted(all_codes), recent_fmt)
+    out = []
+    for theme, stock_map in by_theme.items():
+        tracked = []
+        theme_max = 0
+        last_date = ''
+        last_level = 0
+        for rec in stock_map.values():
+            levels = [int(e.get('level') or 0) for e in rec['events'].values()]
+            max_level = max(levels) if levels else 0
+            last_event_date = max(rec['events']) if rec['events'] else ''
+            latest_level = int((rec['events'].get(last_event_date) or {}).get('level') or 0)
+            pcts = {}
+            cum_pcts = {}
+            first_event_date = min(rec['events']) if rec['events'] else ''
+            first_row = (price_by_code.get(rec['code']) or {}).get(first_event_date) or {}
+            base_close = first_row.get('prev_close')
+            try:
+                base_close = float(base_close) if base_close not in (None, '') else 0.0
+            except (TypeError, ValueError):
+                base_close = 0.0
+            for date in recent_fmt:
+                pct = (pct_by_day.get(date) or {}).get(rec['code'])
+                close_row = (price_by_code.get(rec['code']) or {}).get(date) or {}
+                # K 线库偶尔只有 close/prev_close 没有 change_pct，直接用同一交易日
+                # 的收盘价与前收计算，避免历史回放出现“涨跌幅待补”。
+                if pct is None:
+                    try:
+                        close_v = float(close_row.get('close') or 0)
+                        prev_v = float(close_row.get('prev_close') or 0)
+                        if close_v > 0 and prev_v > 0:
+                            pct = (close_v / prev_v - 1.0) * 100.0
+                    except (TypeError, ValueError):
+                        pct = None
+                if pct is not None:
+                    pcts[date] = round(float(pct), 2)
+                try:
+                    close = float(close_row.get('close'))
+                except (TypeError, ValueError):
+                    close = 0.0
+                if base_close > 0 and close > 0:
+                    cum_pcts[date] = round((close / base_close - 1.0) * 100.0, 2)
+            tracked.append({
+                'code': rec['code'], 'name': rec['name'], 'board': rec['board'],
+                'max_level': max_level, 'last_date': last_event_date,
+                'events': rec['events'], 'pcts': pcts, 'cum_pcts': cum_pcts,
+            })
+            if last_event_date > last_date or (last_event_date == last_date and max_level > last_level):
+                last_date, last_level = last_event_date, max_level
+            theme_max = max(theme_max, max_level)
+        # 题材本身至少有一只 2 板+ 标的；其余首板标的用于 1 板/0 层轨迹。
+        if tracked and theme in eligible_themes:
+            tracked.sort(key=lambda s: (s['last_date'], s['max_level'], s['name']), reverse=True)
+            today_date = latest_data_date
+            today_max = max((int((s['events'].get(today_date) or {}).get('level') or 0) for s in tracked), default=0)
+            today_count = sum(1 for s in tracked if today_date in s['events'])
+            break_gaps = []
+            if today_max == 0:
+                for s in tracked:
+                    dates_for_stock = sorted(s['events'])
+                    if dates_for_stock:
+                        gap = sum(1 for d in recent_fmt if d > dates_for_stock[-1])
+                        if gap > 0:
+                            break_gaps.append(gap)
+            shortest_break_gap = min(break_gaps) if break_gaps else 999
+            out.append({
+                'theme': theme, 'max_level': theme_max, 'last_date': last_date,
+                'today_max_level': today_max, 'today_count': today_count,
+                'shortest_break_gap': shortest_break_gap, 'stocks': tracked,
+            })
+    # 先按今日连板天梯；今日无涨停的题材再按最短断板间隔升序，
+    # 例如断板2天的题材排在断板3天之前。相近题材按共享股票归为一组。
+    parent = list(range(len(out)))
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb: parent[rb] = ra
+    theme_codes = [set(s['code'] for s in t['stocks']) for t in out]
+    for i in range(len(out)):
+        for j in range(i + 1, len(out)):
+            if theme_codes[i] & theme_codes[j]:
+                union(i, j)
+    groups = {}
+    for i, t in enumerate(out):
+        groups.setdefault(find(i), []).append(i)
+    group_meta = {}
+    for root, members in groups.items():
+        anchor = max((out[i] for i in members), key=lambda t: (t.get('today_max_level', 0), t['max_level'], t['last_date']))
+        group_meta[root] = (anchor.get('today_max_level', 0), anchor['max_level'], anchor['last_date'])
+    def sort_key(item):
+        i, t = item
+        group_rank = group_meta[find(i)]
+        active = 1 if t.get('today_max_level', 0) > 0 else 0
+        if not active:
+            # reverse=True 下，-2 会排在 -3 前面，即断板2天优先于断板3天。
+            return (0, -t.get('shortest_break_gap', 999), group_rank,
+                    t['max_level'], t['last_date'], len(t['stocks']), t['theme'])
+        return (1, t.get('today_max_level', 0), t.get('today_count', 0), group_rank,
+                t['max_level'], t['last_date'], len(t['stocks']), t['theme'])
+    out = [t for _, t in sorted(enumerate(out), key=sort_key, reverse=True)]
+    # 适当扩大题材窗口，避免零售等近期热门细分题材因排在第40名后被截断。
+    return out[:limit]
 
 
 def _review_tag_day_index(window_dates):
@@ -5445,7 +5978,40 @@ def _review_tag_day_index(window_dates):
     return {'day_count': day_count, 'day_stock': day_stock}
 
 
-def _review_load_daily_change_pct(codes, window_dates):
+def _review_load_daily_price_rows(codes, window_dates):
+    """批量读取窗口内收盘价及前收，用于计算首板以来累计涨幅。
+
+    首板基准严格取首板日的 prev_close；窗口内其它日期使用当日 close，
+    因而不会把首板当天的涨幅误当成起始价格。
+    """
+    codes = sorted({str(c).zfill(6) for c in (codes or []) if c})
+    dates = sorted({d for d in (window_dates or []) if d})
+    out = {c: {} for c in codes}
+    if not codes or not dates:
+        return out
+    db = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
+    try:
+        conn = sqlite3.connect(db)
+        cur = conn.cursor()
+        date_ph = ','.join('?' * len(dates))
+        code_ph = ','.join('?' * len(codes))
+        cur.execute(
+            f"SELECT stock_code, trade_date, close, prev_close "
+            f"FROM kline_daily WHERE trade_date IN ({date_ph}) "
+            f"AND stock_code IN ({code_ph})",
+            dates + codes,
+        )
+        for code, trade_date, close, prev_close in cur.fetchall():
+            out.setdefault(str(code).zfill(6), {})[trade_date] = {
+                'close': close, 'prev_close': prev_close,
+            }
+        conn.close()
+    except Exception as e:
+        print(f"[复盘累计涨幅] K线读取失败: {e}")
+    return out
+
+
+def _review_load_daily_change_pct(codes, window_dates, allow_live=True):
     """批量加载复盘时间轴所需的日涨跌幅。
 
     历史日统一读取本地 K 线库；若最新交易日的 K 线尚未落库，且它就是北京当天，
@@ -5481,7 +6047,7 @@ def _review_load_daily_change_pct(codes, window_dates):
     # 尚停留在昨天则不能拿今天盘中值回填昨天。
     latest = dates[-1]
     bj_today = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
-    if latest == bj_today or not _is_trading_hours():
+    if allow_live and (latest == bj_today or not _is_trading_hours()):
         missing = [c for c in codes if c not in out.get(latest, {})]
         if missing:
             for code, pct in _kpl_tst_change_pct(missing, latest).items():
@@ -7221,6 +7787,17 @@ def _do_data_update():
         import update_data_fast
         importlib.reload(update_data_fast)  # 确保使用最新代码
 
+        # Tushare 只负责“按天批量补全全市场 K 线”，不是涨停/KPL 更新的必要依赖。
+        # 当前服务已经有本地 K 线库、levistock 实时源和 KPL 日文件；缺少 Tushare
+        # 时不应把整次更新标成失败，尤其不能影响并行执行的涨停数据更新。
+        try:
+            import tushare  # noqa: F401
+            has_tushare = True
+        except ModuleNotFoundError as exc:
+            if exc.name != 'tushare':
+                raise
+            has_tushare = False
+
         # Step 1: 扩展交易日历
         _update_progress_msg = "📅 检查交易日历..."
         added_days = update_data_fast.extend_trade_calendar()
@@ -7235,6 +7812,11 @@ def _do_data_update():
 
         if not missing:
             _update_progress_msg = "✅ 数据已是最新，无需更新"
+            _invalidate_cache()
+            return
+
+        if not has_tushare:
+            _update_progress_msg = "✅ 涨停数据已更新"
             _invalidate_cache()
             return
 
@@ -10850,6 +11432,172 @@ td.lt-trajectory-cell {
 .ms-trace-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
 .ms-trace-actions button { background: linear-gradient(135deg, #b45309, #facc15); border: none; color: #1f2937; font-weight: 700; border-radius: 7px; padding: 4px 14px; cursor: pointer; font-size: 0.82em; }
 .ms-trace-actions button:hover { filter: brightness(1.15); }
+/* ===== 市场结构 · 细分题材涨停金字塔 ===== */
+.ms-theme-pyramids { display: grid; grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)); gap: 12px; }
+.ms-tp-card { border: 1px solid rgba(145,174,186,.32); border-radius: 12px; background: rgba(20,31,43,.72); overflow: hidden; }
+.ms-tp-card { background: rgba(13,28,47,.62); border-color: rgba(15,52,96,.72); box-shadow: 0 4px 14px rgba(3,12,24,.18); }
+.ms-tp-head { display: flex; align-items: center; gap: 7px; padding: 8px 10px 5px; border-bottom: 1px solid rgba(145,174,186,.16); }
+.ms-tp-head { background: rgba(15,52,96,.16); }
+.ms-tp-theme { color: #c4ad79; font-weight: 800; font-size: .92em; }
+.ms-tp-meta { color: #8d99a8; font-size: .7em; }
+.ms-tp-date { margin-left: auto; color: #91aeba; font-size: .72em; white-space: nowrap; }
+.ms-tp-slider-row { display: flex; align-items: center; gap: 7px; padding: 5px 10px 8px; color: #8d99a8; font-size: .68em; }
+.ms-tp-slider-track { position: relative; flex: 1; min-width: 120px; height: 20px; }
+.ms-tp-slider-track input { position: absolute; left: 0; right: 0; top: 5px; width: 100%; margin: 0; accent-color: #c4ad79; }
+.ms-tp-climax-mark { position: absolute; top: 0; width: 6px; height: 6px; transform: translateX(-50%); border-radius: 50%; background: #f2c879; border: 1px solid rgba(255,245,200,.9); box-shadow: 0 0 5px rgba(242,200,121,.75); pointer-events: none; z-index: 2; }
+.ms-tp-sides-head { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 0; padding: 0 9px 3px 43px; color: #8d99a8; font-size: .62em; }
+.ms-tp-sides-head span:last-child { border-left: 1px dashed rgba(196,173,121,.35); padding-left: 8px; }
+.ms-tp-body { display: grid; grid-template-columns: minmax(270px,1fr) minmax(175px,.62fr); gap: 8px; padding: 0 9px 10px; }
+.ms-tp-body { display: block; }
+.ms-tp-pyramid { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ms-tp-level { display: grid; grid-template-columns: 34px 1fr; min-height: 29px; border-bottom: 1px dotted rgba(145,174,186,.12); }
+.ms-tp-level:last-child { border-bottom: none; }
+.ms-tp-lv { display: flex; align-items: center; justify-content: center; color: #91aeba; font-size: .68em; font-weight: 800; }
+.ms-tp-lv.on { color: #c4ad79; }
+.ms-tp-lv.zero { color: #b9827c; }
+.ms-tp-level-sides { display: grid; grid-template-columns: 1fr 1fr; min-width: 0; }
+.ms-tp-side { display: flex; flex-wrap: wrap; align-content: center; align-items: center; gap: 3px; min-width: 0; padding: 2px 4px; }
+.ms-tp-side-broken { border-left: 1px dashed rgba(196,173,121,.38); background: rgba(196,173,121,.025); }
+.ms-tp-chips { display: flex; flex-wrap: wrap; align-content: center; gap: 3px; padding: 2px 0; }
+.ms-tp-chip { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; border-radius: 5px; padding: 2px 5px; cursor: pointer; font-size: .69em; line-height: 1.18; white-space: normal; overflow-wrap: anywhere; }
+.ms-tp-chip b { color: inherit; font-size: .9em; }
+.ms-tp-chip.live { color: #dce6ec; background: rgba(145,174,186,.15); border: 1px solid rgba(145,174,186,.45); }
+.ms-tp-chip.live.lv2 { border-left: 3px solid #a7886f; }
+.ms-tp-chip.live.lv3 { border-left: 3px solid #a27b7e; }
+.ms-tp-chip.live.lv4 { border-left: 3px solid #998ba7; }
+.ms-tp-chip.live.lvhigh { border-left: 3px solid #c4ad79; }
+.ms-tp-chip.ghost { color: rgba(177,190,201,.52); background: rgba(148,163,184,.045); border: 1px dashed rgba(148,163,184,.22); }
+.ms-tp-chip.break { color: #c79892; background: rgba(185,130,124,.09); border: 1px solid rgba(185,130,124,.32); }
+.ms-tp-chip .ms-tp-time { color: #8fc6d2; font-size: .82em; font-style: normal; white-space: nowrap; }
+.ms-tp-chip .ms-tp-restart { color: #78a19c; font-size: .86em; font-weight: 800; }
+.ms-tp-chip .ms-tp-pct { color: #d0d7df; font-size: .86em; }
+.ms-tp-chip .ms-tp-cum { color: #c4ad79; font-size: .82em; font-weight: 700; }
+.ms-tp-aside { border-left: 1px solid rgba(145,174,186,.16); padding: 3px 0 3px 8px; font-size: .69em; line-height: 1.5; color: #aeb9c3; }
+.ms-tp-daily-summary { margin-top: 8px; padding: 8px 10px 6px; border-top: 1px dashed rgba(79,195,247,.38); background: rgba(15,52,96,.16); border-radius: 6px; font-size: .72em; line-height: 1.65; }
+.ms-tp-summary-title { color: #8fc6d2; font-weight: 700; margin-bottom: 3px; }
+.ms-theme-summary { margin: 0 0 12px; }
+.ms-daily-review { margin: 0 0 14px; border: 1px solid rgba(196,173,121,.42); border-radius: 12px; background: linear-gradient(135deg, rgba(15,52,96,.24), rgba(13,28,47,.62)); overflow: hidden; }
+.ms-method { margin: 0 0 14px; border: 1px solid rgba(79,195,247,.32); border-radius: 12px; background: rgba(11,15,20,.78); overflow: hidden; }
+.ms-method-head { padding: 11px 13px; border-bottom: 1px solid rgba(79,195,247,.2); background: rgba(15,52,96,.2); }
+.ms-method-title { color: #e6edf3; font-size: 1em; font-weight: 800; }
+.ms-method-subtitle { color: #8fc6d2; font-size: .72em; margin-top: 3px; }
+.ms-method-body { padding: 10px 12px 14px; }
+.ms-method-toc { position: sticky; top: 4px; z-index: 2; display: flex; gap: 6px; flex-wrap: wrap; padding: 6px 0 9px; background: rgba(11,15,20,.94); }
+.ms-method-toc a { color: #9ed9e5; font-size: .7em; text-decoration: none; border: 1px solid rgba(79,195,247,.28); border-radius: 5px; padding: 3px 7px; }
+.ms-method-toc a:hover { color: #fff; background: rgba(79,195,247,.12); }
+.ms-method-section { scroll-margin-top: 45px; margin-top: 10px; }
+.ms-method-section h3 { margin: 0 0 5px; color: #c4ad79; font-size: .86em; }
+.ms-method-section h4 { margin: 8px 0 5px; color: #8fc6d2; font-size: .76em; }
+.ms-method-table-wrap { overflow-x: auto; }
+.ms-method-table { width: 100%; min-width: 1320px; border-collapse: separate; border-spacing: 0 4px; font-size: .68em; line-height: 1.58; }
+.ms-method-table th { position: static; z-index: auto; color: #d9e4ea; background: linear-gradient(135deg,#16324d,#1d405c); text-align: left; letter-spacing: .02em; }
+.ms-method-table th, .ms-method-table td { padding: 8px 9px; border-top: 1px solid rgba(145,174,186,.13); border-bottom: 1px solid rgba(145,174,186,.13); vertical-align: top; }
+.ms-method-table th:first-child, .ms-method-table td:first-child { border-left: 1px solid rgba(145,174,186,.13); border-radius: 6px 0 0 6px; }
+.ms-method-table th:last-child, .ms-method-table td:last-child { border-right: 1px solid rgba(145,174,186,.13); border-radius: 0 6px 6px 0; }
+.ms-method-table tbody tr { transition: transform .16s ease, filter .16s ease; }
+.ms-method-table tbody tr:hover { transform: translateX(2px); filter: brightness(1.16); }
+.ms-method-flow tbody tr:nth-child(4n+1) { background: rgba(79,195,247,.075); }
+.ms-method-flow tbody tr:nth-child(4n+2) { background: rgba(196,173,121,.075); }
+.ms-method-flow tbody tr:nth-child(4n+3) { background: rgba(169,154,184,.075); }
+.ms-method-flow tbody tr:nth-child(4n) { background: rgba(136,181,156,.075); }
+.ms-method-flow tbody td:nth-child(2) { color: #e6edf3; font-weight: 600; }
+.ms-method-flow tbody td:nth-child(3) { color: #b9dbe1; }
+.ms-method-flow tbody td:nth-child(4) { color: #e4c985; }
+.ms-method-flow tbody td:nth-child(5) { color: #cbd5df; }
+.ms-method-flow .ms-method-step { display: inline-flex; width: 25px; height: 25px; align-items: center; justify-content: center; border-radius: 50%; color: #e6edf3; background: rgba(79,195,247,.2); border: 1px solid rgba(79,195,247,.5); }
+.ms-method-flow tbody tr:nth-child(4n+2) .ms-method-step { background: rgba(196,173,121,.2); border-color: rgba(196,173,121,.55); }
+.ms-method-flow tbody tr:nth-child(4n+3) .ms-method-step { background: rgba(169,154,184,.2); border-color: rgba(169,154,184,.55); }
+.ms-method-flow tbody tr:nth-child(4n) .ms-method-step { background: rgba(136,181,156,.2); border-color: rgba(136,181,156,.55); }
+.ms-method-table th:nth-child(1), .ms-method-table td:nth-child(1) { width: 48px; text-align: center; }
+.ms-method-table th:nth-child(2), .ms-method-table td:nth-child(2) { width: 29%; }
+.ms-method-table th:nth-child(3), .ms-method-table td:nth-child(3) { width: 18%; }
+.ms-method-table th:nth-child(4), .ms-method-table td:nth-child(4) { width: 24%; }
+.ms-method-table th:nth-child(5), .ms-method-table td:nth-child(5) { width: 29%; }
+.ms-method-role th:nth-child(1), .ms-method-role td:nth-child(1) { width: 13%; text-align: left; }
+.ms-method-role th:nth-child(2), .ms-method-role td:nth-child(2) { width: 20%; }
+.ms-method-role th:nth-child(3), .ms-method-role td:nth-child(3) { width: 25%; }
+.ms-method-role th:nth-child(4), .ms-method-role td:nth-child(4) { width: 20%; }
+.ms-method-role th:nth-child(5), .ms-method-role td:nth-child(5) { width: 22%; }
+.ms-method-quote { margin: 7px 0; padding: 7px 9px; border-left: 3px solid #c4ad79; color: #d9e4ea; background: rgba(196,173,121,.07); font-size: .76em; line-height: 1.6; }
+.ms-method-final { margin: 5px 0; color: #cbd5df; font-size: .74em; line-height: 1.65; }
+.ms-method-final b { color: #e4c985; }
+.ms-daily-review-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 9px 11px; border-bottom: 1px solid rgba(196,173,121,.22); }
+.ms-daily-review-title { color: #e4c985; font-size: .92em; font-weight: 800; }
+.ms-daily-review-cutoff { color: #91aeba; font-size: .68em; flex: 1; min-width: 220px; }
+.ms-daily-review-select { background: #102238; color: #d9e4ea; border: 1px solid rgba(145,174,186,.45); border-radius: 5px; padding: 3px 6px; font-size: .72em; }
+.ms-dr-body { padding: 9px 11px 11px; }
+.ms-dr-market { display: grid; grid-template-columns: repeat(auto-fit, minmax(108px,1fr)); gap: 6px; margin-bottom: 9px; }
+.ms-dr-metric { padding: 6px 7px; border-radius: 6px; background: rgba(145,174,186,.06); border: 1px solid rgba(145,174,186,.16); }
+.ms-dr-metric label { display: block; color: #8d99a8; font-size: .62em; }
+.ms-dr-metric b { color: #d9e4ea; font-size: .82em; }
+.ms-dr-section { margin-top: 9px; }
+.ms-dr-section h4 { margin: 0 0 5px; color: #8fc6d2; font-size: .76em; }
+.ms-dr-note { color: #8d99a8; font-size: .66em; line-height: 1.5; }
+.ms-dr-theme { padding: 6px 7px; margin: 4px 0; border-left: 3px solid #c4ad79; border-radius: 5px; background: rgba(196,173,121,.055); font-size: .72em; line-height: 1.55; }
+.ms-dr-theme-name { color: #e4c985; font-weight: 800; }
+.ms-dr-tag { display: inline-block; margin-left: 5px; padding: 0 4px; border-radius: 3px; color: #b9dbe1; background: rgba(79,195,247,.11); font-size: .9em; }
+.ms-dr-level { color: #c5b7d2; font-weight: 700; }
+.ms-dr-success { color: #94d6ad; font-weight: 700; }
+.ms-dr-fail { color: #e6a2a2; font-weight: 700; }
+.ms-dr-straight { display: inline-block; margin-left: 6px; padding: 0 4px; border-radius: 3px; color: #f2d28b; background: rgba(196,173,121,.13); font-size: .9em; }
+.ms-dr-role-table { width: 100%; border-collapse: collapse; font-size: .7em; }
+.ms-dr-role-table th { color: #8fc6d2; text-align: left; font-weight: 700; }
+.ms-dr-role-table th, .ms-dr-role-table td { padding: 4px 5px; border-bottom: 1px solid rgba(145,174,186,.12); vertical-align: top; }
+.ms-dr-role-table td:first-child { color: #d9e4ea; font-weight: 700; }
+.ms-dr-stock-link { cursor: pointer; color: #d9e4ea; text-decoration: underline; text-decoration-color: rgba(143,198,210,.45); text-underline-offset: 2px; }
+.ms-dr-stock-link:hover { color: #8fc6d2; }
+.ms-dr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap: 7px; }
+.ms-dr-scenario { padding: 7px; border-radius: 6px; background: rgba(145,174,186,.055); border: 1px solid rgba(145,174,186,.16); font-size: .69em; line-height: 1.55; }
+.ms-dr-scenario b { color: #e4c985; }
+.ms-dr-observations { margin: 0; padding-left: 19px; color: #c6d1d9; font-size: .7em; line-height: 1.7; }
+.ms-dr-conclusion { margin-top: 9px; padding: 7px 8px; border-left: 3px solid #c4ad79; background: rgba(196,173,121,.07); color: #d9e4ea; font-size: .72em; line-height: 1.6; }
+@media (max-width:700px) { .ms-daily-review-cutoff { min-width: 100%; } .ms-dr-role-table { display:block; overflow-x:auto; white-space:nowrap; } }
+.ms-theme-summary-scroll { overflow-x: auto; border: 1px solid rgba(15,52,96,.72); border-radius: 10px; background: rgba(13,28,47,.48); }
+.ms-theme-summary-grid { display: grid; min-width: 11700px; }
+.ms-theme-summary-grid > div { min-height: 32px; padding: 5px 7px; border-right: 1px solid rgba(145,174,186,.10); border-bottom: 1px solid rgba(145,174,186,.10); color: #b8c6d1; font-size: .68em; line-height: 1.35; }
+.ms-theme-summary-theme { position: sticky; left: 0; z-index: 1; color: #8fc6d2 !important; font-weight: 700; background: #102238; }
+.ms-theme-summary-date { color: #91aeba !important; text-align: center; font-weight: 700; background: rgba(15,52,96,.16); }
+.ms-theme-summary-date.today, .ms-theme-summary-cell.today { color: #c4ad79 !important; background: rgba(196,173,121,.08); }
+.ms-theme-summary-cell { word-break: break-word; white-space: normal; padding: 7px 9px !important; }
+.ms-summary-topic { display: grid; grid-template-columns: max-content 1fr; gap: 7px; align-items: start; margin: 0 0 5px; padding: 5px 7px; border-left: 3px solid rgba(145,174,186,.55); border-radius: 4px; background: rgba(145,174,186,.055); line-height: 1.55; }
+.ms-summary-topic:last-child { margin-bottom: 0; }
+.ms-summary-topic-name { font-weight: 800; white-space: nowrap; color: #d9e4ea; }
+.ms-summary-topic-link { font-weight: 800; white-space: nowrap; color: #d9e4ea; text-decoration: none; cursor: pointer; }
+.ms-summary-topic-link:hover { color: #fff; text-decoration: underline; text-underline-offset: 2px; }
+.ms-summary-topic-text { color: #b8c6d1; }
+.ms-review-title { margin-top: 14px; }
+.ms-summary-topic-row { padding: 2px 0; }
+.ms-summary-topic-row.failed { margin-top: 4px; padding-top: 4px; border-top: 1px dashed rgba(185,130,124,.6); }
+.ms-summary-up { color: #e4c985; font-weight: 800; background: rgba(196,173,121,.12); border-radius: 3px; padding: 0 3px; }
+.ms-summary-fail { color: #e7aaa2; font-weight: 800; background: rgba(185,130,124,.14); border-radius: 3px; padding: 0 3px; }
+.ms-summary-first { color: #9ed9e5; font-weight: 800; background: rgba(79,195,247,.10); border-radius: 3px; padding: 0 3px; }
+.ms-summary-topic.tone-0 { border-left-color: #c4ad79; background: rgba(196,173,121,.08); }
+.ms-summary-topic.tone-0 .ms-summary-topic-name { color: #e4c985; }
+.ms-summary-topic.tone-1 { border-left-color: #8fc6d2; background: rgba(79,195,247,.065); }
+.ms-summary-topic.tone-1 .ms-summary-topic-name { color: #9ed9e5; }
+.ms-summary-topic.tone-2 { border-left-color: #a99ab8; background: rgba(169,154,184,.065); }
+.ms-summary-topic.tone-2 .ms-summary-topic-name { color: #c5b7d2; }
+.ms-summary-topic.tone-3 { border-left-color: #c79892; background: rgba(185,130,124,.065); }
+.ms-summary-topic.tone-3 .ms-summary-topic-name { color: #dfaaa3; }
+.ms-summary-topic.tone-4 { border-left-color: #88b59c; background: rgba(136,181,156,.065); }
+.ms-summary-topic.tone-4 .ms-summary-topic-name { color: #a8d1b6; }
+.ms-summary-empty { color: #64748b; }
+.ms-theme-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 12px; padding: 8px 10px; border: 1px solid rgba(15,52,96,.72); border-radius: 10px; background: rgba(13,28,47,.42); }
+.ms-theme-nav-title { color: #91aeba; font-size: .72em; font-weight: 700; margin-right: 2px; }
+.ms-theme-nav a { color: #c4ad79; font-size: .72em; text-decoration: none; border: 1px solid rgba(196,173,121,.35); border-radius: 5px; padding: 3px 7px; background: rgba(196,173,121,.06); }
+.ms-theme-nav a:hover { color: #fff; border-color: rgba(196,173,121,.75); background: rgba(196,173,121,.16); }
+.ms-tp-note { margin: 0 0 5px; padding: 3px 5px; border-left: 2px solid rgba(145,174,186,.35); background: rgba(145,174,186,.045); }
+.ms-tp-note.first { border-left-color: rgba(145,174,186,.65); }
+.ms-tp-note.up { border-left-color: rgba(196,173,121,.7); }
+.ms-tp-note.fail { border-left-color: rgba(185,130,124,.7); }
+.ms-tp-note:last-child { margin-bottom: 0; }
+.ms-tp-note i { display: inline-block; font-style: normal; border-radius: 3px; padding: 0 3px; margin-right: 2px; font-size: .9em; }
+.ms-tp-note.first i { color: #9fb4bd; background: rgba(145,174,186,.12); }
+.ms-tp-note.up i { color: #c4ad79; background: rgba(196,173,121,.12); }
+.ms-tp-note.fail i { color: #c79892; background: rgba(185,130,124,.12); }
+.ms-tp-note .ms-tp-note-name { color: #d0d7df; font-weight: 700; }
+.ms-tp-empty { color: #64748b; font-size: .72em; align-self: center; }
+@media (max-width: 700px) { .ms-theme-pyramids { grid-template-columns: 1fr; } .ms-tp-body { grid-template-columns: 1fr; } .ms-tp-sides-head { grid-template-columns: 1fr; padding-left: 43px; } .ms-tp-sides-head span:last-child { border-left: none; padding-left: 0; } .ms-tp-aside { border-left: none; border-top: 1px solid rgba(145,174,186,.16); padding: 7px 0 0; } }
 /* 今日涨停时间轴（9:00~15:00 封板时间分布）：横向绝对定位按分钟 + 同分钟垂直堆叠 + 贪心多lane，超屏横向滚动 */
 .tws-tl-box { margin-bottom: 2px; }
 .tws-tl-scroll { overflow-x: auto; overflow-y: hidden; border-radius: 10px; border: 1px solid #1e3a5f; background: rgba(15,52,96,0.25); box-shadow: 0 2px 10px rgba(0,0,0,0.12); }
@@ -12534,7 +13282,7 @@ td.lt-trajectory-cell {
     </div>
     <div class="tab-content" id="tab-marketstructure">
         <div class="ms-toolbar">
-            <span class="ms-toolbar-title">🏛 市场结构 · 涨停天梯金字塔</span>
+            <span class="ms-toolbar-title">🏛 市场细分题材结构</span>
             <button onclick="loadMarketStructure(true)">🔄 刷新</button>
         </div>
         <div id="marketStructureContainer"><div class="loading">加载市场结构数据...</div></div>
@@ -12785,6 +13533,8 @@ function switchTab(tab) {
     }
     if (tab === 'marketstructure') {
         if (!_marketStructureLoaded) loadMarketStructure();
+        else if (_msIsBeijingTradingWindow()) loadMarketStructure(true, true);
+        _msEnsureLiveRefresh();
     }
 }
 
@@ -17801,7 +18551,7 @@ function _renderCardDetailContent(code, detail, alertInfo, stockName, conceptsJs
     } else {
         h += '<span style="color:#666;font-size:0.85em;">近3个月无涨停</span>';
     }
-    h += '</div></div>';
+    h += '</div></div></div>';
     // KPL涨停记录（替换涨停理由）
     var kplRec = detail.kpl_records || [];
     h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">KPL涨停记录（共' + kplRec.length + '条）</div>';
@@ -20690,26 +21440,45 @@ var _msPathIndex = {};   // code → 升序 [{date,label,level,theme,board,first
 var _msDroppedIdx = {};  // code → dropped 条目
 var _msNavAll = [];      // 全砖 {code,name} 导航数组（个股弹框左右切换）
 var _msNavIdx = {};      // code → 导航索引
+var _msLiveTimer = null;
+
+function _msIsBeijingTradingWindow() {
+    var now = new Date();
+    var minutes = ((now.getUTCHours() + 8) % 24) * 60 + now.getUTCMinutes();
+    return minutes >= 565 && minutes < 900; // 最终交易日判断由后端 _is_trading_hours 兜底
+}
+
+function _msEnsureLiveRefresh() {
+    if (_msLiveTimer) return;
+    _msLiveTimer = setInterval(function() {
+        // 仅页面可见、当前页签为市场结构、北京 9:25~15:00 才请求；盘后/非交易日不刷新。
+        if (document.hidden || currentTab !== 'marketstructure' || !_msIsBeijingTradingWindow()) return;
+        loadMarketStructure(true, true);
+    }, 60000);
+}
 
 function _msLbCls(lb) {
     return lb >= 5 ? 'lt-lb-high' : 'lt-lb-' + (lb >= 2 ? lb : 1);
 }
 
-function loadMarketStructure(force) {
+function loadMarketStructure(force, silent) {
     var container = document.getElementById('marketStructureContainer');
     if (!container) return;
-    container.innerHTML = '<div class="loading">' + (force ? '刷新市场结构数据...' : '加载市场结构数据...') + '</div>';
-    var url = '/api/market_structure';
-    if (force) url += '?no_cache=1&_t=' + Date.now();
-    fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+    if (!silent) container.innerHTML = '<div class="loading">' + (force ? '刷新市场结构数据...' : '加载市场结构数据...') + '</div>';
+    // 市场结构返回内容会随交易日变化，不能复用浏览器对同一 URL 的旧响应。
+    var url = '/api/market_structure?ndays=20&_t=' + Date.now();
+    if (force) url += '&no_cache=1';
+    fetch(url, {cache: 'no-store'}).then(function(r) { return r.json(); }).then(function(data) {
         if (!data || data.error || !data.dates || !data.dates.length) {
             container.innerHTML = '<div class="error">' + ((data && data.error) ? _kplEsc(data.error) : '暂无市场结构数据') + '</div>';
             return;
         }
         _msData = data;
+        _msThemeDateIdx = {};
         _msBuildIndexes();
         container.innerHTML = _msRender();
         _marketStructureLoaded = true;
+        _msEnsureLiveRefresh();
     }).catch(function(e) {
         container.innerHTML = '<div class="error">加载失败: ' + _kplEsc(String(e)) + '</div>';
     });
@@ -20753,95 +21522,556 @@ function _msBuildIndexes() {
     }
 }
 
-function _msRender() {
-    var data = _msData;
-    var dates = data.dates || [];       // 最新在前
-    var days = data.days || [];         // 最新在前（与 dates 对齐）
-    var maxLevel = data.max_level || 1;
-    var n = dates.length;
-    var CELL_W = 230;
-    var minW = Math.max(920, n * CELL_W);
-    var h = '';
-    h += '<div class="ms-sec-head">🏛 涨停天梯金字塔 <span class="ms-date-note">' + _kplEsc(dates[0]) + ' 最新在左 · 点击砖块追踪跨日路径</span></div>';
-    if (data.partial_today) h += '<div class="ms-live-note">今日盘中 · 实时更新（60s刷新）</div>';
-    // 缺失日（未来/获取失败 → 空列置灰）
-    var missing = [];
-    for (var mi = 0; mi < days.length; mi++) {
-        var d0 = days[mi];
-        var hasAny = false;
-        for (var lv0 in (d0.levels || {})) {
-            var gg = d0.levels[lv0];
-            for (var gi0 = 0; gi0 < gg.length; gi0++) {
-                if (gg[gi0].stocks && gg[gi0].stocks.length) { hasAny = true; break; }
-            }
-            if (hasAny) break;
-        }
-        if (!hasAny) missing.push(d0.label);
+var _msThemeDateIdx = {};  // 每张细分题材金字塔独立回放位置，0=最新交易日
+
+function _msThemeEvent(stock, date) {
+    return (stock.events || {})[date] || null;
+}
+
+function _msThemePrior(stock, dates, idx) {
+    for (var i = idx + 1; i < dates.length; i++) {
+        var e = _msThemeEvent(stock, dates[i]);
+        if (e) return { event: e, date: dates[i], index: i };
     }
-    if (missing.length) h += '<div class="ms-missing-note">以下日期暂无天梯数据（未来/获取失败）：' + _kplEsc(missing.join('、')) + '</div>';
-    // 3板+ 老龙头盘点（按细分题材归类，今日题材在前，股票标断板天数）
-    h += _msRenderSummary();
-    // 金字塔：轴行 + max_level 层行（高板在上，1板最底）
-    h += '<div class="ms-scroll"><div class="ms-pyramid" style="min-width:' + minW + 'px">';
-    h += '<div class="ms-axis-row" style="grid-template-columns:56px repeat(' + n + ',' + CELL_W + 'px)">';
-    h += '<div class="ms-axis-spacer"></div>';
-    for (var ci = 0; ci < n; ci++) {
-        var isToday = ci === 0;
-        h += '<div class="ms-axis-cell' + (isToday ? ' today' : '') + '">' + (isToday ? '今 ' : '') + _kplEsc(dates[ci].slice(5)) + '</div>';
+    return null;
+}
+
+function _msThemePeakTo(stock, dates, idx) {
+    var peak = 0;
+    for (var i = idx; i < dates.length; i++) {
+        var e = _msThemeEvent(stock, dates[i]);
+        if (e) peak = Math.max(peak, Number(e.level || 0));
+    }
+    return peak;
+}
+
+function _msThemeSealType(event) {
+    var t = Number(event && event.first_time || 0);
+    if (t > 0 && t <= 92530) return '一字板';
+    // 数据源提供首次封板时间，但没有完整分时路径；开盘后快速封板单独标识为直线拉板。
+    if (t > 0 && t <= 93500) return '直线拉板';
+    return '换手封板';
+}
+
+function _msThemePct(v) {
+    if (v === undefined || v === null || isNaN(Number(v))) return '涨跌幅待补';
+    var n = Number(v);
+    return (n > 0 ? '+' : '') + n.toFixed(2) + '%';
+}
+
+function _msThemeChip(stock, label, css, extra, themeName) {
+    var code = _kplEsc(String(stock.code || '')).replace(/'/g, '');
+    var name = _kplEsc(stock.name || stock.code || '');
+    var theme = _kplEsc(themeName || '');
+    return '<span class="ms-tp-chip ' + css + '" data-code="' + code + '" data-name="' + name + '" data-theme="' + theme + '" title="点击查看股票K线" onclick="_msOpenStockKline(this.getAttribute(&quot;data-code&quot;),this.getAttribute(&quot;data-name&quot;))">' + name + ' <b>' + _kplEsc(label) + '</b>' + (extra || '') + '</span>';
+}
+
+function _msRenderThemePyramidCard(idx, theme, dates) {
+    var pos = _msThemeDateIdx[idx];
+    if (pos === undefined || pos < 0 || pos >= dates.length) pos = 0;
+    return '<section class="ms-tp-card" id="msThemePyrCard-' + idx + '">' + _msRenderThemePyramidInner(idx, theme, dates, pos) + '</section>';
+}
+
+function _msRenderThemePyramidInner(idx, theme, dates, pos) {
+    var date = dates[pos] || '';
+    var stocks = theme.stocks || [];
+    var activeByLevel = {};
+    var ghostByLevel = {};
+    var brokenByLevel = {};
+    var notes = [];
+    var maxLevel = 1;
+
+    for (var si = 0; si < stocks.length; si++) {
+        var stock = stocks[si];
+        var active = _msThemeEvent(stock, date);
+        var prior = _msThemePrior(stock, dates, pos);
+        var peak = _msThemePeakTo(stock, dates, pos);
+        maxLevel = Math.max(maxLevel, peak);
+        if (active) {
+            var resumed = prior && prior.index > pos + 1 && peak >= 2;
+            var shown = resumed ? Math.max(peak, Number(active.level || 1)) : Number(active.level || 1);
+            activeByLevel[shown] = activeByLevel[shown] || [];
+            activeByLevel[shown].push({stock: stock, event: active, resumed: resumed, actual: Number(active.level || 1)});
+            if (Number(active.level || 1) === 1 && !resumed) {
+                notes.push({kind: 'first', text: '<i>首板</i><span class="ms-tp-note-name">' + _kplEsc(stock.name) + '</span> 首板 · ' + _kplLevelFormatTime(active.first_time)});
+            } else if (Number(active.level || 1) >= 2 && prior && Number(active.level || 1) === Number(prior.event.level || 0) + 1) {
+                notes.push({kind: 'up', text: '<i>晋级</i><span class="ms-tp-note-name">' + _kplEsc(stock.name) + '</span> 晋级' + active.level + '板（' + _msThemeSealType(active) + '）'});
+            } else if (resumed) {
+                notes.push({kind: 'up', text: '<i>重启</i><span class="ms-tp-note-name">' + _kplEsc(stock.name) + '</span> 断板后再涨停 · 沿用' + shown + '板足迹'});
+            }
+            if (peak > shown) {
+                ghostByLevel[peak] = ghostByLevel[peak] || [];
+                ghostByLevel[peak].push({stock: stock, peak: peak, time: Number(active.first_time || 999999)});
+            }
+        } else if (prior) {
+            var priorLevel = Number(prior.event.level || 0);
+            // 2板及以上断板继续停留在历史最高层；只有首板断板进入0层。
+            // 断板股票放到该层右侧，保留历史层级，不再统一挤到0层。
+            var breakGap = Math.max(1, prior.index - pos);
+            // 只要历史曾达到2板及以上，就按历史最高板留在对应层级；
+            // 即使后续又出现首板记录，也不能把4板/6板老龙头错误降到0层。
+            if (peak >= 2) {
+                brokenByLevel[peak] = brokenByLevel[peak] || [];
+                brokenByLevel[peak].push({stock: stock, peak: peak, gap: breakGap, time: Number(prior.event.first_time || 999999), pct: (stock.pcts || {})[date], cum: (stock.cum_pcts || {})[date]});
+            } else if (priorLevel === 1) {
+                // 历史最高只有首板的股票，才进入0层跟踪。
+                brokenByLevel[0] = brokenByLevel[0] || [];
+                brokenByLevel[0].push({stock: stock, peak: 1, gap: breakGap, time: Number(prior.event.first_time || 999999), pct: (stock.pcts || {})[date], cum: (stock.cum_pcts || {})[date]});
+            }
+            // 昨日仍在2板+、今天未涨停，才是当天的晋级失败。
+            if (prior.index === pos + 1 && priorLevel >= 2) {
+                notes.push({kind: 'fail', text: '<i>失败</i><span class="ms-tp-note-name">' + _kplEsc(stock.name) + '</span> 晋级' + priorLevel + '板失败 · ' + _msThemePct((stock.pcts || {})[date])});
+            }
+        }
+    }
+
+    var h = '<div class="ms-tp-head"><span class="ms-tp-theme">' + _kplEsc(theme.theme) + '</span><span class="ms-tp-meta">最高 ' + theme.max_level + '板 · 跟踪 ' + stocks.length + ' 只</span><span class="ms-tp-date">' + _kplEsc(date) + '</span></div>';
+    // dates 已按最新在前，滑块也保持最新在左、最早在右，避免回放方向与页面数据顺序相反。
+    var sliderPos = Math.max(0, Math.min(dates.length - 1, pos));
+    var climaxMarks = '';
+    for (var cmi = 0; cmi < dates.length; cmi++) {
+        var climaxCount = 0;
+        for (var cmsi = 0; cmsi < stocks.length; cmsi++) {
+            if (_msThemeEvent(stocks[cmsi], dates[cmi])) climaxCount++;
+        }
+        if (climaxCount >= 4) {
+            var climaxLeft = dates.length > 1 ? (cmi / (dates.length - 1) * 100) : 50;
+            climaxMarks += '<span class="ms-tp-climax-mark" style="left:' + climaxLeft.toFixed(2) + '%" title="' + _kplEsc(dates[cmi]) + '"></span>';
+        }
+    }
+    h += '<div class="ms-tp-slider-row"><span>最新</span><div class="ms-tp-slider-track">' + climaxMarks + '<input type="range" min="0" max="' + Math.max(0, dates.length - 1) + '" value="' + sliderPos + '" oninput="_msThemeSlide(' + idx + ',this.value)"></div><span>' + _kplEsc((dates[dates.length - 1] || '').slice(5)) + '</span></div>';
+    h += '<div class="ms-tp-sides-head"><span>当日晋级</span><span>历史断板 / 足迹</span></div>';
+    h += '<div class="ms-tp-body"><div class="ms-tp-pyramid">';
+    for (var lv = maxLevel; lv >= 0; lv--) {
+        var live = activeByLevel[lv] || [];
+        var ghosts = ghostByLevel[lv] || [];
+        var brokenHere = brokenByLevel[lv] || [];
+        live.sort(function(a, b) { return Number(a.event.first_time || 999999) - Number(b.event.first_time || 999999) || String(a.stock.name || '').localeCompare(String(b.stock.name || '')); });
+        ghosts.sort(function(a, b) { return Number(a.time || 999999) - Number(b.time || 999999) || String(a.stock.name || '').localeCompare(String(b.stock.name || '')); });
+        // 同一历史层级内优先看最近断板的标的：断板天数越短越靠上，
+        // 再以原涨停时间和名称稳定排序。
+        brokenHere.sort(function(a, b) { return Number(a.gap || 999) - Number(b.gap || 999) || Number(a.time || 999999) - Number(b.time || 999999) || String(a.stock.name || '').localeCompare(String(b.stock.name || '')); });
+        h += '<div class="ms-tp-level"><span class="ms-tp-lv' + ((live.length || ghosts.length || brokenHere.length) ? ' on' : '') + (lv === 0 ? ' zero' : '') + '">' + (lv === 0 ? '0层' : lv + '板') + '</span><div class="ms-tp-level-sides"><div class="ms-tp-side ms-tp-side-live">';
+        if (lv !== 0) {
+            for (var li = 0; li < live.length; li++) {
+                var it = live[li];
+                var cls = it.actual >= 5 ? 'lvhigh' : 'lv' + it.actual;
+                var label = it.resumed ? '重启·' + it.actual + '板' : it.actual + '板';
+                var currentCum = (it.stock.cum_pcts || {})[date];
+                var cumLabel = currentCum === undefined ? '' : ' <i class="ms-tp-cum">累计' + _msThemePct(currentCum) + '</i>';
+                var liveTime = _kplLevelFormatTime(it.event.first_time);
+                var timeLabel = liveTime && liveTime !== '--' ? ' <i class="ms-tp-time">封板' + _kplEsc(liveTime) + '</i>' : '';
+                var extra = timeLabel + (it.resumed ? ' <i class="ms-tp-restart">沿' + lv + '板</i>' : '') + cumLabel;
+                h += _msThemeChip(it.stock, label, 'live ' + cls, extra, theme.theme);
+            }
+        }
+        if (!live.length && lv !== 0) h += '<span class="ms-tp-empty">—</span>';
+        h += '</div><div class="ms-tp-side ms-tp-side-broken">';
+        for (var gi = 0; gi < ghosts.length; gi++) h += _msThemeChip(ghosts[gi].stock, '曾' + ghosts[gi].peak + '板', 'ghost', '', theme.theme);
+        for (var bi = 0; bi < brokenHere.length; bi++) {
+            var br = brokenHere[bi];
+            // 历史日期回放的断板股展示首板以来累计涨幅；不再把单日缺失误显示为“涨跌幅待补”。
+            var brCum = br.cum === undefined ? '' : ' · 累计' + _msThemePct(br.cum);
+            var breakLabel = (br.peak <= 1 ? '首板' : '曾' + br.peak + '板') + ' (+' + br.gap + ')';
+            var brMove = br.cum === undefined ? (br.pct === undefined ? '累计涨幅待补' : '当日' + _msThemePct(br.pct)) : '累计' + _msThemePct(br.cum);
+            h += _msThemeChip(br.stock, breakLabel, 'break', ' <i class="ms-tp-pct">' + _kplEsc(brMove) + '</i>', theme.theme);
+        }
+        if (!ghosts.length && !brokenHere.length) h += '<span class="ms-tp-empty">—</span>';
+        h += '</div></div></div>';
+    }
+    h += '<div class="ms-tp-daily-summary"><div class="ms-tp-summary-title">当日总结</div>';
+    if (!notes.length) h += '<div class="ms-tp-empty">该日无新首板、晋级或晋级失败</div>';
+    else for (var ni = 0; ni < Math.min(notes.length, 9); ni++) h += '<div class="ms-tp-note ' + notes[ni].kind + '">' + notes[ni].text + '</div>';
+    h += '</div></div></div>';
+    return h;
+}
+
+function _msThemeSlide(idx, raw) {
+    if (!_msData) return;
+    var pyramids = _msData.theme_pyramids || [];
+    var dates = (_msData.dates || []).slice().sort(function(a, b) { return String(b).localeCompare(String(a)); });
+    var theme = pyramids[idx];
+    if (!theme || !dates.length) return;
+    _msThemeDateIdx[idx] = Math.max(0, Math.min(dates.length - 1, Number(raw) || 0));
+    var card = document.getElementById('msThemePyrCard-' + idx);
+    if (card) card.innerHTML = _msRenderThemePyramidInner(idx, theme, dates, _msThemeDateIdx[idx]);
+}
+
+function _msSummaryCell(theme, dates, idx) {
+    var date = dates[idx] || '';
+    var rows = [];
+    var stocks = theme.stocks || [];
+    for (var i = 0; i < stocks.length; i++) {
+        var s = stocks[i] || {};
+        var e = (s.events || {})[date];
+        if (!e) continue;
+        var prior = null;
+        for (var j = idx + 1; j < dates.length; j++) {
+            prior = (s.events || {})[dates[j]];
+            if (prior) break;
+        }
+        var lv = Number(e.level || 0);
+        var label = (lv === 1 && !prior) ? '首板' : (prior && lv === Number(prior.level || 0) + 1 ? '晋级' + lv + '板' : lv + '板');
+        var tm = _kplLevelFormatTime(e.first_time);
+        rows.push({level: lv, time: Number(e.first_time || 999999), text: label + ' ' + (s.name || s.code || '') + (tm && tm !== '--' ? ' ' + tm : '')});
+    }
+    if (!rows.length) {
+        var gap = 0;
+        for (var k = idx + 1; k < dates.length; k++) {
+            var hasPrior = stocks.some(function(s) { return !!((s.events || {})[dates[k]]); });
+            if (hasPrior) { gap = k - idx; break; }
+        }
+        return gap ? '断板 +' + gap : '—';
+    }
+    rows.sort(function(a, b) { return b.level - a.level || a.time - b.time; });
+    return rows.slice(0, 4).map(function(r) { return r.text; }).join('、');
+}
+
+function _msSummaryTierCell(pyramids, dates, idx, firstOnly) {
+    var date = dates[idx] || '';
+    var byCode = {};
+    for (var ti = 0; ti < pyramids.length; ti++) {
+        var stocks = (pyramids[ti] || {}).stocks || [];
+        for (var si = 0; si < stocks.length; si++) {
+            var s = stocks[si] || {};
+            var e = (s.events || {})[date];
+            if (!e) continue;
+            var lv = Number(e.level || 0);
+            if (firstOnly ? lv !== 1 : lv < 2) continue;
+            var code = String(s.code || s.name || '');
+            var old = byCode[code];
+            if (!old || lv > old.level || Number(e.first_time || 999999) < old.time) {
+                byCode[code] = {name: s.name || code, level: lv, time: Number(e.first_time || 999999), first: _kplLevelFormatTime(e.first_time)};
+            }
+        }
+    }
+    var rows = Object.keys(byCode).map(function(k) { return byCode[k]; });
+    rows.sort(function(a, b) { return b.level - a.level || a.time - b.time || a.name.localeCompare(b.name); });
+    if (!rows.length) return '—';
+    return rows.slice(0, 12).map(function(r) {
+        var label = firstOnly ? '首板' : (r.level + '板');
+        return label + ' ' + r.name + (r.first && r.first !== '--' ? ' ' + r.first : '');
+    }).join('、');
+}
+
+function _msThemeNarrativeCell(theme, dates, idx) {
+    var date = dates[idx] || '';
+    var stocks = theme.stocks || [];
+    var items = [];
+    for (var i = 0; i < stocks.length; i++) {
+        var s = stocks[i] || {};
+        var e = (s.events || {})[date];
+        if (e) {
+            var prior = null;
+            for (var j = idx + 1; j < dates.length; j++) {
+                prior = (s.events || {})[dates[j]];
+                if (prior) break;
+            }
+            var lv = Number(e.level || 0);
+            var tm = _kplLevelFormatTime(e.first_time);
+            var text = '';
+            if (lv >= 2 && prior && lv === Number(prior.level || 0) + 1) text = s.name + ' 晋级' + lv + '板（' + _msThemeSealType(e) + '）';
+            else if (lv === 1 && !prior) text = s.name + ' 首板' + (tm && tm !== '--' ? ' · ' + tm : '');
+            else text = s.name + ' ' + lv + '板' + (tm && tm !== '--' ? ' · ' + tm : '');
+            items.push({level: lv, time: Number(e.first_time || 999999), text: text});
+        } else {
+            var previous = null;
+            var previousIndex = -1;
+            for (var k = idx + 1; k < dates.length; k++) {
+                previous = (s.events || {})[dates[k]];
+                if (previous) { previousIndex = k; break; }
+            }
+            if (previous && Number(previous.level || 0) >= 2 && previousIndex === idx + 1) {
+                var pct = (s.pcts || {})[date];
+                items.push({level: Number(previous.level || 0), time: 999999, text: '失败' + s.name + ' 晋级失败 · ' + _msThemePct(pct)});
+            }
+        }
+    }
+    items.sort(function(a, b) { return b.level - a.level || a.time - b.time || a.text.localeCompare(b.text); });
+    return items.length ? items.map(function(x) { return x.text; }).join('；') : '—';
+}
+
+function _msTierNarrativeCell(pyramids, dates, idx, firstOnly) {
+    var date = dates[idx] || '';
+    var byCode = {};
+    for (var ti = 0; ti < pyramids.length; ti++) {
+        var stocks = (pyramids[ti] || {}).stocks || [];
+        for (var si = 0; si < stocks.length; si++) {
+            var s = stocks[si] || {}, e = (s.events || {})[date];
+            if (e) {
+                var lv = Number(e.level || 0);
+                if (firstOnly ? lv !== 1 : false) continue;
+                var tm = _kplLevelFormatTime(e.first_time);
+                var prior = null;
+                for (var pi = idx + 1; pi < dates.length; pi++) {
+                    prior = (s.events || {})[dates[pi]];
+                    if (prior) break;
+                }
+                var label = firstOnly ? '首板' : (prior && lv === Number(prior.level || 0) + 1 ? '晋级' + lv + '板' : lv + '板');
+                var seal = _msThemeSealType(e);
+                var sealText = seal === '一字板' ? '（★一字板）' : (seal === '直线拉板' ? '（★直线拉板）' : (seal ? '（' + seal + '）' : ''));
+                var text = (s.name || s.code || '') + ' ' + label + sealText + (tm && tm !== '--' ? ' · ' + tm : '');
+                byCode[(s.code || s.name) + '|' + (pyramids[ti].theme || '')] = {theme: pyramids[ti].theme || '未分类', level: lv, time: Number(e.first_time || 999999), text: text};
+            } else if (!firstOnly) {
+                var previous = null, previousIndex = -1;
+                for (var pj = idx + 1; pj < dates.length; pj++) {
+                    previous = (s.events || {})[dates[pj]];
+                    if (previous) { previousIndex = pj; break; }
+                }
+                if (previous && Number(previous.level || 0) >= 2 && previousIndex === idx + 1) {
+                    byCode[(s.code || s.name) + '|' + (pyramids[ti].theme || '')] = {theme: pyramids[ti].theme || '未分类', level: Number(previous.level || 0), time: 999999, text: (s.name || s.code || '') + ' 晋级' + Number(previous.level || 0) + '板失败 · ' + _msThemePct((s.pcts || {})[date])};
+                }
+            }
+        }
+    }
+    var rows = Object.keys(byCode).map(function(k) { return byCode[k]; });
+    var grouped = {};
+    rows.forEach(function(r) {
+        (grouped[r.theme] = grouped[r.theme] || []).push(r);
+    });
+    var topics = Object.keys(grouped);
+    topics.forEach(function(theme) {
+        grouped[theme].sort(function(a, b) { return b.level - a.level || a.time - b.time || a.text.localeCompare(b.text); });
+    });
+    topics.sort(function(a, b) {
+        var am = Math.max.apply(null, grouped[a].map(function(r) { return r.level; }));
+        var bm = Math.max.apply(null, grouped[b].map(function(r) { return r.level; }));
+        return bm - am || a.localeCompare(b);
+    });
+    return topics.length ? topics.map(function(theme, topicIndex) {
+        var topicClass = 'ms-summary-topic tone-' + (topicIndex % 5);
+        var topicCardIndex = -1;
+        for (var cardIndex = 0; cardIndex < pyramids.length; cardIndex++) {
+            if ((pyramids[cardIndex] || {}).theme === theme) { topicCardIndex = cardIndex; break; }
+        }
+        var topicName = '<span class="ms-summary-topic-name">' + _kplEsc(theme) + '</span>';
+        if (topicCardIndex >= 0) topicName = '<a class="ms-summary-topic-link" href="#msThemePyrCard-' + topicCardIndex + '">' + _kplEsc(theme) + '</a>';
+        var success = [], failed = [];
+        grouped[theme].forEach(function(r) {
+            (r.text.indexOf('失败') >= 0 ? failed : success).push(r.text);
+        });
+        var rowsHtml = '';
+        if (success.length) rowsHtml += '<div class="ms-summary-topic-row success">' + _msSummaryFormatText(success.join('；')) + '</div>';
+        if (failed.length) rowsHtml += '<div class="ms-summary-topic-row failed">' + _msSummaryFormatText(failed.join('；')) + '</div>';
+        return '<div class="' + topicClass + '">' + topicName + '<span class="ms-summary-topic-text">' + rowsHtml + '</span></div>';
+    }).join('') : '<span class="ms-summary-empty">—</span>';
+}
+
+function _msSummaryFormatText(text) {
+    var safe = _kplEsc(text);
+    safe = safe.replace(/(晋级\d+板失败)/g, '<b class="ms-summary-fail">$1</b>');
+    safe = safe.replace(/(晋级\d+板)(?!失败)/g, '<b class="ms-summary-up">$1</b>');
+    safe = safe.replace(/(首板)/g, '<b class="ms-summary-first">$1</b>');
+    return safe;
+}
+
+function _msRenderThemeSummary(pyramids, dates) {
+    var h = '<div class="ms-theme-summary"><div class="ms-sec-head">🧭 题材每日总结 <span class="ms-date-note">复盘描述 · 最新在左 · 左右滑动查看近20个交易日</span></div>';
+    h += '<div class="ms-theme-summary-scroll"><div class="ms-theme-summary-grid" style="grid-template-columns:repeat(' + dates.length + ',minmax(580px,1fr));">';
+    for (var i = 0; i < dates.length; i++) h += '<div class="ms-theme-summary-date' + (i === 0 ? ' today' : '') + '">' + _kplEsc((dates[i] || '').slice(5)) + '</div>';
+    for (var di = 0; di < dates.length; di++) h += '<div class="ms-theme-summary-cell' + (di === 0 ? ' today' : '') + '">' + _msTierNarrativeCell(pyramids, dates, di, false) + '</div>';
+    return h + '</div></div></div>';
+}
+
+function _msRenderMethodology() {
+    var flow = [
+        ['1', '<b>市场总环境</b>：成交额、指数强弱、涨跌家数、连板高度、昨日涨停反馈', '决定今天适合做大容量趋势，还是小票抱团/情绪', '今天是增量市场、存量市场，还是退潮市场？', '放量且赚钱效应扩大=允许题材扩散；缩量=更重核心、低位和辨识度'],
+        ['2', '<b>把当天所有强势首板过一遍</b>', '找第二天可能发生“角色升级”的股票', '每只首板先标记：新题材 / 老题材 / 独立逻辑', '明天能否1进2？竞价是否超预期？有没有板块响应？'],
+        ['3', '<b>给首板分类：新题材还是旧题材</b>', '防止看到新首板就误以为主线切换', '新题材只叫“提案”；旧题材要判断处于哪个周期阶段', '新题材只有出现1进2+新首板才算第一次验证；否则一日游概率高'],
+        ['4', '<b>判断每个热门题材所处阶段</b>', '决定你应该寻找哪种买点', '标记：点火→验证→核心选举→梯队建立→主升→加速→第一次大分歧→修复/交接→二波/退潮', '第二天是否完成该阶段“应该发生的动作”'],
+        ['5', '<b>画出题材连板梯度</b>：最高板、3板、2板、首板各是谁', '看题材生态是否健康，而不是简单数涨停', '例如：5板×1、3板×1、2板×2、首板×5', '高位继续、中位至少有人幸存、低位继续供血=健康；三层一起弱=退潮'],
+        ['6', '<b>确定高位核心 / 空间龙</b>', '高位决定板块定价权和市场信心', '明天它的任务是什么：继续打开高度？换手承接？断板后修复？', '它一拉板块跟=仍有定价权；它自己涨但板块不跟=开始孤立'],
+        ['7', '<b>检查高位是否面临异常波动、重点监控等公开监管风险</b>', '判断高位加速空间是否受到外部约束', '明天更可能加速、换手还是主动降速？', '只根据公开规则和披露观察风险变化；不要把“没触发某指标”等同于没有监管风险'],
+        ['8', '<b>检查中位股</b>：2板、3板、部分4板', '中位是“核心候选区”，同时也是最大面来源', '默认不把普通中位当买点，只找“身份升级者”', '谁明显强于同身位、率先晋级、开始带动板块，谁从中位升级为核心候选；其余可以淘汰'],
+        ['9', '<b>检查低位首板层</b>', '看板块是否还有新鲜血液，以及谁可能从工具人升级', '低位个股默认是工具人；重点找最主动的1—2只候选', '死掉几只没关系；关键是有没有新的首板，以及昨天首板有没有人成功升到2板'],
+        ['10', '<b>检查老龙/旧核心</b>', '判断老题材是在退潮还是准备二波', '老龙如果低身位重新主动，可能形成“高辨识度+低身位”', '先锋晋级 + 老龙主动 + 新首板出现，是二波的重要确认；老龙单独反抽意义不大'],
+        ['11', '<b>比较旧主线与新题材的“定价权”</b>', '防止过早抛弃旧主线，也防止错过真正切换', '分别给它们打四个标签：高度、持续性、响应性、独立性', '新题材只有连续晋级并独立走强才升级；旧题材只有高位失权+修复失败+低位断血才真正退潮'],
+        ['12', '<b>检查板块承载能力</b>', '判断高位龙头还能不能继续被整个板块承载', '高位承接、中位幸存、低位供血，至少不能同时断', '龙头继续涨但中低位全部消失=孤龙风险；龙头分歧但下面很强=可能权力交接'],
+        ['13', '<b>找当天最有主动性的股票</b>', '区分“谁在带板块”和“谁只是被板块带”', '标记：主动核心 / 跟风 / 工具人 / 补涨 / 老龙', '核心拉升时谁最先响应？谁总是最后才涨？后者往往只是工具人'],
+        ['14', '<b>筛选第二天的买点候选</b>', '不等第二天临盘才想买谁', '只保留四类：首次验证、工具人升级、核心第一次良性分歧、二波第一次有效确认', '达到预设动作才买；没达到就不因为盘中突然拉升而修改剧本'],
+        ['15', '<b>写清楚卖点预期</b>', '防止只会预测买，不会预测兑现', '高潮后排、没有主动性的修复、中位竞争失败、换手后再次高度一致，都列入潜在兑现区', '第二天如果只是被动跟涨，而核心不强化，就把修复视为卖点而不是新买点'],
+        ['16', '<b>最后写三个明日剧本</b>', '把交易从“临场反应”变成“匹配剧本”', '强势剧本 / 分歧剧本 / 退潮剧本', '第二天不重新发明故事，只判断市场进入A、B还是C']
+    ];
+    var h = '<section class="ms-method" id="msMethodology"><div class="ms-method-head"><div class="ms-method-title">A股每日题材复盘主流程</div><div class="ms-method-subtitle">先判断剧本，再分配角色；第二天只做验证与证伪。</div></div><div class="ms-method-body">';
+    h += '<nav class="ms-method-toc"><a href="#msMethodFlow">每日复盘主流程</a><a href="#msMethodRoles">角色表</a><a href="#msMethodFinal">收盘后最终输出</a></nav>';
+    h += '<section class="ms-method-section" id="msMethodFlow"><h3>每日题材推演清单</h3><div class="ms-method-quote">目标是每天收盘后回答三个问题：<br>“今天市场在演哪一幕？每只关键股票扮演什么角色？明天如果我的判断成立，它必须做什么？”</div><div class="ms-method-table-wrap"><table class="ms-method-table ms-method-flow"><thead><tr><th>顺序</th><th>每天必须看什么</th><th>看它的目的</th><th>今晚要形成什么预期</th><th>第二天怎么验证 / 证伪</th></tr></thead><tbody>';
+    for (var i = 0; i < flow.length; i++) h += '<tr><td><span class="ms-method-step">' + flow[i][0] + '</span></td><td>' + flow[i][1] + '</td><td>' + flow[i][2] + '</td><td>' + flow[i][3] + '</td><td>' + flow[i][4] + '</td></tr>';
+    h += '</tbody></table></div></section>';
+    h += '<section class="ms-method-section" id="msMethodRoles"><h3>每天把股票放进“角色表”</h3><div class="ms-method-final">你不需要每天研究几十只股票，只需要给关键股票安排角色。</div><div class="ms-method-table-wrap"><table class="ms-method-table ms-method-role"><thead><tr><th>股票</th><th>今天角色</th><th>明天必须完成什么</th><th>完成以后</th><th>失败以后</th></tr></thead><tbody>';
+    var roles = [
+        ['A', '<b>空间龙</b>', '强承接/继续打开高度', '定价权保持', '板块进入一级预警'],
+        ['B', '<b>3板中位</b>', '击败同身位，主动带板块', '升级新核心', '淘汰，不留恋'],
+        ['C', '<b>2板中位</b>', '超预期晋级', '核心候选', '普通跟风'],
+        ['D', '<b>老龙</b>', '修复时产生情绪共振', '二波确认', '老周期继续衰退'],
+        ['E/F/G', '<b>低位首板</b>', '至少一个1进2', '产生新核心候选', '死了换一批'],
+        ['H', '<b>新增首板</b>', '提供新的宽度', '板块继续供血', '连续没有=板块断血']
+    ];
+    for (var ri = 0; ri < roles.length; ri++) h += '<tr><td>' + roles[ri][0] + '</td><td>' + roles[ri][1] + '</td><td>' + roles[ri][2] + '</td><td>' + roles[ri][3] + '</td><td>' + roles[ri][4] + '</td></tr>';
+    h += '</tbody></table></div><div class="ms-method-quote">“高位看名字，中位看谁升职，低位看数量。”</div><div class="ms-method-quote">“旧题材是否死亡，与新题材是否成立，是两道独立判断题。”</div></section>';
+    h += '<section class="ms-method-section" id="msMethodFinal"><h3>每天收盘后最终输出</h3><div class="ms-method-final">我建议以后强迫自己每天收盘只写这样一页：</div><div class="ms-method-final">';
+    var finalLines = [
+        '<b>1. 市场环境：</b>放量/缩量，强/弱。', '<b>2. 主线题材：</b>______。', '<b>3. 当前阶段：</b>点火/验证/选龙/主升/加速/分歧/修复/退潮。', '<b>4. 空间龙：</b>______，明日任务：______。', '<b>5. 中位候选：</b>______，谁有机会升职：______。', '<b>6. 低位首板：</b>______只，最主动候选：______。', '<b>7. 老龙：</b>______，是否存在修复/二波机会：______。', '<b>8. 新题材提案：</b>______，明日必须完成______才升级。', '<b>9. 最优买点候选：</b>______，必须出现______才执行。', '<b>10. 三个剧本：</b>A继续主升 / B健康分歧 / C退潮；明天只匹配，不临时编故事。'
+    ];
+    for (var fi = 0; fi < finalLines.length; fi++) h += '<div class="ms-method-final">' + finalLines[fi] + '</div>';
+    h += '</div><div class="ms-method-quote">每天不是预测哪只股票会涨，而是先写清楚：如果题材还活着，明天高位、中位、低位分别必须有人完成什么任务；谁完成，谁升级，谁失败，谁淘汰。</div></section></div></section>';
+    return h;
+}
+
+function _msRenderDailyReview(report, dates) {
+    report = report || {};
+    var h = '<section class="ms-daily-review" id="msDailyReview">';
+    h += '<div class="ms-daily-review-head"><span class="ms-daily-review-title">📝 今日复盘总结</span>';
+    h += '<span class="ms-daily-review-cutoff">' + _kplEsc(report.cutoff_note || '数据不足，无法生成复盘报告。') + '</span>';
+    h += '<select class="ms-daily-review-select" onchange="_msSelectDailyReview(this.value)">';
+    for (var di = 0; di < dates.length; di++) h += '<option value="' + _kplEsc(dates[di]) + '"' + (dates[di] === report.date ? ' selected' : '') + '>' + _kplEsc(dates[di]) + '</option>';
+    h += '</select></div>';
+    if (!report.date) return h + '<div class="ms-dr-body"><div class="ms-dr-note">数据不足，无法生成复盘报告。</div></div></section>';
+    var m = report.market || {};
+    h += '<div class="ms-dr-body"><div class="ms-dr-market">';
+    h += '<div class="ms-dr-metric"><label>红盘 / 绿盘</label><b>' + Number(m.rise_num || 0) + ' / ' + Number(m.fall_num || 0) + '</b></div>';
+    h += '<div class="ms-dr-metric"><label>涨停 / 跌停</label><b>' + Number(m.zt || m.zt_count || 0) + ' / ' + Number(m.dt || 0) + '</b></div>';
+    h += '<div class="ms-dr-metric"><label>炸板率</label><b>' + (m.bomb_rate === null || m.bomb_rate === undefined ? '数据不足' : Number(m.bomb_rate).toFixed(1) + '%') + '</b></div>';
+    h += '<div class="ms-dr-metric"><label>最高连板</label><b>' + Number(m.max_level || 0) + '板</b></div>';
+    h += '<div class="ms-dr-metric"><label>活跃题材</label><b>' + Number(m.theme_count || 0) + '</b></div>';
+    h += '<div class="ms-dr-metric"><label>市场状态</label><b>' + _kplEsc(m.state || '数据不足') + '</b></div>';
+    h += '<div class="ms-dr-metric"><label>舞台情绪</label><b>' + _kplEsc(m.mood || '数据不足') + '</b></div></div>';
+    h += '<div class="ms-dr-note">' + _kplEsc(m.sign ? ('市场情绪：' + m.sign + '；') : '') + _kplEsc(m.note || '') + '</div>';
+    h += '<div class="ms-dr-section"><h4>当前题材定价权与梯队</h4>';
+    var themes = report.themes || [];
+    if (!themes.length) h += '<div class="ms-dr-note">数据不足，无法确认题材结构。</div>';
+    for (var ti = 0; ti < themes.length; ti++) {
+        var t = themes[ti], levels = (t.levels || []).map(function(x) { return x.level + '板×' + x.count; }).join(' · ');
+        var leaders = (t.leaders || []).slice(0, 3).map(function(x) { return x.name + x.level + '板'; }).join('、');
+        h += '<div class="ms-dr-theme"><span class="ms-dr-theme-name">' + _kplEsc(t.theme) + '</span><span class="ms-dr-tag">' + _kplEsc(t.stage) + '</span><span class="ms-dr-tag">' + _kplEsc(t.structure) + '</span><br><span class="ms-dr-level">' + _kplEsc(levels) + '</span>　' + _kplEsc(leaders);
+        if (t.promoted) h += '<br><span class="ms-dr-success">晋级：' + _kplEsc(t.promoted) + '</span>';
+        if (t.failed) h += '<br><span class="ms-dr-fail">' + _kplEsc(t.failed) + '</span>';
+        if (Number(t.straight_first_count || 0)) h += '<span class="ms-dr-straight">直线首板×' + Number(t.straight_first_count) + '</span>';
+        h += '<br><span class="ms-dr-note">明日任务：' + _kplEsc(t.task || '') + '</span></div>';
+    }
+    h += '</div><div class="ms-dr-section"><h4>关键股票角色与明日任务</h4><table class="ms-dr-role-table"><thead><tr><th>股票</th><th>角色</th><th>今日身位</th><th>明日任务</th></tr></thead><tbody>';
+    var roles = report.roles || [];
+    for (var ri = 0; ri < roles.length; ri++) { var r = roles[ri]; h += '<tr><td><span class="ms-dr-stock-link" onclick="_msOpenStockKline(&quot;' + _kplEsc(r.code) + '&quot;,&quot;' + _kplEsc(r.name) + '&quot;)">' + _kplEsc(r.name) + ' ' + _kplEsc(r.code) + '</span></td><td>' + _kplEsc(r.role) + '</td><td>' + _kplEsc(r.theme) + ' · ' + Number(r.level || 0) + '板</td><td>' + _kplEsc(r.task) + '</td></tr>'; }
+    if (!roles.length) h += '<tr><td colspan="4" class="ms-dr-note">数据不足，无法确认关键角色。</td></tr>';
+    h += '</tbody></table></div>';
+    h += '<div class="ms-dr-section"><h4>新题材提案与旧主线生命状态</h4><div class="ms-dr-grid">';
+    var proposals = report.new_proposals || [];
+    h += '<div class="ms-dr-scenario"><b>新题材提案</b><br>' + (proposals.length ? proposals.map(function(p) { return _kplEsc(p.theme) + '：T0提案，明日需完成1进2、持续新增首板和梯队建立。'; }).join('<br>') : '暂无新增提案；数据不足时不做主线切换判断。') + '</div>';
+    var oldLine = report.old_mainline || {};
+    h += '<div class="ms-dr-scenario"><b>旧主线生命状态</b><br>' + _kplEsc(oldLine.theme || '数据不足') + '：' + _kplEsc(oldLine.state || '数据不足') + '<br>' + _kplEsc(oldLine.detail || '') + '</div></div></div>';
+    h += '<div class="ms-dr-section"><h4>近10个交易日热门题材观察</h4><div class="ms-dr-grid">';
+    var watchThemes = report.watch_themes || [];
+    for (var wi = 0; wi < watchThemes.length; wi++) {
+        var wt = watchThemes[wi];
+        var nowText = wt.current_count ? ('当前 ' + wt.current_max + '板×' + wt.current_count) : '当前无涨停，观察是否回流';
+        h += '<div class="ms-dr-scenario"><b>' + _kplEsc(wt.theme) + '</b><br>近10日活跃 ' + Number(wt.active_days || 0) + '日 · 峰值 ' + Number(wt.peak_level || 0) + '板<br>' + _kplEsc(nowText) + '；明日观察断板后是否仍有首板、1进2或板块响应。</div>';
+    }
+    if (!watchThemes.length) h += '<div class="ms-dr-note">数据不足，无法建立近10日热门题材观察池。</div>';
+    h += '</div></div>';
+    h += '<div class="ms-dr-section"><h4>次日买点候选与潜在卖点</h4><div class="ms-dr-grid">';
+    var buys = report.buy_candidates || [];
+    h += '<div class="ms-dr-scenario"><b>买点候选（仅条件成立时）</b><br>' + (buys.length ? buys.map(function(b) { return _kplEsc(b.name) + '（' + _kplEsc(b.type) + '）：' + _kplEsc(b.trigger) + '；证伪：' + _kplEsc(b.falsify); }).join('<br>') : '数据不足，无法确认。') + '</div>';
+    var sells = report.sell_points || [];
+    h += '<div class="ms-dr-scenario"><b>潜在卖点</b><br>' + (sells.length ? sells.map(function(sell) { return _kplEsc(sell.theme) + '：' + _kplEsc(sell.reason) + '。' + _kplEsc(sell.trigger); }).join('<br>') : '数据不足，无法确认。') + '</div></div></div>';
+    h += '<div class="ms-dr-section"><h4>三个明日剧本（条件预案）</h4><div class="ms-dr-grid">';
+    var scenarios = report.scenarios || [];
+    for (var si = 0; si < scenarios.length; si++) { var s = scenarios[si]; h += '<div class="ms-dr-scenario"><b>' + _kplEsc(s.name) + '</b><br>需要看到：' + _kplEsc(s.condition) + '<br>策略：' + _kplEsc(s.action) + '</div>'; }
+    h += '</div></div><div class="ms-dr-section"><h4>明日最重要的 5 个观察点</h4><ol class="ms-dr-observations">';
+    var obs = report.observations || [];
+    for (var oi = 0; oi < obs.length; oi++) h += '<li>' + _kplEsc(obs[oi]) + '</li>';
+    h += '</ol></div><div class="ms-dr-conclusion">' + _kplEsc(report.conclusion || '') + '</div></div></section>';
+    return h;
+}
+
+function _msSelectDailyReview(date) {
+    var box = document.getElementById('msDailyReview');
+    if (!box || !date) return;
+    box.classList.add('loading');
+    fetch('/api/market_daily_review?date=' + encodeURIComponent(date) + '&_t=' + Date.now(), {cache: 'no-store'})
+        .then(function(r) { return r.json(); })
+        .then(function(report) {
+            if (report && !report.error) box.outerHTML = _msRenderDailyReview(report, (_msData && _msData.dates) || []);
+            else box.innerHTML = '<div class="ms-dr-body"><div class="error">' + _kplEsc((report && report.error) || '复盘报告加载失败') + '</div></div>';
+        })
+        .catch(function(e) { box.innerHTML = '<div class="ms-dr-body"><div class="error">复盘报告加载失败: ' + _kplEsc(String(e)) + '</div></div>'; });
+}
+
+// 全市场涨停天梯：细分题材金字塔之后保留一张总览，按交易日横向回看，
+// 仅恢复“涨停天梯金字塔”，不恢复已经删除的“3板+老龙头盘点”。
+function _msRenderLadderPyramid() {
+    var data = _msData || {};
+    var days = data.days || [];
+    if (!days.length) return '';
+    var maxLevel = Number(data.max_level || 0);
+    for (var di = 0; di < days.length; di++) {
+        var lvMap = days[di].levels || {};
+        for (var lk in lvMap) maxLevel = Math.max(maxLevel, Number(lk) || 0);
+    }
+    if (maxLevel < 1) return '';
+    var grid = 'grid-template-columns:42px repeat(' + days.length + ',minmax(128px,1fr));';
+    var h = '<div class="ms-global-ladder">';
+    h += '<div class="ms-sec-head">🔗 市场细分题材结构 <span class="ms-date-note">近20个交易日 · 今日在左 · 点击股票查看跨日轨迹</span></div>';
+    h += '<div class="ms-scroll"><div class="ms-pyramid">';
+    h += '<div class="ms-axis-row" style="' + grid + '"><span class="ms-axis-spacer"></span>';
+    for (var ai = 0; ai < days.length; ai++) {
+        var day = days[ai] || {};
+        h += '<span class="ms-axis-cell' + (ai === 0 ? ' today' : '') + '">' + _kplEsc(day.label || day.date || '') + '</span>';
     }
     h += '</div>';
     for (var lv = maxLevel; lv >= 1; lv--) {
-        h += '<div class="ms-level-row" style="grid-template-columns:56px repeat(' + n + ',' + CELL_W + 'px)">';
-        h += '<div class="ms-lv-tag ms-lv-' + (lv >= 5 ? 'high' : lv) + '">' + lv + '板</div>';
-        for (var cj = 0; cj < n; cj++) {
-            var day2 = days[cj];
-            var groups = (day2.levels || {})[String(lv)];
+        h += '<div class="ms-level-row" style="' + grid + '"><span class="ms-lv-tag ' + (lv >= 5 ? 'ms-lv-high' : 'ms-lv-' + lv) + '">' + lv + '板</span>';
+        for (var ci = 0; ci < days.length; ci++) {
+            var groups = ((days[ci] || {}).levels || {})[String(lv)] || [];
+            if (!groups.length) {
+                h += '<div class="ms-cell"><span class="ms-muted">—</span></div>';
+                continue;
+            }
             h += '<div class="ms-cell">';
-            if (groups && groups.length) {
-                for (var gj = 0; gj < groups.length; gj++) {
-                    var g = groups[gj];
-                    h += '<div class="ms-theme-group">';
-                    h += '<span class="ms-theme-name" title="' + _kplEsc(g.theme) + ' ' + g.count + '只">' + _kplEsc(g.theme) + ' <i>' + g.count + '</i></span>';
-                    var stocks = g.stocks || [];
-                    for (var sj = 0; sj < stocks.length; sj++) {
-                        var s = stocks[sj];
-                        h += '<span class="ms-brick lt-cell-stock ' + _msLbCls(s.level) + (s.climbed ? ' climbed' : '') +
-                             '" data-code="' + _kplEsc(s.code) + '" data-name="' + _kplEsc(s.name) + '" onclick="_msTraceShow(this)">';
-                        h += _kplEsc(s.name) + ' <b>' + s.level + '板</b>';
-                        if (s.first_time && s.first_time < 999999) h += ' <span class="lt-cell-time">' + _kplLevelFormatTime(s.first_time) + '</span>';
-                        h += ' <i class="lt-tag-mini">' + _kplEsc((s.themes && s.themes[0]) || g.theme) + '</i>';
-                        h += '</span>';
-                    }
-                    h += '</div>';
+            for (var gi = 0; gi < groups.length; gi++) {
+                var group = groups[gi] || {};
+                var stocks = group.stocks || [];
+                h += '<div class="ms-theme-group"><span class="ms-theme-name">' + _kplEsc(group.theme || '未分类') + '<i>' + (stocks.length || group.count || 0) + '</i></span>';
+                for (var si = 0; si < stocks.length; si++) {
+                    var stock = stocks[si] || {};
+                    var climbed = stock.climbed ? ' climbed' : '';
+                    h += '<span class="lt-cell-stock ms-brick ' + _msLbCls(Number(stock.level || lv)) + climbed + '" data-code="' + _kplEsc(stock.code || '') + '" data-name="' + _kplEsc(stock.name || '') + '" title="' + _kplEsc((stock.name || '') + ' · ' + (group.theme || '') + ' · ' + (stock.level || lv) + '板') + '" onclick="_msTraceShow(this)">' + _kplEsc(stock.name || stock.code || '') + '</span>';
                 }
+                h += '</div>';
             }
             h += '</div>';
         }
         h += '</div>';
     }
-    h += '</div></div>';
-    // 掉队观察
-    var dropped = data.dropped || [];
-    h += '<div class="ms-dropped"><div class="ms-sec-head">🕳 掉队观察 <span class="ms-date-note">断板后重回标记 · 点击股票追踪路径</span></div>';
-    if (!dropped.length) {
-        h += '<div class="empty">窗口内无掉队股票</div>';
-    } else {
-        h += '<div class="ms-drop-scroll"><table class="ms-drop-table"><thead><tr><th>股票</th><th>细分题材</th><th>掉队日</th><th>掉队板</th><th>重回日</th><th>重回板</th></tr></thead><tbody>';
-        for (var dri = 0; dri < dropped.length; dri++) {
-            var dd = dropped[dri];
-            var dbg = dd.climbed_again && dd.back_date;
-            h += '<tr class="' + (dd.definite ? '' : 'ms-undef') + '">';
-            h += '<td><span class="lt-cell-stock ' + _msLbCls(dd.drop_level) + '" style="cursor:pointer" onclick="_msTraceShowCode(\\x27' + _kplEsc(String(dd.code)).replace(/'/g, '') + '\\x27)">' + _kplEsc(dd.name) + '</span></td>';
-            h += '<td>' + _kplEsc(dd.theme) + '</td>';
-            h += '<td>' + _kplEsc(dd.drop_date) + (dd.definite ? '' : ' <span class="ms-undef-tag">盘中待定</span>') + '</td>';
-            h += '<td><b>' + dd.drop_level + '</b></td>';
-            h += '<td>' + (dbg ? '<span class="ms-back-badge">' + _kplEsc(dd.back_date) + '</span>' : '<span class="ms-muted">未重回</span>') + '</td>';
-            h += '<td>' + (dbg ? '<span class="ms-back-badge">' + dd.back_level + '板</span>' : '<span class="ms-muted">—</span>') + '</td>';
-            h += '</tr>';
-        }
-        h += '</tbody></table></div>';
+    h += '</div></div></div>';
+    return h;
+}
+
+function _msRender() {
+    var data = _msData;
+    var h = '';
+    var dates = (data.dates || []).slice().sort(function(a, b) { return String(b).localeCompare(String(a)); }); // 最新在前
+    if (data.partial_today) h += '<div class="ms-live-note">今日盘中 · 与“实时-今日涨停”同源 · 每分钟更新（9:25~15:00）</div>';
+    var pyramids = data.theme_pyramids || [];
+    if (!pyramids.length) return h + '<div class="empty">近20个交易日暂无 2板及以上的细分题材连板轨迹</div>';
+    h += _msRenderMethodology();
+    h += _msRenderDailyReview(data.daily_review_report, dates);
+    h += _msRenderThemeSummary(pyramids, dates);
+    h += '<div class="ms-sec-head ms-review-title">📚 题材涨停天梯复盘</div>';
+    h += '<div class="ms-theme-nav"><span class="ms-theme-nav-title">题材导航</span>';
+    for (var ni = 0; ni < pyramids.length; ni++) {
+        var navTopic = pyramids[ni] || {};
+        if (!navTopic.stocks || !navTopic.stocks.length) continue;
+        h += '<a href="#msThemePyrCard-' + ni + '">' + _kplEsc(navTopic.theme || '') + '</a>';
     }
     h += '</div>';
+    h += '<div class="ms-theme-pyramids">';
+    for (var i = 0; i < pyramids.length; i++) {
+        var topic = pyramids[i] || {};
+        if (!topic.stocks || !topic.stocks.length) continue;
+        h += _msRenderThemePyramidCard(i, topic, dates);
+    }
+    h += '</div>';
+    // 细分题材卡片先展示，市场细分题材结构及其表格总览放在页面末尾。
+    h += _msRenderLadderPyramid();
     return h;
 }
 
@@ -20897,21 +22127,26 @@ function _msRenderSummary() {
 }
 
 function _msTraceShow(el) {
-    if (!el || !_msData) return;
-    _msShowTracePop(el.getAttribute('data-code'), el.getAttribute('data-name') || '');
+    if (!el) return;
+    _msOpenStockKline(el.getAttribute('data-code'), el.getAttribute('data-name') || '');
 }
-function _msTraceShowCode(code) {
+function _msTraceShowCode(code, theme) {
     if (!code || !_msData) return;
     var name = '';
-    var path = _msPathIndex[code];
+    var path = (_msPathIndex[code] || []).filter(function(p) { return !theme || p.theme === theme; });
     if (path && path.length) name = path[path.length - 1].name;
-    _msShowTracePop(code, name);
+    _msOpenStockKline(code, name);
 }
-function _msShowTracePop(code, name) {
+function _msOpenStockKline(code, name) {
+    if (!code) return;
+    var navI = _msNavIdx[code] !== undefined ? _msNavIdx[code] : -1;
+    openDsStockFromRhythm(name || code, code, '', _msNavAll, navI);
+}
+function _msShowTracePop(code, name, theme) {
     _msTraceHide();
     if (!_msData) return;
-    var dates = _msData.dates || [];
-    var path = _msPathIndex[code] || [];
+    var dates = (_msData.dates || []).slice().sort(function(a, b) { return String(b).localeCompare(String(a)); });
+    var path = (_msPathIndex[code] || []).filter(function(p) { return !theme || p.theme === theme; });
     var drop = _msDroppedIdx[code];
     var byDate = {};
     for (var i = 0; i < path.length; i++) byDate[path[i].date] = path[i];
@@ -23381,13 +24616,14 @@ function loadDataStatus() {
         var ztDays = data.zt_pool_days || 0;
         var concepts = data.concept_count || 0;
         var stocksZt = data.stock_zt_count || 0;
-        var latestDate = data.latest_display || maxDate;
+        var latestDate = data.zt_latest || data.latest_display || maxDate;
         el.innerHTML = 'K线数据: ' + minDate + ' ~ <strong>' + maxDate + '</strong>'
+            + ' | 涨停数据最新: <strong>' + latestDate + '</strong>'
             + ' | 涨停池: ' + ztDays + '个交易日'
             + ' | 概念: ' + concepts + '个题材'
             + ' | 涨停股票: ' + stocksZt + '只'
             + ' <span style="color:#4caf50;font-size:0.9em;">&#9679; ' + latestDate + '</span>';
-        el.title = '最后交易日: ' + maxDate;
+        el.title = 'K线最新: ' + maxDate + '；涨停数据最新: ' + latestDate;
     }).catch(function() {
         var el = document.getElementById('dataStatus');
         if (el) el.textContent = '数据状态加载失败';
@@ -23495,7 +24731,7 @@ function checkDataStatus() {
         var hintEl = document.getElementById('updateHint');
         if (!hintEl) return;
         if (data.missing_dates === 0) {
-            hintEl.textContent = '数据最新';
+            hintEl.textContent = '最新数据';
             hintEl.className = 'hint-done';
         } else if (data.market_open || data.market_settling) {
             hintEl.textContent = '盘中·数据待收';
@@ -34131,6 +35367,24 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback
                 self._respond_json({'error': str(e), 'traceback': traceback.format_exc()}, cors_headers)
 
+        elif path == '/api/market_daily_review':
+            # 历史复盘仅用所选日期及之前20个交易日；禁止读取 D+1 数据。
+            try:
+                date_end = (query.get('date', [None])[0] or '').strip()
+                if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date_end):
+                    self._respond_json({'error': '请选择有效交易日'}, cors_headers)
+                    return
+                cache_key = 'market_daily_review:' + date_end
+                result = _get_cached(cache_key, ttl=300)
+                if result is None:
+                    structure = _build_market_structure(ndays=20, date_end=date_end)
+                    result = structure.get('daily_review_report') or {'date': date_end, 'cutoff_note': '数据不足，无法生成复盘报告。'}
+                    _set_cache(cache_key, result)
+                self._respond_json(result, cors_headers)
+            except Exception as e:
+                import traceback
+                self._respond_json({'error': str(e), 'traceback': traceback.format_exc()}, cors_headers)
+
         elif path == '/api/top_theme_trajectory':
             n = int(query.get('n', ['20'])[0])
             cache_key = 'top_theme_trajectory_' + str(n)
@@ -34287,10 +35541,12 @@ class Handler(BaseHTTPRequestHandler):
                 # zt_pool 天数
                 zt_dir = os.path.join(os.path.dirname(__file__), 'data', 'zt_pool')
                 zt_files = [f for f in os.listdir(zt_dir) if f.endswith('.csv')] if os.path.isdir(zt_dir) else []
+                zt_latest = _get_latest_zt_data_date()
                 ds_result = {
                     'kline_min': kline_min,
                     'kline_max': kline_max,
-                    'latest_display': kline_max or 'N/A',
+                    'zt_latest': zt_latest or 'N/A',
+                    'latest_display': zt_latest or kline_max or 'N/A',
                     'zt_pool_days': len(zt_files),
                     'zt_pool_files': sorted(zt_files)[-5:] if zt_files else [],
                     'concept_count': len(getattr(finder, 'concept_stocks', {})),
@@ -34740,27 +35996,36 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/check_update':
             import update_data_fast
             cal = update_data_fast.load_trade_calendar()
-            missing = update_data_fast.get_db_missing_dates()
+            # 更新提示只反映涨停日数据。K 线库是个股弹窗的辅助数据，不能把它的
+            # 历史覆盖缺口混入这里，否则会出现“涨停数据已更新但缺4天”的误导。
+            missing = _kpl_missing_zt_days()
             # 二次过滤未来日期，确保前端不展示未来缺失
             bj_tz = timezone(timedelta(hours=8))
             bj_now = datetime.now(bj_tz)
             today = bj_now.strftime('%Y%m%d')
-            missing = [d for d in missing if d <= today]
-            is_today_trade_day = today in cal if cal else False
-            latest_cal = max(cal) if cal else today
-            now_hour = bj_now.hour
-            market_open = is_today_trade_day and (now_hour >= 9 and (now_hour < 15 or (now_hour == 15 and bj_now.minute < 30)))
-            market_settling = is_today_trade_day and now_hour < 17
+            cal_ymd = [str(d).replace('-', '') for d in (cal or [])]
+            missing = [str(d).replace('-', '') for d in missing if str(d).replace('-', '') <= today]
+            is_today_trade_day = today in cal_ymd
+            # 只把不晚于北京时间今天的交易日作为最新应到数据日，避免把交易日历未来日期算入缺失。
+            past_cal = [d for d in cal_ymd if d <= today]
+            latest_cal = max(past_cal) if past_cal else today
+            total_minutes = bj_now.hour * 60 + bj_now.minute
+            market_open = is_today_trade_day and 565 <= total_minutes < 900
+            # 当天交易日17:00前仍处于收盘结算窗口；非交易日则上一交易日17:00已过。
+            after_latest_close = (today > latest_cal) or total_minutes >= 1020
+            market_settling = not after_latest_close
+            visible_missing = missing if after_latest_close else []
             self._respond_json({
                 'status': 'ok',
-                'latest_cal_day': latest_cal,
+                'latest_cal_day': latest_cal[:4] + '-' + latest_cal[4:6] + '-' + latest_cal[6:],
                 'today': today,
                 'is_today_trade_day': is_today_trade_day,
                 'market_open': market_open,
                 'market_settling': market_settling,
-                'missing_dates': len(missing),
-                'missing_list': missing[:3],
-                'msg': f"最晚数据: {latest_cal}, 缺失 {len(missing)} 天"
+                'after_latest_close': after_latest_close,
+                'missing_dates': len(visible_missing),
+                'missing_list': visible_missing[:3],
+                'msg': ("最新数据" if not visible_missing else f"最晚数据: {latest_cal}, 缺失 {len(visible_missing)} 天")
             }, cors_headers)
 
         elif path == '/api/update_data':
@@ -36190,9 +37455,11 @@ def main():
             conn.close()
             zt_dir = os.path.join(os.path.dirname(__file__), 'data', 'zt_pool')
             zt_files = [f for f in os.listdir(zt_dir) if f.endswith('.csv')] if os.path.isdir(zt_dir) else []
+            zt_latest = _get_latest_zt_data_date()
             ds = {
                 'kline_min': kline_min, 'kline_max': kline_max,
-                'latest_display': kline_max or 'N/A',
+                'zt_latest': zt_latest or 'N/A',
+                'latest_display': zt_latest or kline_max or 'N/A',
                 'zt_pool_days': len(zt_files),
                 'zt_pool_files': sorted(zt_files)[-5:] if zt_files else [],
                 'concept_count': len(getattr(finder, 'concept_stocks', {})),
