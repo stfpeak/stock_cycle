@@ -10437,6 +10437,14 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 .rt-zt-table td { padding: 6px 8px; border-bottom: 1px solid #0f3460; background: #1e2e4e; }
 .rt-zt-table tr:hover td { background: #2a4070; }
 .rt-zt-table tr.clickable { cursor: pointer; }
+.rt-zt-chart-col { min-width: 184px; white-space: nowrap; }
+.rt-zt-chart-cell { width: 184px; min-width: 184px; padding: 4px 6px !important; overflow: visible; position: relative; }
+.rt-zt-chart-pair { display: flex; align-items: center; justify-content: center; gap: 4px; position: relative; width: 172px; height: 58px; z-index: 1; }
+.rt-zt-chart-thumb { display: block; width: 82px; height: 52px; object-fit: contain; border: 1px solid rgba(145,174,186,.22); border-radius: 4px; background: #101b2b; transition: transform .18s ease, box-shadow .18s ease; transform-origin: center center; }
+.rt-zt-chart-pair:hover { z-index: 20; }
+.rt-zt-chart-pair:hover .rt-zt-chart-thumb { transform: scale(2.15); border-color: rgba(79,195,247,.8); box-shadow: 0 5px 20px rgba(0,0,0,.7); }
+.rt-zt-chart-pair:hover .rt-zt-chart-thumb + .rt-zt-chart-thumb { transform: translateX(8px) scale(2.15); }
+.rt-zt-chart-placeholder { color: #64748b; font-size: .72em; }
 
 .rt-lb {
     display: inline-block; padding: 2px 8px; border-radius: 4px;
@@ -24223,6 +24231,19 @@ function renderZtStatus(s) {
     return '<span class="zt-st">' + _kplEsc(st) + '</span>';
 }
 
+// 今日涨停表行内 K 线缩略图：盘中/盘后均通过新浪最新图源，时间戳避免浏览器沿用旧图。
+function renderRtZtCharts(code, name) {
+    if (!code) return '<span class="rt-zt-chart-placeholder">暂无图</span>';
+    var ts = getSinaTs();
+    var kurl = sinaKlineImg(code).replace(/\?\d*$/, '') + '?' + ts;
+    var murl = sinaMinImg(code).replace(/\?\d*$/, '') + '?' + ts;
+    var safeName = _kplEsc(name || code);
+    return '<div class="rt-zt-chart-pair" title="' + safeName + ' · 悬停放大">' +
+        '<img class="rt-zt-chart-thumb" src="' + kurl + '" data-orig-src="' + kurl + '" loading="lazy" alt="日K" title="日K" onerror="retryImg(this)">' +
+        '<img class="rt-zt-chart-thumb" src="' + murl + '" data-orig-src="' + murl + '" loading="lazy" alt="分时" title="分时" onload="checkMinImgLoad(this)" onerror="retryImg(this)">' +
+        '</div>';
+}
+
 function renderTodayZtList(stocks) {
     if (!stocks || stocks.length === 0) return '<div class="empty" style="padding:15px;">暂无今日涨停数据</div>';
     // 格式化封板时间: 简写HH:MM或9位数字转HH:MM:SS
@@ -24231,7 +24252,7 @@ function renderTodayZtList(stocks) {
         var s = String(t).padStart(6, '0');
         return s.slice(0, 2) + ':' + s.slice(2, 4);
     }
-    var html = '<table class="rt-zt-table zt-today-table"><tr><th>#</th><th>代码</th><th style="white-space:nowrap;min-width:90px;">名称</th><th style="min-width:90px;white-space:nowrap;">封板时间</th><th title="该涨停在K线走势中的状态：N连板 / 首板 / N·重启（+断板交易日）">涨停状态</th><th>涨停板结构</th><th>板块联动</th><th>概念</th></tr>';
+    var html = '<table class="rt-zt-table zt-today-table"><tr><th>#</th><th>代码</th><th style="white-space:nowrap;min-width:90px;">名称</th><th style="min-width:90px;white-space:nowrap;">封板时间</th><th title="该涨停在K线走势中的状态：N连板 / 首板 / N·重启（+断板交易日）">涨停状态</th><th>涨停板结构</th><th>板块联动</th><th>概念</th><th class="rt-zt-chart-col">K线</th></tr>';
     stocks.forEach(function(s, i) {
         var lb = s.lianban || 0;
         var lbCls = lb >= 5 ? 'high' : Math.min(lb || 1, 5);
@@ -24247,7 +24268,8 @@ function renderTodayZtList(stocks) {
         // 涨停板结构列：有细分题材今日涨停梯队（zt_echelon）则渲染梯队，否则回退原板结构串
         html += '<td>' + (s.zt_echelon ? renderZtEchelon(s.zt_echelon, s.code) : '<span class="zt-struct">' + (s.board_structure || '') + '</span>') + '</td>';
         html += '<td><button class="zt-link-btn" onclick="event.stopPropagation();openZtLinkageModal(\\x27' + s.code + '\\x27,\\x27' + (s.name||'').replace(/'/g,'') + '\\x27)" title="查看该股题材板块联动">🔗 联动</button></td>';
-        html += '<td>' + _conceptCellPlaceholder(s.code, s.name) + '</td></tr>';
+        html += '<td>' + _conceptCellPlaceholder(s.code, s.name) + '</td>';
+        html += '<td class="rt-zt-chart-cell">' + renderRtZtCharts(s.code, s.name) + '</td></tr>';
     });
     html += '</table>';
     return html;
