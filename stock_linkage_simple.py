@@ -10440,10 +10440,14 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
 .rt-zt-chart-col { min-width: 184px; white-space: nowrap; }
 .rt-zt-chart-cell { width: 184px; min-width: 184px; padding: 4px 6px !important; overflow: visible; position: relative; }
 .rt-zt-chart-pair { display: flex; align-items: center; justify-content: center; gap: 4px; position: relative; width: 172px; height: 58px; z-index: 1; }
-.rt-zt-chart-thumb { display: block; width: 82px; height: 52px; object-fit: contain; border: 1px solid rgba(145,174,186,.22); border-radius: 4px; background: #101b2b; transition: transform .18s ease, box-shadow .18s ease; transform-origin: center center; }
+.rt-zt-chart-thumb { display: block; width: 82px; height: 52px; object-fit: contain; border: 1px solid rgba(145,174,186,.35); border-radius: 4px; background: #fff; transition: transform .18s ease, box-shadow .18s ease; transform-origin: right center; }
 .rt-zt-chart-pair:hover { z-index: 20; }
-.rt-zt-chart-pair:hover .rt-zt-chart-thumb { transform: scale(2.15); border-color: rgba(79,195,247,.8); box-shadow: 0 5px 20px rgba(0,0,0,.7); }
-.rt-zt-chart-pair:hover .rt-zt-chart-thumb + .rt-zt-chart-thumb { transform: translateX(8px) scale(2.15); }
+/* 单个图独立放大，放大层脱离表格视觉范围，不改变表格列宽和行高。 */
+.rt-zt-chart-thumb:hover { position: relative; z-index: 30; transform: translateX(-24px) scale(5.8); border-color: rgba(79,195,247,.9); box-shadow: 0 8px 28px rgba(0,0,0,.65); }
+/* K 线列靠近屏幕右侧时，放大图以右边缘为锚点并向左展开，避免被视口裁切。 */
+@media (max-width: 1100px) {
+  .rt-zt-chart-thumb:hover { transform: translateX(-14px) scale(4.6); }
+}
 .rt-zt-chart-placeholder { color: #64748b; font-size: .72em; }
 
 .rt-lb {
@@ -24238,10 +24242,23 @@ function renderRtZtCharts(code, name) {
     var kurl = sinaKlineImg(code).replace(/\?\d*$/, '') + '?' + ts;
     var murl = sinaMinImg(code).replace(/\?\d*$/, '') + '?' + ts;
     var safeName = _kplEsc(name || code);
-    return '<div class="rt-zt-chart-pair" title="' + safeName + ' · 悬停放大">' +
+    return '<div class="rt-zt-chart-pair" title="' + safeName + ' · 悬停放大" onmouseenter="refreshRtZtHover(this)">' +
         '<img class="rt-zt-chart-thumb" src="' + kurl + '" data-orig-src="' + kurl + '" loading="lazy" alt="日K" title="日K" onerror="retryImg(this)">' +
         '<img class="rt-zt-chart-thumb" src="' + murl + '" data-orig-src="' + murl + '" loading="lazy" alt="分时" title="分时" onload="checkMinImgLoad(this)" onerror="retryImg(this)">' +
         '</div>';
+}
+
+// 鼠标查看时再刷新一次图片地址，盘中可直接拿到新浪最新日K/分时图；10秒内不重复请求。
+function refreshRtZtHover(pair) {
+    if (!pair) return;
+    var now = Date.now();
+    var last = Number(pair.getAttribute('data-last-refresh') || 0);
+    if (now - last < 10000) return;
+    pair.setAttribute('data-last-refresh', String(now));
+    pair.querySelectorAll('img.rt-zt-chart-thumb').forEach(function (img) {
+        var base = (img.getAttribute('data-orig-src') || img.src || '').replace(/\?\d*$/, '');
+        if (base) img.src = base + '?' + Math.floor(now / 10000);
+    });
 }
 
 function renderTodayZtList(stocks) {
