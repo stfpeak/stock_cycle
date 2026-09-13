@@ -11467,6 +11467,10 @@ td.lt-trajectory-cell {
 .ms-tp-head { display: flex; align-items: center; gap: 7px; padding: 8px 10px 5px; border-bottom: 1px solid rgba(145,174,186,.16); }
 .ms-tp-head { background: rgba(15,52,96,.16); }
 .ms-tp-theme { color: #c4ad79; font-weight: 800; font-size: .92em; }
+.ms-tp-theme-link { cursor:pointer; }
+.ms-tp-theme-link:hover { color:#fff; text-decoration:underline; text-underline-offset:2px; }
+.ms-tp-kline-btn { display:inline-flex; align-items:center; gap:2px; cursor:pointer; padding:2px 6px; border-radius:5px; background:rgba(0,212,255,.08); border:1px solid rgba(0,212,255,.32); color:#8bdcff; font-size:.66em; line-height:1.2; white-space:nowrap; }
+.ms-tp-kline-btn:hover { color:#fff; background:rgba(0,212,255,.2); border-color:#00d4ff; }
 .ms-tp-meta { color: #8d99a8; font-size: .7em; }
 .ms-tp-date { margin-left: auto; color: #91aeba; font-size: .72em; white-space: nowrap; }
 .ms-tp-slider-row { display: flex; align-items: center; gap: 7px; padding: 5px 10px 8px; color: #8d99a8; font-size: .68em; }
@@ -11540,6 +11544,8 @@ td.lt-trajectory-cell {
 .ms-evolution10-card-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:2px; }
 .ms-evolution10-card-head a { color:#ffd166; font-weight:800; text-decoration:none; }
 .ms-evolution10-card-head a:hover { color:#fff; text-decoration:underline; }
+.ms-evolution10-theme-link { color:#ffd166; font-weight:800; cursor:pointer; }
+.ms-evolution10-theme-link:hover { color:#fff; text-decoration:underline; text-underline-offset:2px; }
 .ms-evolution10-card-meta { color:#91aeba; font-size:.7em; }
 .ms-evolution10-card-today { margin-left:auto; color:#ffcf70; font-size:.76em; font-weight:900; letter-spacing:.1px; text-shadow:0 0 8px rgba(255,207,112,.2); white-space:nowrap; }
 .ms-evolution10-card-today .today-level { color:#ff8a65; font-size:1.08em; }
@@ -21676,6 +21682,24 @@ function _msThemeChip(stock, label, css, extra, themeName) {
     return '<span class="ms-tp-chip ' + css + '" data-code="' + code + '" data-name="' + name + '" data-theme="' + theme + '" title="点击查看股票K线" onclick="_msOpenStockKline(this.getAttribute(&quot;data-code&quot;),this.getAttribute(&quot;data-name&quot;))">' + name + ' <b>' + _kplEsc(label) + '</b>' + (extra || '') + '</span>';
 }
 
+function _msPrepareThemeKline(theme, date) {
+    var key = 'ms-theme-' + (++_tmmThemeKlineSeq);
+    var hits = [];
+    var stocks = (theme && theme.stocks) || [];
+    for (var i = 0; i < stocks.length; i++) {
+        var stock = stocks[i] || {};
+        if (!_msThemeEvent(stock, date)) continue;
+        var code = stock.code || stock.stock_code || '';
+        if (code) hits.push({stock_name: stock.name || code, stock_code: code});
+    }
+    _tmmThemeKlineOrder[key] = hits;
+    return key;
+}
+
+function _msThemeSearchAttr(themeName) {
+    return ' onclick="event.stopPropagation();jumpToKplSearch(\\x27' + String(themeName || '').replace(/'/g, '') + '\\x27)" title="点击跳转题材复盘搜索"';
+}
+
 function _msRenderThemePyramidCard(idx, theme, dates) {
     var pos = _msThemeDateIdx[idx];
     if (pos === undefined || pos < 0 || pos >= dates.length) pos = 0;
@@ -21802,7 +21826,11 @@ function _msRenderEvolution10(pyramids, dates) {
                 else if (todayLevel === todayMax) todayMaxCount++;
             }
             var todayStat = '<span class="ms-evolution10-card-today">今日最高<span class="today-level">' + todayMax + '板</span>（<span class="today-count">' + todayMaxCount + '个</span>）</span>';
-            gh += '<article class="ms-evolution10-card" id="msEvolution10Topic-' + pi + '"><div class="ms-evolution10-card-head"><a href="#msThemePyrCard-' + pi + '">' + _kplEsc(topic.theme || '') + '</a><span class="ms-evolution10-card-meta">历史最高' + Number(topic.max_level || 0) + '板 · 截止' + _kplEsc(selected.slice(5)) + '</span>' + todayStat + '</div>';
+            var evolutionKlineKey = _msPrepareThemeKline(topic, selected);
+            var evolutionThemeName = String(topic.theme || '').replace(/'/g, '');
+            var evolutionThemeTitle = _kplEsc(topic.theme || '');
+            var evolutionKlineBtn = '<button type="button" class="ms-tp-kline-btn" onclick="event.stopPropagation();_tmmOpenThemeKline(\\x27' + evolutionThemeName + '\\x27,\\x27' + evolutionKlineKey + '\\x27)" title="查看该日期题材内股票K线走势">📈 K线</button>';
+            gh += '<article class="ms-evolution10-card" id="msEvolution10Topic-' + pi + '"><div class="ms-evolution10-card-head"><span class="ms-evolution10-theme-link"' + _msThemeSearchAttr(topic.theme) + '>' + evolutionThemeTitle + '</span>' + evolutionKlineBtn + '<span class="ms-evolution10-card-meta">最高' + Number(topic.max_level || 0) + '板 · ' + _kplEsc(selected.slice(5)) + '</span>' + todayStat + '</div>';
             gh += _msRenderRecent10Summary(topic, dates, pos) + '</article>';
         }
         return gh + '</div></section>';
@@ -21828,6 +21856,7 @@ function _msSelectEvolution10(date) {
 function _msRenderThemePyramidInner(idx, theme, dates, pos) {
     var date = dates[pos] || '';
     var stocks = theme.stocks || [];
+    var themeKlineKey = _msPrepareThemeKline(theme, date);
     var activeByLevel = {};
     var ghostByLevel = {};
     var brokenByLevel = {};
@@ -21878,7 +21907,10 @@ function _msRenderThemePyramidInner(idx, theme, dates, pos) {
         }
     }
 
-    var h = '<div class="ms-tp-head"><span class="ms-tp-theme">' + _kplEsc(theme.theme) + '</span><span class="ms-tp-meta">最高 ' + theme.max_level + '板 · 跟踪 ' + stocks.length + ' 只</span><span class="ms-tp-date">' + _kplEsc(date) + '</span></div>';
+    var themeNameJs = String(theme.theme || '').replace(/'/g, '');
+    var themeKlineBtn = '<button type="button" class="ms-tp-kline-btn" onclick="event.stopPropagation();_tmmOpenThemeKline(\\x27' + themeNameJs + '\\x27,\\x27' + themeKlineKey + '\\x27)" title="查看该日期题材内股票K线走势">📈 K线</button>';
+    var themeSearchName = '<span class="ms-tp-theme ms-tp-theme-link"' + _msThemeSearchAttr(theme.theme) + '>' + _kplEsc(theme.theme) + '</span>';
+    var h = '<div class="ms-tp-head">' + themeSearchName + themeKlineBtn + '<span class="ms-tp-meta">最高 ' + theme.max_level + '板 · 跟踪 ' + stocks.length + ' 只</span><span class="ms-tp-date">' + _kplEsc(date) + '</span></div>';
     // dates 已按最新在前，滑块也保持最新在左、最早在右，避免回放方向与页面数据顺序相反。
     var sliderPos = Math.max(0, Math.min(dates.length - 1, pos));
     var climaxMarks = '';
