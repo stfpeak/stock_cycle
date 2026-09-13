@@ -4650,7 +4650,14 @@ def _get_latest_zt_data_date():
     预生成日历，目录里出现未来日期时不能把它当成最新交易日显示。
     """
     candidates = []
-    bj_today = datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d')
+    now_bj = datetime.now(timezone(timedelta(hours=8)))
+    bj_today = now_bj.strftime('%Y%m%d')
+    cutoff = bj_today
+    # 盘前的当日文件通常是空池占位，最新完成数据应回退到上一交易日。
+    total_minutes = now_bj.hour * 60 + now_bj.minute
+    if bj_today in _trading_days and total_minutes < 565:
+        previous = [d for d in _trading_days if d < bj_today]
+        cutoff = previous[-1] if previous else bj_today
     for folder in (
         os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'zt_ladder_cache'),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'zt_pool'),
@@ -4661,8 +4668,15 @@ def _get_latest_zt_data_date():
             stem, ext = os.path.splitext(name)
             if ext.lower() not in ('.json', '.csv') or len(stem) != 8 or not stem.isdigit():
                 continue
-            if stem > bj_today:
+            if stem > cutoff:
                 continue
+            if ext.lower() == '.json' and 'zt_ladder_cache' in folder:
+                try:
+                    payload = json.load(open(os.path.join(folder, name), 'r', encoding='utf-8'))
+                    if not (payload.get('StockList') or payload.get('stock_list')):
+                        continue
+                except Exception:
+                    continue
             candidates.append(stem)
     if not candidates:
         return ''
