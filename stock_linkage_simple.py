@@ -9800,6 +9800,13 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
     width: 90%; max-width: 900px; max-height: 90vh; overflow-y: auto;
     padding: 24px; position: relative;
 }
+.tmm-theme-kline-modal { width:96%; max-width:1440px; max-height:92vh; padding:20px 24px; }
+.tmm-theme-kline-modal .concept-kline-grid { grid-template-columns:repeat(4,minmax(260px,1fr)); gap:10px; max-height:calc(92vh - 110px); overflow-y:auto; padding:8px 2px 14px; }
+.tmm-theme-kline-modal .kpl-kline-colbar { margin-bottom:4px; }
+@media (max-width:900px) {
+    .tmm-theme-kline-modal { width:98%; padding:16px 12px; }
+    .tmm-theme-kline-modal .concept-kline-grid { grid-template-columns:repeat(2,minmax(220px,1fr)); }
+}
 .kline-modal-close {
     position: absolute; top: 12px; right: 16px;
     color: #888; font-size: 1.5em; cursor: pointer;
@@ -9959,6 +9966,8 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
     padding:2px 4px;margin-bottom:2px;border-radius:6px;
     background:rgba(255,255,255,0.02);
 }
+.tmm-theme-headline { display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0; }
+.tmm-theme-row.tmm-tb .tmm-theme-headline { width:100%; }
 .tmm-theme-row.tmm-tb > .tmm-theme-chip { align-self:flex-start; }
 .tmm-theme-row.tmm-tb > .tmm-stocks { width:100%;margin-top:3px; }
 .tmm-theme-row.tmm-tb .tmm-stocks {
@@ -9984,6 +9993,13 @@ h3 { color: #ff6b6b; margin: 15px 0 8px; }
     box-shadow:0 0 8px rgba(79,195,247,0.18);
 }
 .tmm-theme-chip:hover { filter:brightness(1.3); }
+.tmm-theme-kline-btn {
+    display:inline-flex;align-items:center;gap:2px;cursor:pointer;
+    padding:2px 7px;border-radius:5px;background:rgba(0,212,255,0.08);
+    border:1px solid rgba(0,212,255,0.35);color:#8bdcff;font-size:0.68em;
+    line-height:1.25;white-space:nowrap;transition:all .18s ease;
+}
+.tmm-theme-kline-btn:hover { color:#fff;background:rgba(0,212,255,0.2);border-color:#00d4ff;box-shadow:0 0 8px rgba(0,212,255,.18); }
 .tmm-theme-chip.attack {
     background:linear-gradient(135deg,rgba(255,152,0,0.34),rgba(255,152,0,0.10));
     border-color:rgba(255,152,0,0.75);border-left-color:#ff9800;
@@ -11483,9 +11499,52 @@ td.lt-trajectory-cell {
 .ms-tp-chip .ms-tp-time { color: #8fc6d2; font-size: .82em; font-style: normal; white-space: nowrap; }
 .ms-tp-chip .ms-tp-restart { color: #78a19c; font-size: .86em; font-weight: 800; }
 .ms-tp-chip .ms-tp-pct { color: #d0d7df; font-size: .86em; }
+.ms-tp-chip .ms-tp-pct.ms-pct-up { color: #ff6b6b; font-weight:800; }
+.ms-tp-chip .ms-tp-pct.ms-pct-down { color: #4ade80; font-weight:800; }
 .ms-tp-chip .ms-tp-cum { color: #c4ad79; font-size: .82em; font-weight: 700; }
 .ms-tp-aside { border-left: 1px solid rgba(145,174,186,.16); padding: 3px 0 3px 8px; font-size: .69em; line-height: 1.5; color: #aeb9c3; }
 .ms-tp-daily-summary { margin-top: 8px; padding: 8px 10px 6px; border-top: 1px dashed rgba(79,195,247,.38); background: rgba(15,52,96,.16); border-radius: 6px; font-size: .72em; line-height: 1.65; }
+.ms-tp-recent10 { margin-top: 8px; padding: 8px 10px 4px; border-top: 1px solid rgba(255,215,0,.28); background: linear-gradient(135deg,rgba(255,215,0,.055),rgba(15,52,96,.12)); border-radius: 6px; font-size: .72em; line-height: 1.65; }
+.ms-tp-recent10-title { color:#ffd166; font-weight:800; letter-spacing:.2px; margin-bottom:5px; }
+.ms-tp-recent10-day { display:grid; grid-template-columns:58px minmax(0,1fr); gap:7px; padding:4px 0; border-top:1px dashed rgba(148,163,184,.18); }
+.ms-tp-recent10-day.ms-tp-recent10-latest { margin:1px -5px 2px; padding:5px 5px; border:1px solid rgba(255,209,102,.42); border-radius:5px; background:linear-gradient(90deg,rgba(255,209,102,.15),rgba(79,195,247,.08)); box-shadow:0 0 0 1px rgba(255,209,102,.05),0 0 11px rgba(255,209,102,.14); animation:msEvolutionLatestPulse 2.4s ease-in-out infinite; }
+@keyframes msEvolutionLatestPulse { 0%,100% { box-shadow:0 0 0 1px rgba(255,209,102,.04),0 0 7px rgba(255,209,102,.08); } 50% { box-shadow:0 0 0 1px rgba(255,209,102,.2),0 0 15px rgba(79,195,247,.2); } }
+.ms-tp-recent10-day:first-of-type { border-top:0; }
+.ms-tp-recent10-date { color:#8bdcff; font-weight:800; white-space:nowrap; }
+.ms-tp-recent10-text { color:#cbd5e1; }
+.ms-tp-recent10-text .promote { color:#ff6b6b; font-weight:800; }
+.ms-tp-recent10-text .fail { color:#4ade80; font-weight:800; }
+.ms-tp-recent10-text .first { color:#8bdcff; font-weight:700; }
+.ms-tp-recent10-text .r10-name { color:#f1f5f9; font-weight:800; cursor:pointer; }
+.ms-tp-recent10-text .r10-name:hover { color:#67e8f9; text-decoration:underline; }
+.ms-tp-recent10-text .r10-action { color:#ff6b6b; font-weight:900; }
+.ms-tp-recent10-text .r10-fail-action { color:#4ade80; font-weight:900; }
+.ms-tp-recent10-text .r10-level { color:#c4b5fd; font-weight:900; padding:0 2px; }
+.ms-tp-recent10-text .r10-time { color:#67e8f9; font-size:.92em; }
+.ms-tp-recent10-text .r10-pct.up { color:#ff6b6b; font-weight:800; }
+.ms-tp-recent10-text .r10-pct.down { color:#4ade80; font-weight:800; }
+.ms-tp-recent10-first { display:inline; margin-top:3px; padding-top:3px; border-top:1px dotted rgba(103,232,249,.18); }
+.ms-evolution10 { margin:14px 0 16px; padding:10px 12px 12px; background:rgba(15,52,96,.16); border:1px solid rgba(79,195,247,.2); border-radius:10px; }
+.ms-evolution10-head { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
+.ms-evolution10-title { color:#ffd166; font-size:.98em; font-weight:800; }
+.ms-evolution10-select { margin-left:auto; background:#102238; color:#dbeafe; border:1px solid rgba(79,195,247,.4); border-radius:6px; padding:3px 8px; font-size:.78em; }
+.ms-evolution10-nav { display:flex; flex-wrap:wrap; gap:5px; align-items:center; margin-bottom:9px; padding:6px 8px; background:rgba(15,52,96,.25); border:1px solid rgba(148,163,184,.18); border-radius:8px; }
+.ms-evolution10-nav a { color:#8bdcff; font-size:.72em; text-decoration:none; border:1px solid rgba(79,195,247,.28); border-radius:6px; padding:2px 7px; }
+.ms-evolution10-nav a:hover { color:#fff; border-color:#00d4ff; background:rgba(0,212,255,.12); }
+.ms-evolution10-group { margin-top:9px; }
+.ms-evolution10-group-title { display:flex; align-items:center; gap:7px; margin:0 0 6px; padding:5px 8px; border-left:3px solid #67e8f9; background:rgba(15,52,96,.25); color:#dbeafe; font-size:.78em; font-weight:800; }
+.ms-evolution10-group-title .count { color:#91aeba; font-size:.9em; font-weight:600; }
+.ms-evolution10-group-empty { padding:9px; color:#718096; font-size:.72em; border:1px dashed rgba(148,163,184,.22); border-radius:7px; }
+.ms-evolution10-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(330px,1fr)); gap:8px; align-items:start; }
+.ms-evolution10-card { min-width:0; padding:7px 9px 4px; background:rgba(15,52,96,.2); border-left:3px solid rgba(255,209,102,.55); border-radius:7px; }
+.ms-evolution10-card-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:2px; }
+.ms-evolution10-card-head a { color:#ffd166; font-weight:800; text-decoration:none; }
+.ms-evolution10-card-head a:hover { color:#fff; text-decoration:underline; }
+.ms-evolution10-card-meta { color:#91aeba; font-size:.7em; }
+.ms-evolution10-card-today { margin-left:auto; color:#ffcf70; font-size:.76em; font-weight:900; letter-spacing:.1px; text-shadow:0 0 8px rgba(255,207,112,.2); white-space:nowrap; }
+.ms-evolution10-card-today .today-level { color:#ff8a65; font-size:1.08em; }
+.ms-evolution10-card-today .today-count { color:#67e8f9; }
+.ms-tp-recent10-empty { color:#718096; padding:4px 0; }
 .ms-tp-summary-title { color: #8fc6d2; font-weight: 700; margin-bottom: 3px; }
 .ms-theme-summary { margin: 0 0 12px; }
 .ms-daily-review { margin: 0 0 14px; border: 1px solid rgba(196,173,121,.42); border-radius: 12px; background: linear-gradient(135deg, rgba(15,52,96,.24), rgba(13,28,47,.62)); overflow: hidden; }
@@ -13293,11 +13352,26 @@ td.lt-trajectory-cell {
         </div>
     </div>
     <div class="tab-content" id="tab-marketstructure">
-        <div class="ms-toolbar">
-            <span class="ms-toolbar-title">🏛 市场细分题材结构</span>
-            <button onclick="loadMarketStructure(true)">🔄 刷新</button>
+        <div class="np-wrapper">
+            <button class="np-sidebar-showbtn" id="msSidebarShow" onclick="toggleTabSidebar('msSidebar','msSidebarShow')" style="display:none;" title="显示导航">☰</button>
+            <nav class="np-sidebar" id="msSidebar">
+                <a class="np-sidebar-item" data-np-section="msMethodology" onclick="scrollToNpSection('msMethodology')">📘 复盘方法</a>
+                <a class="np-sidebar-item" data-np-section="msDailyReview" onclick="scrollToNpSection('msDailyReview')">📝 今日复盘总结</a>
+                <a class="np-sidebar-item" data-np-section="msThemeSummary" onclick="scrollToNpSection('msThemeSummary')">🧭 题材每日总结</a>
+                <a class="np-sidebar-item" data-np-section="msThemePyramids" onclick="scrollToNpSection('msThemePyramids')">📚 题材涨停天梯复盘</a>
+                <a class="np-sidebar-item" data-np-section="msEvolution10Section" onclick="scrollToNpSection('msEvolution10Section')">🧬 题材10日演化总结</a>
+                <a class="np-sidebar-item" data-np-section="msLadderPyramid" onclick="scrollToNpSection('msLadderPyramid')">🏛 市场细分题材结构</a>
+                <div style="border-top:1px solid rgba(255,255,255,0.06);margin:6px 0;"></div>
+                <div class="np-sidebar-hide" onclick="toggleTabSidebar('msSidebar','msSidebarShow')" title="隐藏导航">✖ 隐藏</div>
+            </nav>
+            <div class="np-main-content">
+                <div class="ms-toolbar">
+                    <span class="ms-toolbar-title">🏛 市场细分题材结构</span>
+                    <button onclick="loadMarketStructure(true)" title="跳过缓存，重新加载市场结构、题材卡片与10日演化总结">🔄 刷新</button>
+                </div>
+                <div id="marketStructureContainer"><div class="loading">加载市场结构数据...</div></div>
+            </div>
         </div>
-        <div id="marketStructureContainer"><div class="loading">加载市场结构数据...</div></div>
     </div>
     <div class="tab-content" id="tab-industrychain">
         <div id="industryChainContainer"><div class="loading">加载产业链编辑器...</div></div>
@@ -13377,6 +13451,21 @@ td.lt-trajectory-cell {
             <span class="kline-modal-close" onclick="closeEnlargeCardModal()">&times;</span>
         </div>
         <div id="enlargeCardModalBody"></div>
+    </div>
+</div>
+
+<!-- 盯盘细分题材 K 线走势弹框 -->
+<div id="tmmThemeKlineModal" class="kline-modal-overlay" onclick="if(event.target===this)closeTmmThemeKline()">
+    <div class="kline-modal tmm-theme-kline-modal">
+        <div class="kline-modal-header">
+            <div class="kline-modal-title-area">
+                <h3 id="tmmThemeKlineTitle" style="margin:0;font-size:1.05em;">题材 K 线走势</h3>
+                <span id="tmmThemeKlineCounter" class="kline-modal-counter"></span>
+            </div>
+            <button type="button" class="concept-btn" onclick="refreshTmmThemeKlines()" title="刷新K线图">↻ 刷新</button>
+            <span class="kline-modal-close" onclick="closeTmmThemeKline()">&times;</span>
+        </div>
+        <div id="tmmThemeKlineBody"></div>
     </div>
 </div>
 
@@ -13575,13 +13664,18 @@ function setTabMode(mode) {
     });
     var tabsEl = document.querySelector('.tabs');
     tabsEl.classList.toggle('simple', mode === 'simple');
-    // Fix border-radius for first/last visible tab
+    // Fix border-radius for first/last visible tab，按 CSS order 后的视觉顺序计算
     var visibleTabs = [];
     document.querySelectorAll('.tabs .tab').forEach(function(t) {
         if (mode === 'simple' && t.getAttribute('data-not-simple') !== null) return;
         visibleTabs.push(t);
     });
-    visibleTabs.forEach(function(t) { t.style.borderRadius = ''; });
+    visibleTabs.sort(function(a, b) {
+        var ao = parseInt(getComputedStyle(a).order || '0', 10) || 0;
+        var bo = parseInt(getComputedStyle(b).order || '0', 10) || 0;
+        return ao - bo || Array.prototype.indexOf.call(a.parentNode.children, a) - Array.prototype.indexOf.call(b.parentNode.children, b);
+    });
+    document.querySelectorAll('.tabs .tab').forEach(function(t) { t.style.borderRadius = '0'; });
     if (visibleTabs.length > 0) {
         visibleTabs[0].style.borderRadius = '8px 0 0 8px';
         visibleTabs[visibleTabs.length - 1].style.borderRadius = '0 8px 8px 0';
@@ -18062,6 +18156,7 @@ function toggleTabSidebar(sbId, showId) {
 // 通用侧边栏滚动高亮（题材风向/实时，功能与 initNpSidebar 一致，作用域限定在指定 sidebar）
 var _rtSbObserver = null;
 var _twSbObserver = null;
+var _msSbObserver = null;
 function initTabSidebarScroll(sbId, sectionIds) {
     var sidebar = document.getElementById(sbId);
     if (!sidebar) return;
@@ -18083,6 +18178,7 @@ function initTabSidebarScroll(sbId, sectionIds) {
     }, {rootMargin: '-10px 0px -15% 0px', threshold: [0, 0.1]});
     if (sbId === 'rtSidebar') { if (_rtSbObserver) _rtSbObserver.disconnect(); _rtSbObserver = obs; }
     else if (sbId === 'twSidebar') { if (_twSbObserver) _twSbObserver.disconnect(); _twSbObserver = obs; }
+    else if (sbId === 'msSidebar') { if (_msSbObserver) _msSbObserver.disconnect(); _msSbObserver = obs; }
     sections.forEach(function(el) { obs.observe(el); });
 }
 
@@ -21490,6 +21586,7 @@ function loadMarketStructure(force, silent) {
         _msBuildIndexes();
         container.innerHTML = _msRender();
         _marketStructureLoaded = true;
+        initTabSidebarScroll('msSidebar', ['msMethodology','msDailyReview','msThemeSummary','msThemePyramids','msEvolution10Section','msLadderPyramid']);
         _msEnsureLiveRefresh();
     }).catch(function(e) {
         container.innerHTML = '<div class="error">加载失败: ' + _kplEsc(String(e)) + '</div>';
@@ -21535,6 +21632,7 @@ function _msBuildIndexes() {
 }
 
 var _msThemeDateIdx = {};  // 每张细分题材金字塔独立回放位置，0=最新交易日
+var _msEvolutionDate = ''; // 题材10日演化总结独立日期选择
 
 function _msThemeEvent(stock, date) {
     return (stock.events || {})[date] || null;
@@ -21582,6 +21680,149 @@ function _msRenderThemePyramidCard(idx, theme, dates) {
     var pos = _msThemeDateIdx[idx];
     if (pos === undefined || pos < 0 || pos >= dates.length) pos = 0;
     return '<section class="ms-tp-card" id="msThemePyrCard-' + idx + '">' + _msRenderThemePyramidInner(idx, theme, dates, pos) + '</section>';
+}
+
+function _msRecent10NameHtml(stock) {
+    var code = _kplEsc(String((stock && stock.code) || '')).replace(/'/g, '');
+    var name = _kplEsc((stock && (stock.name || stock.code)) || '');
+    return '<span class="r10-name" data-code="' + code + '" data-name="' + name + '" title="点击查看股票K线" onclick="_msOpenStockKline(this.getAttribute(&quot;data-code&quot;),this.getAttribute(&quot;data-name&quot;))">' + name + '</span>';
+}
+
+// 题材金字塔近10日演化：以当前回放日期为截止点，只向更早交易日回看，避免混入未来数据。
+function _msRenderRecent10Summary(theme, dates, pos) {
+    var stocks = theme.stocks || [];
+    var period = dates.slice(pos, pos + 10);
+    var h = '<div class="ms-tp-recent10"><div class="ms-tp-recent10-title">近10日题材演化</div>';
+    var shown = 0;
+    for (var di = 0; di < period.length; di++) {
+        var date = period[di];
+        var nextDate = period[di + 1] || dates[pos + di + 1] || '';
+        var active = [];
+        var currentCodes = {};
+        for (var si = 0; si < stocks.length; si++) {
+            var st = stocks[si];
+            var ev = _msThemeEvent(st, date);
+            if (!ev) continue;
+            currentCodes[st.code] = true;
+            active.push({stock: st, event: ev, prev: nextDate ? _msThemeEvent(st, nextDate) : null});
+        }
+        var failed = [];
+        // 上一交易日处于2板及以上、当天不再涨停 = 晋级失败（断板）。
+        for (var fi = 0; fi < stocks.length; fi++) {
+            var fst = stocks[fi];
+            var pev = nextDate ? _msThemeEvent(fst, nextDate) : null;
+            if (pev && Number(pev.level || 0) >= 2 && !currentCodes[fst.code]) {
+                failed.push({stock: fst, event: pev});
+            }
+        }
+        if (!active.length && !failed.length) continue;
+        active.sort(function(a, b) {
+            return Number(b.event.level || 1) - Number(a.event.level || 1) ||
+                Number(a.event.first_time || 999999) - Number(b.event.first_time || 999999) ||
+                String(a.stock.name || '').localeCompare(String(b.stock.name || ''));
+        });
+        failed.sort(function(a, b) { return Number(b.event.level || 0) - Number(a.event.level || 0) || String(a.stock.name || '').localeCompare(String(b.stock.name || '')); });
+        var parts = [];
+        var promotions = [], continuations = [], firsts = [];
+        for (var ai = 0; ai < active.length; ai++) {
+            var item = active[ai], lv = Number(item.event.level || 1), prevLv = item.prev ? Number(item.prev.level || 0) : 0;
+            var tm = _kplLevelFormatTime(item.event.first_time);
+            var tmText = tm && tm !== '--' ? ' · ' + tm : '';
+            var nmHtml = _msRecent10NameHtml(item.stock);
+            var lvHtml = '<b class="r10-level">' + lv + '板</b>';
+            var tmHtml = tmText ? '<span class="r10-time">' + _kplEsc(tm) + '</span>' : '';
+            if (lv === 1 && !item.prev) {
+                firsts.push(nmHtml + (tmHtml ? '（' + tmHtml + '）' : ''));
+            } else if (lv >= 2 && item.prev && lv === prevLv + 1) {
+                promotions.push('<span class="promote">' + nmHtml + '<span class="r10-action">晋级</span>' + lvHtml + ' <span class="r10-action">成功</span>（' + _msThemeSealType(item.event) + '）</span>');
+            } else if (lv >= 2 && !item.prev) {
+                promotions.push('<span class="promote">' + nmHtml + '<span class="r10-action">晋级</span>' + lvHtml + ' <span class="r10-action">成功</span></span>');
+            } else if (lv >= 2) {
+                continuations.push('<span class="promote">' + nmHtml + '<span class="r10-action">维持</span>' + lvHtml + '</span>');
+            } else if (lv === 1) {
+                firsts.push(nmHtml + (tmHtml ? '（' + tmHtml + '）' : ''));
+            }
+        }
+        if (promotions.length) parts.push(promotions.join('、'));
+        if (continuations.length) parts.push(continuations.join('、'));
+        for (var ff = 0; ff < failed.length; ff++) {
+            var f = failed[ff];
+            var fp = (f.stock.pcts || {})[date];
+            var fpHtml = fp === undefined ? '' : ' · <span class="r10-pct ' + (Number(fp) >= 0 ? 'up' : 'down') + '">' + _msThemePct(fp) + '</span>';
+            parts.push('<span class="fail">' + _msRecent10NameHtml(f.stock) + '<span class="r10-fail-action">晋级</span><b class="r10-level">' + (Number(f.event.level || 0) + 1) + '板</b> <span class="r10-fail-action">失败</span>（断板）' + fpHtml + '</span>');
+        }
+        if (firsts.length) parts.push('<br><span class="first ms-tp-recent10-first"><span class="r10-action">首板</span>：' + firsts.join('、') + '</span>');
+        h += '<div class="ms-tp-recent10-day' + (di === 0 ? ' ms-tp-recent10-latest' : '') + '"><span class="ms-tp-recent10-date">' + _kplEsc(String(date).slice(5)) + '</span><span class="ms-tp-recent10-text">' + parts.join('；') + '。</span></div>';
+        shown++;
+    }
+    if (!shown) h += '<div class="ms-tp-recent10-empty">近10个交易日暂无该题材有效涨停演化记录</div>';
+    h += '</div>';
+    return h;
+}
+
+function _msRenderEvolution10(pyramids, dates) {
+    if (!pyramids || !pyramids.length || !dates || !dates.length) return '';
+    var selected = _msEvolutionDate && dates.indexOf(_msEvolutionDate) >= 0 ? _msEvolutionDate : dates[0];
+    _msEvolutionDate = selected;
+    var pos = dates.indexOf(selected);
+    var withLimit = [], withoutLimit = [];
+    for (var ci = 0; ci < pyramids.length; ci++) {
+        var ct = pyramids[ci] || {};
+        if (!ct.stocks || !ct.stocks.length) continue;
+        var hasLimit = false;
+        for (var csi = 0; csi < ct.stocks.length; csi++) {
+            if (_msThemeEvent(ct.stocks[csi], selected)) { hasLimit = true; break; }
+        }
+        (hasLimit ? withLimit : withoutLimit).push({topic: ct, index: ci});
+    }
+    var h = '<section class="ms-evolution10" id="msEvolution10Section">';
+    h += '<div class="ms-evolution10-head"><span class="ms-evolution10-title">🧭 题材10日演化总结</span><span class="ms-date-note">按上方题材卡片顺序 · 截止日期不包含未来数据</span>';
+    h += '<select class="ms-evolution10-select" onchange="_msSelectEvolution10(this.value)">';
+    for (var di = 0; di < dates.length; di++) h += '<option value="' + _kplEsc(dates[di]) + '"' + (dates[di] === selected ? ' selected' : '') + '>' + _kplEsc(dates[di]) + '</option>';
+    h += '</select></div>';
+    h += '<div class="ms-evolution10-nav"><span class="ms-theme-nav-title">题材导航</span>';
+    for (var ni = 0; ni < pyramids.length; ni++) {
+        var nt = pyramids[ni] || {};
+        if (!nt.stocks || !nt.stocks.length) continue;
+        h += '<a href="#msEvolution10Topic-' + ni + '">' + _kplEsc(nt.theme || '') + '</a>';
+    }
+    h += '</div>';
+    function renderEvolutionGroup(label, items, accent) {
+        var gh = '<section class="ms-evolution10-group"><div class="ms-evolution10-group-title" style="border-left-color:' + accent + '">' + _kplEsc(selected.slice(5)) + ' ' + label + '<span class="count">' + items.length + '个题材</span></div>';
+        if (!items.length) return gh + '<div class="ms-evolution10-group-empty">当前日期暂无符合条件的题材</div></section>';
+        gh += '<div class="ms-evolution10-cards">';
+        for (var ii = 0; ii < items.length; ii++) {
+            var item = items[ii], topic = item.topic, pi = item.index;
+            var todayMax = 0, todayMaxCount = 0;
+            for (var tssi = 0; tssi < (topic.stocks || []).length; tssi++) {
+                var todayEvent = _msThemeEvent(topic.stocks[tssi], selected);
+                if (!todayEvent) continue;
+                var todayLevel = Number(todayEvent.level || 0);
+                if (todayLevel > todayMax) { todayMax = todayLevel; todayMaxCount = 1; }
+                else if (todayLevel === todayMax) todayMaxCount++;
+            }
+            var todayStat = '<span class="ms-evolution10-card-today">今日最高<span class="today-level">' + todayMax + '板</span>（<span class="today-count">' + todayMaxCount + '个</span>）</span>';
+            gh += '<article class="ms-evolution10-card" id="msEvolution10Topic-' + pi + '"><div class="ms-evolution10-card-head"><a href="#msThemePyrCard-' + pi + '">' + _kplEsc(topic.theme || '') + '</a><span class="ms-evolution10-card-meta">历史最高' + Number(topic.max_level || 0) + '板 · 截止' + _kplEsc(selected.slice(5)) + '</span>' + todayStat + '</div>';
+            gh += _msRenderRecent10Summary(topic, dates, pos) + '</article>';
+        }
+        return gh + '</div></section>';
+    }
+    h += renderEvolutionGroup('有涨停', withLimit, '#ff6b6b');
+    h += renderEvolutionGroup('无涨停', withoutLimit, '#94a3b8');
+    h += '</section>';
+    return h;
+}
+
+function _msSelectEvolution10(date) {
+    _msEvolutionDate = date || '';
+    var section = document.getElementById('msEvolution10Section');
+    if (!section || !_msData) return;
+    var dates = (_msData.dates || []).slice().sort(function(a, b) { return String(b).localeCompare(String(a)); });
+    var pyramids = _msData.theme_pyramids || [];
+    var holder = document.createElement('div');
+    holder.innerHTML = _msRenderEvolution10(pyramids, dates);
+    var next = holder.firstElementChild;
+    if (next) section.replaceWith(next);
 }
 
 function _msRenderThemePyramidInner(idx, theme, dates, pos) {
@@ -21686,7 +21927,9 @@ function _msRenderThemePyramidInner(idx, theme, dates, pos) {
             var brCum = br.cum === undefined ? '' : ' · 累计' + _msThemePct(br.cum);
             var breakLabel = (br.peak <= 1 ? '首板' : '曾' + br.peak + '板') + ' (+' + br.gap + ')';
             var brMove = br.cum === undefined ? (br.pct === undefined ? '累计涨幅待补' : '当日' + _msThemePct(br.pct)) : '累计' + _msThemePct(br.cum);
-            h += _msThemeChip(br.stock, breakLabel, 'break', ' <i class="ms-tp-pct">' + _kplEsc(brMove) + '</i>', theme.theme);
+            var brPctValue = br.cum === undefined ? br.pct : br.cum;
+            var brPctCls = brPctValue === undefined ? '' : (Number(brPctValue) >= 0 ? ' ms-pct-up' : ' ms-pct-down');
+            h += _msThemeChip(br.stock, breakLabel, 'break', ' <i class="ms-tp-pct' + brPctCls + '">' + _kplEsc(brMove) + '</i>', theme.theme);
         }
         if (!ghosts.length && !brokenHere.length) h += '<span class="ms-tp-empty">—</span>';
         h += '</div></div></div>';
@@ -21694,6 +21937,7 @@ function _msRenderThemePyramidInner(idx, theme, dates, pos) {
     h += '<div class="ms-tp-daily-summary"><div class="ms-tp-summary-title">当日总结</div>';
     if (!notes.length) h += '<div class="ms-tp-empty">该日无新首板、晋级或晋级失败</div>';
     else for (var ni = 0; ni < Math.min(notes.length, 9); ni++) h += '<div class="ms-tp-note ' + notes[ni].kind + '">' + notes[ni].text + '</div>';
+    h += _msRenderRecent10Summary(theme, dates, pos);
     h += '</div></div></div>';
     return h;
 }
@@ -21878,7 +22122,7 @@ function _msSummaryFormatText(text) {
 }
 
 function _msRenderThemeSummary(pyramids, dates) {
-    var h = '<div class="ms-theme-summary"><div class="ms-sec-head">🧭 题材每日总结 <span class="ms-date-note">复盘描述 · 最新在左 · 左右滑动查看近20个交易日</span></div>';
+    var h = '<div class="ms-theme-summary" id="msThemeSummary"><div class="ms-sec-head">🧭 题材每日总结 <span class="ms-date-note">复盘描述 · 最新在左 · 左右滑动查看近20个交易日</span></div>';
     h += '<div class="ms-theme-summary-scroll"><div class="ms-theme-summary-grid" style="grid-template-columns:repeat(' + dates.length + ',minmax(580px,1fr));">';
     for (var i = 0; i < dates.length; i++) h += '<div class="ms-theme-summary-date' + (i === 0 ? ' today' : '') + '">' + _kplEsc((dates[i] || '').slice(5)) + '</div>';
     for (var di = 0; di < dates.length; di++) h += '<div class="ms-theme-summary-cell' + (di === 0 ? ' today' : '') + '">' + _msTierNarrativeCell(pyramids, dates, di, false) + '</div>';
@@ -22020,7 +22264,7 @@ function _msRenderLadderPyramid() {
     }
     if (maxLevel < 1) return '';
     var grid = 'grid-template-columns:42px repeat(' + days.length + ',minmax(128px,1fr));';
-    var h = '<div class="ms-global-ladder">';
+    var h = '<div class="ms-global-ladder" id="msLadderPyramid">';
     h += '<div class="ms-sec-head">🔗 市场细分题材结构 <span class="ms-date-note">近20个交易日 · 今日在左 · 点击股票查看跨日轨迹</span></div>';
     h += '<div class="ms-scroll"><div class="ms-pyramid">';
     h += '<div class="ms-axis-row" style="' + grid + '"><span class="ms-axis-spacer"></span>';
@@ -22075,13 +22319,14 @@ function _msRender() {
         h += '<a href="#msThemePyrCard-' + ni + '">' + _kplEsc(navTopic.theme || '') + '</a>';
     }
     h += '</div>';
-    h += '<div class="ms-theme-pyramids">';
+    h += '<div class="ms-theme-pyramids" id="msThemePyramids">';
     for (var i = 0; i < pyramids.length; i++) {
         var topic = pyramids[i] || {};
         if (!topic.stocks || !topic.stocks.length) continue;
         h += _msRenderThemePyramidCard(i, topic, dates);
     }
     h += '</div>';
+    h += _msRenderEvolution10(pyramids, dates);
     // 细分题材卡片先展示，市场细分题材结构及其表格总览放在页面末尾。
     h += _msRenderLadderPyramid();
     return h;
@@ -22518,7 +22763,7 @@ function _twsLadderChip(it, isBroken) {
     var pctTxt = hasPct ? ((it.change_pct >= 0 ? '+' : '') + it.change_pct.toFixed(2) + '%') : '--';
     var pctCls = hasPct ? _ltPctCls(it.change_pct) : '';
     var mabHtml = (it.mab && it.mab.length) ? _twsMabChips(it.mab, it.plate || '', true)
-        : ((it.plate || it.theme) ? '<span class="tws-ladder-pt" data-jump-plate="' + _kplEsc(it.plate || '') + '" data-jump-theme="' + _kplEsc(it.theme || '') + '" onclick="event.stopPropagation();_twsJumpToTheme(this)" title="点击跳转到下方题材卡">' + _kplEsc((it.plate || '') + (it.plate && it.theme ? '·' : '') + (it.theme || '')) + '</span>' : '');
+        : ((it.plate || it.theme) ? '<span class="tws-ladder-pt" data-jump-plate="' + _kplEsc(it.plate || '') + '" data-jump-theme="' + _kplEsc(it.theme || '') + '" onclick="event.stopPropagation();jumpToKplSearch(\\x27' + (it.theme || it.plate || '').replace(/'/g, '') + '\\x27)" title="点击跳转题材复盘并搜索：' + _kplEsc(it.theme || it.plate || '') + '">' + _kplEsc((it.plate || '') + (it.plate && it.theme ? '·' : '') + (it.theme || '')) + '</span>' : '');
     return '<span class="tws-ladder-chip' + (isBroken ? ' tws-ladder-broken' : '') + '" data-code="' + it.code + '" data-name="' + (it.name || '').replace(/'/g, '') + '" onclick="_twsSumOpenStock(this)">' + _kplEsc(it.name) + _twsHotBadge(it.code) + '<span class="tws-code">' + it.code + '</span>' + mabHtml + '<span class="tws-pct ' + pctCls + '" data-code="' + it.code + '">' + pctTxt + '</span></span>';
 }
 
@@ -30862,6 +31107,8 @@ function _tmmRender(data, sectorData, sentData, twsData, fast) {
         return '<div style="padding:6px;color:#e94560;font-size:0.8em;">' + _kplEsc((data && data.error) || '\u65e0\u6570\u636e') + '</div>';
     }
     var w = data.window || {};
+    _tmmThemeKlineOrder = {};
+    _tmmThemeKlineSeq = 0;
     // 先按过滤器裁剪三个区（主题/板块无命中即隐藏，count 重算为命中数）
     var fz = {attack: _tmmFilterPlates(data.attack || []), defense: _tmmFilterPlates(data.defense || []), neutral: _tmmFilterPlates(data.neutral || [])};
     var matched = 0;
@@ -30966,17 +31213,97 @@ function _tmmThemeStatsHtml(t) {
         '<i class="avg' + avgCls + '">均涨 ' + avg + '</i></span>';
 }
 function _tmmTheme(t, cls, block) {
-    var h = '<div class="tmm-theme-row' + (block ? ' tmm-tb' : '') + '"><span class="tmm-theme-chip ' + cls + '"';
+    var themeKlineKey = '';
+    if (block) {
+        themeKlineKey = 'theme-' + (++_tmmThemeKlineSeq);
+        _tmmThemeKlineOrder[themeKlineKey] = (t.stocks || []).map(function(stock) {
+            return {stock_name: stock.name || '', stock_code: stock.code || stock.stock_code || ''};
+        }).filter(function(stock) { return !!stock.stock_code; });
+    }
+    var h = '<div class="tmm-theme-row' + (block ? ' tmm-tb' : '') + '"><div class="tmm-theme-headline"><span class="tmm-theme-chip ' + cls + '"';
     // 点击细分题材 → 跳转 KPL涨停深挖 搜索该题材（跳 tab + 搜索，区别于仅填充输入框）
     var tmmT = '\u70b9\u51fb\u8df3\u8f6cKPL\u6da8\u505c\u6df1\u6316\u641c\u7d22';
     if (t.plates && t.plates.length > 1) tmmT += ' \u00b7 \u8de8 ' + t.plates.length + ' \u4e2a\u677f\u5757\uff1a' + _kplEsc(t.plates.join('\u3001'));
     h += ' onclick="jumpToKplSearch(\\x27' + (t.name || '').replace(/'/g, '') + '\\x27)" title="' + tmmT + '"';
     h += '>' + _kplEsc(t.name) + '<span class="tmm-tcount">' + t.count + '</span>';
     if (t.plates && t.plates.length > 1) h += '<span class="tmm-cross">\u00d7' + t.plates.length + '</span>';
-    h += '</span>' + _tmmThemeStatsHtml(t) + '<span class="tmm-stocks">';
+    var klineBtn = block ? '<button type="button" class="tmm-theme-kline-btn" onclick="event.stopPropagation();_tmmOpenThemeKline(\\x27' + (t.name || '').replace(/'/g, '') + '\\x27,\\x27' + themeKlineKey + '\\x27)" title="查看该细分题材全部股票K线走势">📈 K线走势</button>' : '';
+    h += '</span>' + klineBtn + _tmmThemeStatsHtml(t) + '</div><span class="tmm-stocks">';
     for (var i = 0; i < t.stocks.length; i++) h += _tmmStock(t.stocks[i]);
     h += '</span></div>';
     return h;
+}
+// 盯盘细分题材 K 线弹框：复用题材复盘“题材走势”的股票卡片、刷新与列数交互。
+var _tmmThemeKlineHits = [];
+var _tmmThemeKlineOrder = {};
+var _tmmThemeKlineSeq = 0;
+function _tmmFindThemeStocks(themeName) {
+    var hits = [], seen = {};
+    if (!_tmmData || !themeName) return hits;
+    ['attack', 'defense', 'neutral'].forEach(function(zone) {
+        (_tmmData[zone] || []).forEach(function(plate) {
+            (plate.themes || []).forEach(function(theme) {
+                if (theme.name !== themeName) return;
+                (theme.stocks || []).forEach(function(stock) {
+                    var code = stock.code || stock.stock_code || '';
+                    var key = code || stock.name || '';
+                    if (key && !seen[key]) {
+                        seen[key] = 1;
+                        hits.push({stock_name: stock.name || '', stock_code: code});
+                    }
+                });
+            });
+        });
+    });
+    return hits;
+}
+function _tmmOpenThemeKline(themeName) {
+    var orderKey = arguments.length > 1 ? arguments[1] : '';
+    _tmmThemeKlineHits = (_tmmThemeKlineOrder[orderKey] || _tmmFindThemeStocks(themeName)).slice();
+    var modal = document.getElementById('tmmThemeKlineModal');
+    var body = document.getElementById('tmmThemeKlineBody');
+    var title = document.getElementById('tmmThemeKlineTitle');
+    var counter = document.getElementById('tmmThemeKlineCounter');
+    if (!modal || !body) return;
+    if (title) title.textContent = themeName + ' · K线走势';
+    if (counter) counter.textContent = _tmmThemeKlineHits.length + ' 只股票 · 日K / 分时';
+    if (!_tmmThemeKlineHits.length) {
+        body.innerHTML = '<div class="empty" style="padding:24px;text-align:center;">该细分题材暂无可展示股票</div>';
+    } else {
+        body.innerHTML = '<div class="kpl-kline-colbar" id="tmmThemeKlineColbar"><span class="kpl-kline-colbar-label">列数:</span>' +
+            '<button type="button" class="kpl-kline-colbtn active" onclick="setTmmThemeKlineCols(this,\\x27\\x27)">自适应</button>' +
+            '<button type="button" class="kpl-kline-colbtn" onclick="setTmmThemeKlineCols(this,1)">1列</button>' +
+            '<button type="button" class="kpl-kline-colbtn" onclick="setTmmThemeKlineCols(this,2)">2列</button>' +
+            '<button type="button" class="kpl-kline-colbtn" onclick="setTmmThemeKlineCols(this,4)">4列</button>' +
+            '<button type="button" class="kpl-kline-colbtn" onclick="setTmmThemeKlineCols(this,6)">6列</button></div>' +
+            renderKplKlineGrid(_tmmThemeKlineHits);
+    }
+    modal.classList.add('active');
+}
+function setTmmThemeKlineCols(btn, cols) {
+    var body = document.getElementById('tmmThemeKlineBody');
+    if (!body) return;
+    body.querySelectorAll('.kpl-kline-colbtn').forEach(function(b) { b.classList.toggle('active', b === btn); });
+    var grid = body.querySelector('.concept-kline-grid');
+    if (grid) grid.style.gridTemplateColumns = cols ? 'repeat(' + cols + ', minmax(260px, 1fr))' : '';
+}
+function refreshTmmThemeKlines() {
+    var body = document.getElementById('tmmThemeKlineBody');
+    var grid = body && body.querySelector('.concept-kline-grid');
+    if (!grid || !_tmmThemeKlineHits.length) return;
+    var oldStyle = grid.style.gridTemplateColumns;
+    var holder = document.createElement('div');
+    holder.innerHTML = renderKplKlineGrid(_tmmThemeKlineHits, String(Date.now()));
+    var nextGrid = holder.firstElementChild;
+    if (nextGrid) {
+        nextGrid.style.gridTemplateColumns = oldStyle;
+        grid.replaceWith(nextGrid);
+    }
+}
+function closeTmmThemeKline() {
+    var modal = document.getElementById('tmmThemeKlineModal');
+    if (modal) modal.classList.remove('active');
+    _tmmThemeKlineHits = [];
 }
 // 股票 chip（冷暖双色系，2 行块）：
 //   · 当前连板(在板/今日 断0) = 暖·vivid lt-lb-{1..4/high} 层色（今日另叠五彩+「今」tag），徽标「N连板/首板」
