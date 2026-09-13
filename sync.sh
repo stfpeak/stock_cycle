@@ -84,11 +84,14 @@ do_restart() {
             kill \$PID 2>/dev/null
             sleep 1
         fi
-        # 确保依赖可用（防止 SSH 环境解析到无系统包的 .venv python）
-        python3 -c 'import akshare' 2>/dev/null || python3 -m pip install akshare -q
-        python3 -c 'import tushare' 2>/dev/null || python3 -m pip install tushare -q
-        python3 -c 'import levistock' 2>/dev/null || python3 -m pip install levistock -q
-        nohup python3 -u stock_linkage_simple.py > /tmp/stock_service.log 2>&1 &
+        # 服务若使用项目虚拟环境，依赖也必须安装到同一个解释器，避免出现
+        # “系统 Python 能 import、服务 Python 却 No module named ...”。
+        if [ -x .venv/bin/python3 ]; then PYTHON_BIN=.venv/bin/python3; else PYTHON_BIN=python3; fi
+        echo "  使用 Python: \$PYTHON_BIN"
+        \$PYTHON_BIN -c 'import akshare' 2>/dev/null || \$PYTHON_BIN -m pip install akshare -q
+        \$PYTHON_BIN -c 'import tushare' 2>/dev/null || \$PYTHON_BIN -m pip install tushare -q
+        \$PYTHON_BIN -c 'import levistock' 2>/dev/null || \$PYTHON_BIN -m pip install levistock -q
+        nohup \$PYTHON_BIN -u stock_linkage_simple.py > /tmp/stock_service.log 2>&1 &
         sleep 3
         NEWPID=\$(ps aux | grep 'stock_linkage_simple' | grep -v grep | awk '{print \$2}')
         if [ -n \"\$NEWPID\" ]; then
