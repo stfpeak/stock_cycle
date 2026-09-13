@@ -4644,8 +4644,13 @@ def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
 _ZT_LADDER_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'zt_ladder_cache')
 
 def _get_latest_zt_data_date():
-    """返回本地涨停数据的最新日期，不把 K 线库日期冒充成涨停数据日期。"""
+    """返回本地涨停数据的最新有效日期。
+
+    只认不晚于北京时间今天的文件。涨停天梯缓存可能来自旧环境或
+    预生成日历，目录里出现未来日期时不能把它当成最新交易日显示。
+    """
     candidates = []
+    bj_today = datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d')
     for folder in (
         os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'zt_ladder_cache'),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'zt_pool'),
@@ -4655,6 +4660,8 @@ def _get_latest_zt_data_date():
         for name in os.listdir(folder):
             stem, ext = os.path.splitext(name)
             if ext.lower() not in ('.json', '.csv') or len(stem) != 8 or not stem.isdigit():
+                continue
+            if stem > bj_today:
                 continue
             candidates.append(stem)
     if not candidates:
