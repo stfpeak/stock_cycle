@@ -3328,6 +3328,82 @@ def _get_zt_pool_cached():
     return data
 
 
+_zt_timeline_pool_cache = {'data': None, 'ts': 0}
+
+
+def _get_zt_timeline_pool_cached():
+    """时间轴专用轻量涨停池：不逐只查询同花顺概念，避免首屏被 90+ 次慢查询拖住。"""
+    now = time.time()
+    if _zt_pool_cache['data'] is not None and now - _zt_pool_cache['ts'] < 60:
+        return _zt_pool_cache['data']
+    if _zt_timeline_pool_cache['data'] is not None and now - _zt_timeline_pool_cache['ts'] < 60:
+        return _zt_timeline_pool_cache['data']
+    try:
+        data = _get_zt_from_akshare(with_concepts=False)
+    except Exception:
+        data = []
+    _zt_timeline_pool_cache['data'] = data
+    _zt_timeline_pool_cache['ts'] = now
+    return data
+
+
+def _build_today_timeline_fast():
+    """盯盘首屏专用时间轴数据，只构建时间轴所需字段，不触发题材风向重型计算。"""
+    _kpl_ensure_loaded()
+    date_fmt = ''
+    pool = []
+    if _is_trading_hours():
+        # 盘中才请求 AkShare 实时池；盘前/盘后直接用本地最后完整交易日，避免时间轴首屏被网络请求拖慢。
+        pool = _get_zt_timeline_pool_cached() or []
+        if pool:
+            raw_date = str(pool[0].get('trade_date') or '')
+            if len(raw_date) == 8:
+                date_fmt = f'{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}'
+    if not date_fmt:
+        date_fmt = _get_latest_zt_data_date() or ''
+    if date_fmt and not pool:
+        pool = [
+            {'code': r.get('stock_code'), 'name': r.get('stock_name'),
+             'lianban': r.get('lianban') or r.get('lianban_computed') or 1,
+             'first_time': r.get('first_time') or 999999,
+             'trade_date': date_fmt.replace('-', '')}
+            for r in (_kpl_rows_by_date.get(date_fmt, []) or []) if r.get('stock_code')
+        ]
+    timeline = []
+    for item in pool:
+        code = str(item.get('code') or '').strip()
+        if not code:
+            continue
+        kpl = _kpl_resolve_stock_kpl(code, date_fmt) if date_fmt else {}
+        latest = _kpl_stock_latest_tag.get(code, {}) or {}
+        stock = {
+            'code': code,
+            'name': item.get('name') or code,
+            'lianban': int(item.get('lianban') or 1),
+            'first_time': int(item.get('first_time') or 999999),
+            'plate_name': kpl.get('plate_name') or latest.get('plate_name') or '',
+            'reason_tag': kpl.get('reason_tag') or latest.get('tag') or '',
+            'reason_brief': kpl.get('reason_brief') or latest.get('reason_brief') or '',
+        }
+        minute = None
+        ft = stock['first_time']
+        if ft and ft < 999999:
+            ft_s = f'{ft:06d}'
+            minute = int(ft_s[:2]) * 60 + int(ft_s[2:4]) - 540
+        tags = _tws_subtheme_tags(stock)
+        theme = tags[0] if tags else stock['reason_tag']
+        timeline.append({
+            'code': code, 'name': stock['name'], 'minute': minute,
+            'first_time': ft, 'lianban': stock['lianban'],
+            'theme': theme, 'plate': stock['plate_name'], 'type': 'ladder' if stock['lianban'] >= 2 else 'normal',
+            'mab': _tws_mab_tags(stock),
+        })
+    timeline.sort(key=lambda x: (999999 if x['minute'] is None else x['minute'], -x['lianban'], x['name']))
+    bj_today = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
+    return {'date': date_fmt, 'data_prior': bool(date_fmt and date_fmt != bj_today),
+            'trading': _is_trading_hours(), 'timeline': timeline}
+
+
 # 板块名后缀清洗（概念/板块/行业/题材）
 _PLATE_SUFFIXES = ('概念', '板块', '行业', '题材')
 
@@ -8019,7 +8095,7 @@ def _zt_after_close_loop():
             time.sleep(180)
 
 
-def _get_zt_from_akshare():
+def _get_zt_from_akshare(with_concepts=True):
     """用akshare拉取最新交易日涨停板数据+关联概念。无数据返回[]，前端显示API不通"""
     import akshare as ak
     import pandas as pd
@@ -8042,7 +8118,7 @@ def _get_zt_from_akshare():
     result = []
     for _, row in df.iterrows():
         code = str(int(row['代码'])).zfill(6)
-        concepts = finder.get_stock_concepts(code)
+        concepts = finder.get_stock_concepts(code) if with_concepts else []
         result.append({
             'code': code,
             'name': str(row['名称']),
@@ -21682,7 +21758,7 @@ function _msThemeChip(stock, label, css, extra, themeName) {
     return '<span class="ms-tp-chip ' + css + '" data-code="' + code + '" data-name="' + name + '" data-theme="' + theme + '" title="点击查看股票K线" onclick="_msOpenStockKline(this.getAttribute(&quot;data-code&quot;),this.getAttribute(&quot;data-name&quot;))">' + name + ' <b>' + _kplEsc(label) + '</b>' + (extra || '') + '</span>';
 }
 
-function _msPrepareThemeKline(theme, dates, pos, windowSize) {
+function _msPrepareThemeKline(theme, dates, pos, windowSize, sortMode) {
     var key = 'ms-theme-' + (++_tmmThemeKlineSeq);
     var hits = [];
     var stocks = (theme && theme.stocks) || [];
@@ -21707,11 +21783,20 @@ function _msPrepareThemeKline(theme, dates, pos, windowSize) {
                 lastEventTime = Number(lastEvent.first_time || 999999);
                 break;
             }
-            hits.push({stock_name: stock.name || code, stock_code: code, _breakOffset: lastOffset, _level: lastEventLevel, _time: lastEventTime, _order: i});
+            hits.push({stock_name: stock.name || code, stock_code: code, _breakOffset: lastOffset, _level: lastEventLevel, _time: lastEventTime, _current: lastOffset === 0, _order: i});
         }
     }
     hits.sort(function(a, b) {
-        return Number(a._breakOffset || 999) - Number(b._breakOffset || 999) ||
+        var ap = 2, bp = 2;
+        if (sortMode === 'pyramid') {
+            ap = a._current ? (Number(a._level || 0) >= 2 ? 0 : 1) : 2;
+            bp = b._current ? (Number(b._level || 0) >= 2 ? 0 : 1) : 2;
+        } else {
+            ap = a._current ? 0 : 1;
+            bp = b._current ? 0 : 1;
+        }
+        return ap - bp ||
+            (ap >= 2 ? Number(a._breakOffset || 999) - Number(b._breakOffset || 999) : 0) ||
             Number(b._level || 0) - Number(a._level || 0) ||
             Number(a._time || 999999) - Number(b._time || 999999) ||
             Number(a._order || 0) - Number(b._order || 0);
@@ -21720,6 +21805,7 @@ function _msPrepareThemeKline(theme, dates, pos, windowSize) {
         delete hits[hi]._breakOffset;
         delete hits[hi]._level;
         delete hits[hi]._time;
+        delete hits[hi]._current;
         delete hits[hi]._order;
     }
     _tmmThemeKlineOrder[key] = hits;
@@ -21856,7 +21942,7 @@ function _msRenderEvolution10(pyramids, dates) {
                 else if (todayLevel === todayMax) todayMaxCount++;
             }
             var todayStat = '<span class="ms-evolution10-card-today">今日最高<span class="today-level">' + todayMax + '板</span>（<span class="today-count">' + todayMaxCount + '个</span>）</span>';
-            var evolutionKlineKey = _msPrepareThemeKline(topic, dates, pos, 10);
+            var evolutionKlineKey = _msPrepareThemeKline(topic, dates, pos, 10, 'evolution');
             var evolutionThemeName = String(topic.theme || '').replace(/'/g, '');
             var evolutionThemeTitle = _kplEsc(topic.theme || '');
             var evolutionKlineBtn = '<button type="button" class="ms-tp-kline-btn" onclick="event.stopPropagation();_tmmOpenThemeKline(\\x27' + evolutionThemeName + '\\x27,\\x27' + evolutionKlineKey + '\\x27)" title="查看近10个交易日内有涨停的股票K线走势">📈 K线</button>';
@@ -21886,7 +21972,7 @@ function _msSelectEvolution10(date) {
 function _msRenderThemePyramidInner(idx, theme, dates, pos) {
     var date = dates[pos] || '';
     var stocks = theme.stocks || [];
-    var themeKlineKey = _msPrepareThemeKline(theme, dates, pos, 20);
+    var themeKlineKey = _msPrepareThemeKline(theme, dates, pos, 20, 'pyramid');
     var activeByLevel = {};
     var ghostByLevel = {};
     var brokenByLevel = {};
@@ -24958,18 +25044,18 @@ function loadDataStatus() {
         if (!el) return;
         if (data.error) { el.textContent = '数据状态加载失败'; return; }
         var minDate = data.kline_min || 'N/A';
-        var maxDate = data.kline_max || 'N/A';
         var ztDays = data.zt_pool_days || 0;
         var concepts = data.concept_count || 0;
         var stocksZt = data.stock_zt_count || 0;
-        var latestDate = data.zt_latest || data.latest_display || maxDate;
-        el.innerHTML = 'K线数据: ' + minDate + ' ~ <strong>' + maxDate + '</strong>'
+        // 顶部“最新日期”只认涨停池真实数据日期，不能使用 K 线库的 max_date（云端可能包含未来日历占位）。
+        var latestDate = data.zt_latest || data.latest_display || 'N/A';
+        el.innerHTML = 'K线数据起始: ' + minDate
             + ' | 涨停数据最新: <strong>' + latestDate + '</strong>'
             + ' | 涨停池: ' + ztDays + '个交易日'
             + ' | 概念: ' + concepts + '个题材'
             + ' | 涨停股票: ' + stocksZt + '只'
             + ' <span style="color:#4caf50;font-size:0.9em;">&#9679; ' + latestDate + '</span>';
-        el.title = 'K线最新: ' + maxDate + '；涨停数据最新: ' + latestDate;
+        el.title = '涨停数据最新交易日: ' + latestDate;
     }).catch(function() {
         var el = document.getElementById('dataStatus');
         if (el) el.textContent = '数据状态加载失败';
@@ -30992,12 +31078,15 @@ function loadKplThemeMap(force) {
     if (_kplThemeMapLoaded && !force) return;
     container.innerHTML = '<div class="loading" style="padding:6px;font-size:0.8em;">\u52a0\u8f7d\u9898\u6750\u5730\u56fe...</div>';
     var url = '/api/theme_map?ndays=40' + (force ? '&no_cache=1&_t=' + Date.now() : '');
+    var timelineDataPromise = _themeWindStrengthData
+        ? Promise.resolve(_themeWindStrengthData)
+        : fetch('/api/today_zt_timeline' + (force ? '?no_cache=1&_t=' + Date.now() : '?_t=' + Date.now())).then(function(r) { return r.json(); }).catch(function() { return null; });
     // 地图主数据单独先返回；精选板块/指数等辅助数据不阻塞首屏。
     Promise.all([
         fetch(url).then(function(r) { return r.json(); }).catch(function() { return null; }),
         Promise.resolve(_tmmSectorData),
         Promise.resolve(_tmmSentData),
-        Promise.resolve(_themeWindStrengthData)
+        timelineDataPromise
     ]).then(function(arr) {
         _kplThemeMapLoaded = true;
         var data = arr[0];
@@ -31022,11 +31111,9 @@ function loadKplThemeMap(force) {
         // 辅助行情面板后台补齐，不影响地图首屏。
         Promise.all([
             fetch('/api/sector_ranking?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
-            fetch('/api/market_sentiment?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
-            fetch('/api/theme_wind_strength?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; })
+            fetch('/api/market_sentiment?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; })
         ]).then(function(extra) {
             _tmmSectorData = extra[0]; _tmmSentData = extra[1];
-            _themeWindStrengthData = extra[2] || _themeWindStrengthData;
             var sb = document.getElementById('tmmSentBody');
             var wb = document.getElementById('tmmWindBody');
             if (sb) sb.innerHTML = _renderMarketIndices(_tmmSentData);
@@ -31049,7 +31136,7 @@ function _tmmRefreshLive() {
         fetch('/api/theme_map?ndays=40&no_cache=1&_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
         fetch('/api/sector_ranking?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
         fetch('/api/market_sentiment?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
-        fetch('/api/theme_wind_strength?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; })
+        fetch('/api/today_zt_timeline?no_cache=1&_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; })
     ]).then(function(arr) {
         if (!_tmmIsSessionNow()) return;
         var data = arr[0];
@@ -35730,6 +35817,20 @@ class Handler(BaseHTTPRequestHandler):
                 _set_cache(cache_key, result)
             self._respond_json(result, cors_headers)
 
+        elif path == '/api/today_zt_timeline':
+            # 盯盘首屏轻量接口：只返回今日涨停时间轴，避免等待完整题材风向重型计算。
+            try:
+                no_cache = query.get('no_cache', ['0'])[0].strip() == '1'
+                cache_key = 'today_zt_timeline'
+                result = None if no_cache else _get_cached(cache_key, ttl=60 if _is_trading_hours() else 300)
+                if result is None:
+                    result = _build_today_timeline_fast()
+                    _set_cache(cache_key, result)
+                self._respond_json(result, cors_headers)
+            except Exception as e:
+                import traceback
+                self._respond_json({'error': str(e), 'traceback': traceback.format_exc()}, cors_headers)
+
         elif path == '/api/theme_wind_strength':
             # 题材风向 Section 0：精选板块强度 Top10 + 细分题材横向树（涨停股/补涨池/特别关注）
             try:
@@ -36434,13 +36535,15 @@ class Handler(BaseHTTPRequestHandler):
             cal_ymd = [str(d).replace('-', '') for d in (cal or [])]
             missing = [str(d).replace('-', '') for d in missing if str(d).replace('-', '') <= today]
             is_today_trade_day = today in cal_ymd
-            # 只把不晚于北京时间今天的交易日作为最新应到数据日，避免把交易日历未来日期算入缺失。
+            # 只把不晚于北京时间今天的交易日作为候选；盘前当天尚未成为已完成交易日，
+            # 必须回退到上一个交易日，避免把当天/未来日历日期显示成最新数据。
             past_cal = [d for d in cal_ymd if d <= today]
-            latest_cal = max(past_cal) if past_cal else today
             total_minutes = bj_now.hour * 60 + bj_now.minute
             market_open = is_today_trade_day and 565 <= total_minutes < 900
-            # 当天交易日17:00前仍处于收盘结算窗口；非交易日则上一交易日17:00已过。
-            after_latest_close = (today > latest_cal) or total_minutes >= 1020
+            completed_cal = [d for d in past_cal if d < today] if is_today_trade_day and total_minutes < 565 else past_cal
+            latest_cal = max(completed_cal) if completed_cal else today
+            # 当天交易日17:00前仍处于收盘结算窗口；盘前也不能把未来日历当成已收盘数据。
+            after_latest_close = (not is_today_trade_day) or (is_today_trade_day and total_minutes >= 1020)
             market_settling = not after_latest_close
             visible_missing = missing if after_latest_close else []
             self._respond_json({
