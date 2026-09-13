@@ -21682,15 +21682,45 @@ function _msThemeChip(stock, label, css, extra, themeName) {
     return '<span class="ms-tp-chip ' + css + '" data-code="' + code + '" data-name="' + name + '" data-theme="' + theme + '" title="点击查看股票K线" onclick="_msOpenStockKline(this.getAttribute(&quot;data-code&quot;),this.getAttribute(&quot;data-name&quot;))">' + name + ' <b>' + _kplEsc(label) + '</b>' + (extra || '') + '</span>';
 }
 
-function _msPrepareThemeKline(theme, date) {
+function _msPrepareThemeKline(theme, dates, pos, windowSize) {
     var key = 'ms-theme-' + (++_tmmThemeKlineSeq);
     var hits = [];
     var stocks = (theme && theme.stocks) || [];
+    var period = (dates || []).slice(pos || 0, (pos || 0) + (windowSize || 20));
     for (var i = 0; i < stocks.length; i++) {
         var stock = stocks[i] || {};
-        if (!_msThemeEvent(stock, date)) continue;
+        var seen = false;
+        for (var di = 0; di < period.length; di++) {
+            if (_msThemeEvent(stock, period[di])) { seen = true; break; }
+        }
+        if (!seen) continue;
         var code = stock.code || stock.stock_code || '';
-        if (code) hits.push({stock_name: stock.name || code, stock_code: code});
+        if (code) {
+            var lastOffset = period.length;
+            var lastEventLevel = 0;
+            var lastEventTime = 999999;
+            for (var li = 0; li < period.length; li++) {
+                var lastEvent = _msThemeEvent(stock, period[li]);
+                if (!lastEvent) continue;
+                lastOffset = li;
+                lastEventLevel = Number(lastEvent.level || 0);
+                lastEventTime = Number(lastEvent.first_time || 999999);
+                break;
+            }
+            hits.push({stock_name: stock.name || code, stock_code: code, _breakOffset: lastOffset, _level: lastEventLevel, _time: lastEventTime, _order: i});
+        }
+    }
+    hits.sort(function(a, b) {
+        return Number(a._breakOffset || 999) - Number(b._breakOffset || 999) ||
+            Number(b._level || 0) - Number(a._level || 0) ||
+            Number(a._time || 999999) - Number(b._time || 999999) ||
+            Number(a._order || 0) - Number(b._order || 0);
+    });
+    for (var hi = 0; hi < hits.length; hi++) {
+        delete hits[hi]._breakOffset;
+        delete hits[hi]._level;
+        delete hits[hi]._time;
+        delete hits[hi]._order;
     }
     _tmmThemeKlineOrder[key] = hits;
     return key;
@@ -21826,10 +21856,10 @@ function _msRenderEvolution10(pyramids, dates) {
                 else if (todayLevel === todayMax) todayMaxCount++;
             }
             var todayStat = '<span class="ms-evolution10-card-today">今日最高<span class="today-level">' + todayMax + '板</span>（<span class="today-count">' + todayMaxCount + '个</span>）</span>';
-            var evolutionKlineKey = _msPrepareThemeKline(topic, selected);
+            var evolutionKlineKey = _msPrepareThemeKline(topic, dates, pos, 10);
             var evolutionThemeName = String(topic.theme || '').replace(/'/g, '');
             var evolutionThemeTitle = _kplEsc(topic.theme || '');
-            var evolutionKlineBtn = '<button type="button" class="ms-tp-kline-btn" onclick="event.stopPropagation();_tmmOpenThemeKline(\\x27' + evolutionThemeName + '\\x27,\\x27' + evolutionKlineKey + '\\x27)" title="查看该日期题材内股票K线走势">📈 K线</button>';
+            var evolutionKlineBtn = '<button type="button" class="ms-tp-kline-btn" onclick="event.stopPropagation();_tmmOpenThemeKline(\\x27' + evolutionThemeName + '\\x27,\\x27' + evolutionKlineKey + '\\x27)" title="查看近10个交易日内有涨停的股票K线走势">📈 K线</button>';
             gh += '<article class="ms-evolution10-card" id="msEvolution10Topic-' + pi + '"><div class="ms-evolution10-card-head"><span class="ms-evolution10-theme-link"' + _msThemeSearchAttr(topic.theme) + '>' + evolutionThemeTitle + '</span>' + evolutionKlineBtn + '<span class="ms-evolution10-card-meta">最高' + Number(topic.max_level || 0) + '板 · ' + _kplEsc(selected.slice(5)) + '</span>' + todayStat + '</div>';
             gh += _msRenderRecent10Summary(topic, dates, pos) + '</article>';
         }
@@ -21856,7 +21886,7 @@ function _msSelectEvolution10(date) {
 function _msRenderThemePyramidInner(idx, theme, dates, pos) {
     var date = dates[pos] || '';
     var stocks = theme.stocks || [];
-    var themeKlineKey = _msPrepareThemeKline(theme, date);
+    var themeKlineKey = _msPrepareThemeKline(theme, dates, pos, 20);
     var activeByLevel = {};
     var ghostByLevel = {};
     var brokenByLevel = {};
@@ -21908,7 +21938,7 @@ function _msRenderThemePyramidInner(idx, theme, dates, pos) {
     }
 
     var themeNameJs = String(theme.theme || '').replace(/'/g, '');
-    var themeKlineBtn = '<button type="button" class="ms-tp-kline-btn" onclick="event.stopPropagation();_tmmOpenThemeKline(\\x27' + themeNameJs + '\\x27,\\x27' + themeKlineKey + '\\x27)" title="查看该日期题材内股票K线走势">📈 K线</button>';
+    var themeKlineBtn = '<button type="button" class="ms-tp-kline-btn" onclick="event.stopPropagation();_tmmOpenThemeKline(\\x27' + themeNameJs + '\\x27,\\x27' + themeKlineKey + '\\x27)" title="查看近20个交易日内有涨停的股票K线走势">📈 K线</button>';
     var themeSearchName = '<span class="ms-tp-theme ms-tp-theme-link"' + _msThemeSearchAttr(theme.theme) + '>' + _kplEsc(theme.theme) + '</span>';
     var h = '<div class="ms-tp-head">' + themeSearchName + themeKlineBtn + '<span class="ms-tp-meta">最高 ' + theme.max_level + '板 · 跟踪 ' + stocks.length + ' 只</span><span class="ms-tp-date">' + _kplEsc(date) + '</span></div>';
     // dates 已按最新在前，滑块也保持最新在左、最早在右，避免回放方向与页面数据顺序相反。
