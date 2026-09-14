@@ -35892,10 +35892,14 @@ class Handler(BaseHTTPRequestHandler):
                     top_n = int(query.get('top_n', ['10'])[0])
                 except (ValueError, TypeError):
                     top_n = 10
-                cache_key = 'theme_wind_strength'
+                live_session = _is_trading_hours()
+                bj_day = _bj_now().strftime('%Y%m%d')
+                # 跨交易日、跨 9:25 开盘边界不能复用上一时段的题材风向快照。
+                cache_key = 'theme_wind_strength:%s:%s:%s' % (
+                    top_n, bj_day, 'live' if live_session else 'closed')
                 result = None
                 if not no_cache:
-                    ttl = 30 if _is_trading_hours() else 300   # 盘中30s / 非盘300s
+                    ttl = 30 if live_session else 300   # 盘中30s / 非盘300s
                     result = _get_cached(cache_key, ttl=ttl)
                 if result is None:
                     result = _build_theme_wind_strength(top_n=top_n)
