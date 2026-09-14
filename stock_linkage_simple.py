@@ -4628,7 +4628,56 @@ def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
         themes = []
         for t, stocks in theme_map.items():
             stocks.sort(key=lambda x: (x['first_time'], -x['lianban'], x['name']))
-            themes.append({'theme': t, 'cnt': len(stocks), 'stocks': stocks})
+            themes.append({'theme': t, 'cnt': len(stocks), 'stocks': stocks, 'failures': []})
+
+        # 今日列补充“晋级失败”：取上一交易日该细分题材的 2 板及以上股票，
+        # 今日未出现在同题材涨停池中的，放到题材卡片虚线下方，并填入当日涨跌幅。
+        if is_today:
+            prev_dy = _kpl_lagged_day(dy, -1)
+            prev_df = f"{prev_dy[:4]}-{prev_dy[4:6]}-{prev_dy[6:]}" if prev_dy else ''
+            prev_theme_map = {}
+            if prev_df:
+                for pr in (_kpl_rows_by_date.get(prev_df) or []):
+                    pc = pr.get('stock_code', '')
+                    if not pc:
+                        continue
+                    try:
+                        plb = _kpl_true_lianban(pr, prev_df)
+                    except Exception:
+                        plb = 1
+                    if plb < 2:
+                        continue
+                    ptags = _traj_valid_tags(pr.get('reason_tag', '') or '', pr.get('reason_brief', '') or '')
+                    for pt in ptags:
+                        prev_theme_map.setdefault(pt, {})[pc] = {
+                            'code': pc,
+                            'name': pr.get('stock_name', '') or _elastic_stock_name(pc) or pc,
+                            'lianban': plb,
+                            'board': _kpl_board_of_code(pc),
+                        }
+            current_theme_codes = {th['theme']: {s.get('code') for s in th.get('stocks', [])} for th in themes}
+            failure_codes = sorted({pc for pt, members in prev_theme_map.items()
+                                    for pc in members
+                                    if pc not in current_theme_codes.get(pt, set())})
+            quotes = _spot_quotes_for_codes(failure_codes) if failure_codes else {}
+            theme_by_name = {th['theme']: th for th in themes}
+            for pt, members in prev_theme_map.items():
+                failed = []
+                for pc, item in members.items():
+                    if pc in current_theme_codes.get(pt, set()):
+                        continue
+                    q = quotes.get(pc) or {}
+                    item['change_pct'] = q.get('change_pct')
+                    failed.append(item)
+                if not failed:
+                    continue
+                failed.sort(key=lambda x: (-int(x.get('lianban') or 0), x.get('name') or ''))
+                th = theme_by_name.get(pt)
+                if th is None:
+                    th = {'theme': pt, 'cnt': 0, 'stocks': [], 'failures': []}
+                    themes.append(th)
+                    theme_by_name[pt] = th
+                th['failures'] = failed
         # 列内题材按最早封板时间排序（无时间沉底）
         themes.sort(key=lambda x: (x['stocks'][0]['first_time'] if x['stocks'] else 999999, x['theme']))
         cols.append({'date': df, 'today': df == date_fmt, 'themes': themes})
@@ -11912,6 +11961,16 @@ td.lt-trajectory-cell {
 .tws-tp-stock { font-size: 0.66em; color: #cbd5e1; white-space: nowrap; cursor: pointer; }
 .tws-tp-stock:hover { color: #fff; text-shadow: 0 0 6px rgba(255,215,0,0.4); }
 .tws-tp-stock-lb { color: #ffd700; }   /* 连板股票金色标识 */
+.tws-tp-fail-divider { flex-basis: 100%; border-top: 1px dashed rgba(248,113,113,.55); margin: 4px 0 2px; }
+.tws-tp-failures { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 3px 7px; line-height: 1.55; }
+.tws-tp-fail-label { color: #fca5a5; font-size: .62em; font-weight: 800; margin-right: 2px; }
+.tws-tp-fail-item { color: #fecaca; font-size: .66em; cursor: pointer; white-space: nowrap; }
+.tws-tp-fail-item:hover { color: #fff; text-shadow: 0 0 6px rgba(248,113,113,.4); }
+.tws-tp-fail-level { color: #fbbf24; font-weight: 700; }
+.tws-tp-fail-status { color: #86efac; font-weight: 700; }
+.tws-tp-fail-pct.up { color: #f87171; }
+.tws-tp-fail-pct.down { color: #4ade80; }
+.tws-tp-fail-pct.flat { color: #94a3b8; }
 .tws-tp-tm { color: #4fc3f7; font-weight: 600; }
 /* 强势首板小标（细分题材晋级内）：一字板=金「一字」/ 高开秒板=青「秒」，超小不占布局 */
 .tws-tp-q { font-style: normal; font-size: 0.62em; font-weight: 800; border-radius: 3px; padding: 0 2px; margin-left: 2px; vertical-align: 1px; white-space: nowrap; letter-spacing: 0.3px; }
@@ -21471,7 +21530,6 @@ function _twsRenderBoardSummary(twsData) {
     var h = '<div class="tws-summary">';
     h += _twsRenderTimeline(twsData);
     h += _twsRenderCorePoolRecs(twsData);   // 核心池联动推荐（今日涨停 → 老龙头核心标的）置于时间轴下方、细分题材晋级上方
-    h += _twsRenderThemePromotion(twsData);   // 细分题材晋级（4日连续观察）
     h += _twsRenderLadder(twsData);            // 连板涨停表现
     // ---- 连板速览：遍历 plates→themes(max_lianban>=2)，取每题材最高档股票，按 code 合并 ----
     var lbMap = {};
@@ -21544,6 +21602,8 @@ function _twsRenderBoardSummary(twsData) {
         }
         h += '</div>';
     }
+    // 连板涨停表现、连板速览、断板重启整体置于细分题材晋级之前；下方题材文件夹保持原位置。
+    h += _twsRenderThemePromotion(twsData);   // 细分题材晋级（4日连续观察）
     h += _twsRenderArchDiagrams(twsData);      // 题材涨停架构图与天梯目录；机会推演在函数内已关闭
     h += '</div>';
     return h;
@@ -22804,11 +22864,23 @@ function _twsTpTheme(th) {
         // 强势首板小标：一字板=金「一字」/ 高开秒板=青「秒」（仅今日列 stocks 带 open_pct/is_yizi，历史列无）
         var qTag = '';
         if (s.is_yizi) qTag = '<i class="tws-tp-q tws-tp-q-yz" title="一字板首板">一字</i>';
-        else if ((s.open_pct || 0) >= 2 && (Number(s.first_time) || 999999) < 93500) qTag = '<i class="tws-tp-q tws-tp-q-gk" title="高开' + s.open_pct + '% 9:35前封板">秒</i>';
+    else if ((s.open_pct || 0) >= 2 && (Number(s.first_time) || 999999) < 93500) qTag = '<i class="tws-tp-q tws-tp-q-gk" title="高开' + s.open_pct + '% 9:35前封板">秒</i>';
         stocks.push('<span class="tws-tp-stock' + (isLb ? ' tws-tp-stock-lb' : '') + '" data-code="' + s.code + '" data-name="' + (s.name || '').replace(/'/g, '') + '" onclick="_twsSumOpenStock(this)">' + (tm ? '<span class="tws-tp-tm">' + tm + '</span> ' : '') + _kplEsc(s.name) + qTag + bdTag + (lbTag ? ' ' + lbTag : '') + '</span>');
     }
+    var failures = th.failures || [];
+    var failureHtml = '';
+    if (failures.length) {
+        var failItems = [];
+        for (var fi = 0; fi < failures.length; fi++) {
+            var f = failures[fi] || {};
+            var fp = (typeof f.change_pct === 'number') ? ((f.change_pct >= 0 ? '+' : '') + f.change_pct.toFixed(2) + '%') : '--';
+            var fc = (typeof f.change_pct === 'number') ? _ltPctCls(f.change_pct) : 'flat';
+            failItems.push('<span class="tws-tp-fail-item" data-code="' + (f.code || '') + '" data-name="' + (f.name || '').replace(/'/g, '') + '" onclick="_twsSumOpenStock(this)">' + _kplEsc(f.name || f.code) + '（<b class="tws-tp-fail-level">' + (f.lianban || 0) + '板</b>）<b class="tws-tp-fail-status">未晋级</b> · <span class="tws-tp-fail-pct ' + fc + '">' + fp + '</span></span>');
+        }
+        failureHtml = '<div class="tws-tp-fail-divider"></div><div class="tws-tp-failures"><span class="tws-tp-fail-label">晋级失败</span>' + failItems.join('、') + '</div>';
+    }
     var themeKey = (th.theme || '').replace(/'/g, '');
-    return '<div class="tws-tp-theme">' + ftHtml + '<a class="tws-tp-t" href="javascript:void(0)" onclick="event.stopPropagation();_twsTpJump(\\x27' + themeKey + '\\x27)" title="点击跳转：下方板块-题材（含强度） 或 KPL涨停深挖">' + _kplEsc(th.theme) + '</a><span class="tws-tp-cnt">×' + th.cnt + '</span>' + newHtml + promoHtml + '<span class="tws-tp-stocks">' + stocks.join('、') + '</span></div>';
+    return '<div class="tws-tp-theme">' + ftHtml + '<a class="tws-tp-t" href="javascript:void(0)" onclick="event.stopPropagation();_twsTpJump(\\x27' + themeKey + '\\x27)" title="点击跳转：下方板块-题材（含强度） 或 KPL涨停深挖">' + _kplEsc(th.theme) + '</a><span class="tws-tp-cnt">×' + th.cnt + '</span>' + newHtml + promoHtml + '<span class="tws-tp-stocks">' + stocks.join('、') + '</span>' + failureHtml + '</div>';
 }
 function _twsRenderThemePromotion(twsData) {
     var days = twsData && twsData.promotion && twsData.promotion.days;
