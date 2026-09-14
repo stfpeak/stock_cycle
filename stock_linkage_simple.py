@@ -13859,6 +13859,7 @@ var _icTopTagsHtml = null;
 var _icPendingSearch = null;  // set by stock card button, consumed by loadIndustryChain
 var _themeWindLoaded = false;
 var _marketStructureLoaded = false;
+var _marketStructureLoading = false;
 
 var _simpleTabIds = ['realtime','themewind','sniper','kpltree','kpllevel','kplsearch','stockquery','etf','specialwatch','industrychain','sentiment'];
 
@@ -19558,6 +19559,9 @@ function loadThemeWind() {
         loadKplThemeMap();
         // 高频三页签按顺序主动加载：盯盘首屏 → 题材风向 → 实时。
         if (typeof _realtimeLoaded === 'undefined' || !_realtimeLoaded) loadRealtime();
+        // 题材风向完成后立即后台加载市场结构；切换页签时直接复用已渲染内容。
+        // 不依赖用户点击市场结构，且由 loading 锁避免切换瞬间重复请求。
+        loadMarketStructure(false, true);
     }).catch(function(e) {
         container.innerHTML = '<div class="error">题材风向加载失败: ' + e.message + '</div>';
         _themeWindLoaded = true;
@@ -21779,11 +21783,14 @@ function _msLbCls(lb) {
 function loadMarketStructure(force, silent) {
     var container = document.getElementById('marketStructureContainer');
     if (!container) return;
+    if (_marketStructureLoading && !force) return;
     if (!silent) container.innerHTML = '<div class="loading">' + (force ? '刷新市场结构数据...' : '加载市场结构数据...') + '</div>';
     // 市场结构返回内容会随交易日变化，不能复用浏览器对同一 URL 的旧响应。
     var url = '/api/market_structure?ndays=20&_t=' + Date.now();
     if (force) url += '&no_cache=1';
+    _marketStructureLoading = true;
     fetch(url, {cache: 'no-store'}).then(function(r) { return r.json(); }).then(function(data) {
+        _marketStructureLoading = false;
         if (!data || data.error || !data.dates || !data.dates.length) {
             container.innerHTML = '<div class="error">' + ((data && data.error) ? _kplEsc(data.error) : '暂无市场结构数据') + '</div>';
             return;
@@ -21796,6 +21803,7 @@ function loadMarketStructure(force, silent) {
         initTabSidebarScroll('msSidebar', ['msMethodology','msDailyReview','msThemeSummary','msThemePyramids','msEvolution10Section','msLadderPyramid']);
         _msEnsureLiveRefresh();
     }).catch(function(e) {
+        _marketStructureLoading = false;
         container.innerHTML = '<div class="error">加载失败: ' + _kplEsc(String(e)) + '</div>';
     });
 }
