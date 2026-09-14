@@ -4055,7 +4055,9 @@ def _build_theme_wind_strength(top_n=10):
     rows = [r for r in rows if not _tws_is_generic_tag(r.get('plate_name') or r.get('name') or '')]
     rows = rows[:top_n]
 
-    resolved_ymd = _kpl_resolve_latest_zt_date() or ''
+    # 题材风向的日期必须以涨停数据为准，不能用 K 线库最大日期（云端可能只更新到更早日期）。
+    latest_zt_fmt = _get_latest_zt_data_date() or ''
+    resolved_ymd = latest_zt_fmt.replace('-', '') if latest_zt_fmt else (_kpl_resolve_latest_zt_date() or '')
     pool = _get_zt_pool_cached()
     fallback = False
     date_fmt = ''
