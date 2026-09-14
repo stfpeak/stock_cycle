@@ -31141,9 +31141,11 @@ function loadKplThemeMap(force) {
     if (_kplThemeMapLoaded && !force) return;
     container.innerHTML = '<div class="loading" style="padding:6px;font-size:0.8em;">\u52a0\u8f7d\u9898\u6750\u5730\u56fe...</div>';
     var url = '/api/theme_map?ndays=40' + (force ? '&no_cache=1&_t=' + Date.now() : '');
-    var timelineDataPromise = _themeWindStrengthData
+    // 盯盘时间轴与题材风向完全同源：复用精选板块强度接口及其渲染数据，
+    // 不再单独请求轻量时间轴接口，避免内容、日期和刷新节奏出现分叉。
+    var timelineDataPromise = (!force && _themeWindStrengthData)
         ? Promise.resolve(_themeWindStrengthData)
-        : fetch('/api/today_zt_timeline' + (force ? '?no_cache=1&_t=' + Date.now() : '?_t=' + Date.now())).then(function(r) { return r.json(); }).catch(function() { return null; });
+        : fetch('/api/theme_wind_strength' + (force ? '?no_cache=1&_t=' + Date.now() : '?_t=' + Date.now())).then(function(r) { return r.json(); }).catch(function() { return null; });
     // 地图主数据单独先返回；精选板块/指数等辅助数据不阻塞首屏。
     Promise.all([
         fetch(url).then(function(r) { return r.json(); }).catch(function() { return null; }),
@@ -31199,7 +31201,8 @@ function _tmmRefreshLive() {
         fetch('/api/theme_map?ndays=40&no_cache=1&_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
         fetch('/api/sector_ranking?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
         fetch('/api/market_sentiment?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
-        fetch('/api/today_zt_timeline?no_cache=1&_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; })
+        // 与题材风向使用同一份精选板块强度数据，保证时间轴内容和刷新结果一致。
+        fetch('/api/theme_wind_strength?no_cache=1&_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; })
     ]).then(function(arr) {
         if (!_tmmIsSessionNow()) return;
         var data = arr[0];
