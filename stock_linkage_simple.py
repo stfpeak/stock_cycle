@@ -3114,7 +3114,9 @@ def _build_theme_structure_tree():
     pool = _get_zt_from_akshare()            # 含 change_pct
     # 最新真实交易日：_trading_days 含预生成的未来日期(至年末)，akshare 池的 trade_date 标签可能指向未来；
     # 统一用 finder 的真实最新交易日(20260731)作为窗口锚点与 date 标签，与 K线DB/KPL数据对齐
-    resolved_ymd = _kpl_resolve_latest_zt_date() or ''
+    # 题材风向的日期必须以涨停数据为准，不能用 K 线库最大日期（云端可能只更新到更早日期）。
+    latest_zt_fmt = _get_latest_zt_data_date() or ''
+    resolved_ymd = latest_zt_fmt.replace('-', '') if latest_zt_fmt else (_kpl_resolve_latest_zt_date() or '')
     trade_date_fmt = ''
     if resolved_ymd:
         trade_date_fmt = f"{resolved_ymd[:4]}-{resolved_ymd[4:6]}-{resolved_ymd[6:]}"
