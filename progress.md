@@ -170,3 +170,17 @@
 | What's the goal? | Complete all 6 phases for StockLinkageFinder |
 | What have I learned? | venv deps check, cachedFetch empty array protection |
 | What have I done? | Prefetch cache, adata venv fix, cloud deploy, project packaging |
+
+## Session: 2026-09-14（题材风向晋级失败与页签预加载）
+
+### 本次经验
+- 题材风向“细分题材晋级”中，晋级失败不能只筛上一交易日 2 板及以上；上一交易日该细分题材的全部涨停股，今日未继续涨停的都要进入虚线下方，首板显示为 `1板未晋级`。
+- 最近 4 个交易日的每一列都执行同样的失败追踪逻辑；最新交易日涨跌幅取实时行情，历史日期优先取本地 K 线库。
+- “连板涨停表现、连板速览、断板重启”放在“细分题材晋级”之前，题材文件夹位置保持不动。
+- 题材风向加载完成后，后台立即预加载市场结构；增加 `_marketStructureLoading` 防止用户切换页签时重复请求，市场结构切换时直接复用已加载内容。
+- 修改前后均执行 Python 编译检查并重启本地服务验证；本次服务停止前状态正常。
+- 本次提交：`df250d0`、`055ae07`、`813b125`，已推送 GitHub 并同步云主机；云同步跳过 `data/stocks_kline.db`，远程服务重启正常。
+
+### 下次继续
+- 启动：`python3 -u stock_linkage_simple.py` → http://localhost:6688
+- 继续开发前先检查题材风向接口和市场结构后台预加载，不要把失败股票逻辑重新限制为 2 板以上。
