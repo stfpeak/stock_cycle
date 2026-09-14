@@ -4711,6 +4711,19 @@ def _get_latest_zt_data_date():
         return ''
     latest = max(candidates)
     return latest[:4] + '-' + latest[4:6] + '-' + latest[6:]
+
+
+def _zt_effective_date_ymd():
+    """涨停业务统一日期锚点：盘中为北京时间当天，盘外为最新有效涨停日。"""
+    now_bj = datetime.now(timezone(timedelta(hours=8)))
+    today = now_bj.strftime('%Y%m%d')
+    if _is_trading_hours():
+        return today
+    latest = _get_latest_zt_data_date()
+    if latest:
+        return latest.replace('-', '')
+    previous = [d for d in _trading_days if d < today]
+    return previous[-1] if previous else today
 # 主线标签 → ETF 名关键词（用于关联 ETF 过滤）。键与 reason_tag 拆分后的标签匹配
 _REVIEW_ETF_TAG_KEYWORDS = {
     '算力': ['算力', '云计算', 'AI', '服务器', '光模块'],
@@ -4883,7 +4896,7 @@ def _build_theme_map(ndays=40):
     板块带 today_count（今日涨停只数，盘中实时）。
     返回 attack/defense/neutral 板块数组。"""
     _kpl_ensure_loaded()
-    today_ymd = datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d')
+    today_ymd = _zt_effective_date_ymd()
     today_fmt = today_ymd[:4] + '-' + today_ymd[4:6] + '-' + today_ymd[6:]
     recent = [d for d in _trading_days if d <= today_ymd]
     recent = recent[-ndays:] if len(recent) >= ndays else recent
@@ -8150,12 +8163,12 @@ def _get_zt_from_akshare(with_concepts=True):
     import akshare as ak
     import pandas as pd
 
-    today_ymd = _bj_now().strftime('%Y%m%d')
+    today_ymd = _zt_effective_date_ymd()
     trade_dates = _trading_days
     if not trade_dates:
         return []
 
-    # 今天是否交易日：是则用今天，否则用最近已过去交易日（避免 trade_dates[-1] 为未来日期返回 []）
+    # 盘中请求北京时间当天；盘前/盘后请求最新有效涨停日，避免把昨日池标成今天。
     date_str = today_ymd if today_ymd in trade_dates else (max((d for d in trade_dates if d < today_ymd), default=None) or today_ymd)
 
     try:
