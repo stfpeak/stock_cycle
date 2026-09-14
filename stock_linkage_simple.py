@@ -4630,53 +4630,56 @@ def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
             stocks.sort(key=lambda x: (x['first_time'], -x['lianban'], x['name']))
             themes.append({'theme': t, 'cnt': len(stocks), 'stocks': stocks, 'failures': []})
 
-        # 今日列补充“晋级失败”：取上一交易日该细分题材的全部涨停股，
-        # 今日未出现在同题材涨停池中的，放到题材卡片虚线下方，并填入当日涨跌幅。
+        # 每一列都补充“晋级失败”：取上一交易日该细分题材的全部涨停股，
+        # 当天未出现在同题材涨停池中的，放到题材卡片虚线下方，并填入该日涨跌幅。
         # 首板没有继续涨停同样属于“1板未晋级”，不能只筛上一日 2 板及以上。
-        if is_today:
-            prev_dy = _kpl_lagged_day(dy, -1)
-            prev_df = f"{prev_dy[:4]}-{prev_dy[4:6]}-{prev_dy[6:]}" if prev_dy else ''
-            prev_theme_map = {}
-            if prev_df:
-                for pr in (_kpl_rows_by_date.get(prev_df) or []):
-                    pc = pr.get('stock_code', '')
-                    if not pc:
-                        continue
-                    try:
-                        plb = _kpl_true_lianban(pr, prev_df)
-                    except Exception:
-                        plb = 1
-                    ptags = _traj_valid_tags(pr.get('reason_tag', '') or '', pr.get('reason_brief', '') or '')
-                    for pt in ptags:
-                        prev_theme_map.setdefault(pt, {})[pc] = {
-                            'code': pc,
-                            'name': pr.get('stock_name', '') or _elastic_stock_name(pc) or pc,
-                            'lianban': plb,
-                            'board': _kpl_board_of_code(pc),
-                        }
-            current_theme_codes = {th['theme']: {s.get('code') for s in th.get('stocks', [])} for th in themes}
-            failure_codes = sorted({pc for pt, members in prev_theme_map.items()
-                                    for pc in members
-                                    if pc not in current_theme_codes.get(pt, set())})
-            quotes = _spot_quotes_for_codes(failure_codes) if failure_codes else {}
-            theme_by_name = {th['theme']: th for th in themes}
-            for pt, members in prev_theme_map.items():
-                failed = []
-                for pc, item in members.items():
-                    if pc in current_theme_codes.get(pt, set()):
-                        continue
-                    q = quotes.get(pc) or {}
-                    item['change_pct'] = q.get('change_pct')
-                    failed.append(item)
-                if not failed:
+        prev_dy = _kpl_lagged_day(dy, -1)
+        prev_df = f"{prev_dy[:4]}-{prev_dy[4:6]}-{prev_dy[6:]}" if prev_dy else ''
+        prev_theme_map = {}
+        if prev_df:
+            for pr in (_kpl_rows_by_date.get(prev_df) or []):
+                pc = pr.get('stock_code', '')
+                if not pc:
                     continue
-                failed.sort(key=lambda x: (-int(x.get('lianban') or 0), x.get('name') or ''))
-                th = theme_by_name.get(pt)
-                if th is None:
-                    th = {'theme': pt, 'cnt': 0, 'stocks': [], 'failures': []}
-                    themes.append(th)
-                    theme_by_name[pt] = th
-                th['failures'] = failed
+                try:
+                    plb = _kpl_true_lianban(pr, prev_df)
+                except Exception:
+                    plb = 1
+                ptags = _traj_valid_tags(pr.get('reason_tag', '') or '', pr.get('reason_brief', '') or '')
+                for pt in ptags:
+                    prev_theme_map.setdefault(pt, {})[pc] = {
+                        'code': pc,
+                        'name': pr.get('stock_name', '') or _elastic_stock_name(pc) or pc,
+                        'lianban': plb,
+                        'board': _kpl_board_of_code(pc),
+                    }
+        current_theme_codes = {th['theme']: {s.get('code') for s in th.get('stocks', [])} for th in themes}
+        failure_codes = sorted({pc for pt, members in prev_theme_map.items()
+                                for pc in members
+                                if pc not in current_theme_codes.get(pt, set())})
+        if is_today:
+            quotes = _spot_quotes_for_codes(failure_codes) if failure_codes else {}
+        else:
+            historical_pct = _review_load_daily_change_pct(failure_codes, [df], allow_live=False) if failure_codes else {}
+            quotes = {pc: {'change_pct': (historical_pct.get(df, {}) or {}).get(pc)} for pc in failure_codes}
+        theme_by_name = {th['theme']: th for th in themes}
+        for pt, members in prev_theme_map.items():
+            failed = []
+            for pc, item in members.items():
+                if pc in current_theme_codes.get(pt, set()):
+                    continue
+                q = quotes.get(pc) or {}
+                item['change_pct'] = q.get('change_pct')
+                failed.append(item)
+            if not failed:
+                continue
+            failed.sort(key=lambda x: (-int(x.get('lianban') or 0), x.get('name') or ''))
+            th = theme_by_name.get(pt)
+            if th is None:
+                th = {'theme': pt, 'cnt': 0, 'stocks': [], 'failures': []}
+                themes.append(th)
+                theme_by_name[pt] = th
+            th['failures'] = failed
         # 列内题材按最早封板时间排序（无时间沉底）
         themes.sort(key=lambda x: (x['stocks'][0]['first_time'] if x['stocks'] else 999999, x['theme']))
         cols.append({'date': df, 'today': df == date_fmt, 'themes': themes})
