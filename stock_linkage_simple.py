@@ -4630,8 +4630,9 @@ def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
             stocks.sort(key=lambda x: (x['first_time'], -x['lianban'], x['name']))
             themes.append({'theme': t, 'cnt': len(stocks), 'stocks': stocks, 'failures': []})
 
-        # 今日列补充“晋级失败”：取上一交易日该细分题材的 2 板及以上股票，
+        # 今日列补充“晋级失败”：取上一交易日该细分题材的全部涨停股，
         # 今日未出现在同题材涨停池中的，放到题材卡片虚线下方，并填入当日涨跌幅。
+        # 首板没有继续涨停同样属于“1板未晋级”，不能只筛上一日 2 板及以上。
         if is_today:
             prev_dy = _kpl_lagged_day(dy, -1)
             prev_df = f"{prev_dy[:4]}-{prev_dy[4:6]}-{prev_dy[6:]}" if prev_dy else ''
@@ -4645,8 +4646,6 @@ def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
                         plb = _kpl_true_lianban(pr, prev_df)
                     except Exception:
                         plb = 1
-                    if plb < 2:
-                        continue
                     ptags = _traj_valid_tags(pr.get('reason_tag', '') or '', pr.get('reason_brief', '') or '')
                     for pt in ptags:
                         prev_theme_map.setdefault(pt, {})[pc] = {
