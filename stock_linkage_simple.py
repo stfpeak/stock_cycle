@@ -3318,7 +3318,14 @@ def _get_zt_pool_cached():
     """包装 _get_zt_from_akshare，60s 内存缓存。返回 list 或 []。"""
     now = time.time()
     if _zt_pool_cache['data'] is not None and now - _zt_pool_cache['ts'] < 60:
-        return _zt_pool_cache['data']
+        cached = _zt_pool_cache['data']
+        # 盘中不能复用盘前/上一交易日的完整池；跨 9:25 后必须重新请求当天池。
+        if not _is_trading_hours() or not cached:
+            return cached
+        today_fmt = _bj_now().strftime('%Y-%m-%d')
+        cached_fmt = str(cached[0].get('trade_date') or '') if cached else ''
+        if cached_fmt == today_fmt:
+            return cached
     try:
         data = _get_zt_from_akshare()
     except Exception:
@@ -3334,8 +3341,6 @@ _zt_timeline_pool_cache = {'data': None, 'ts': 0}
 def _get_zt_timeline_pool_cached():
     """时间轴专用轻量涨停池：不逐只查询同花顺概念，避免首屏被 90+ 次慢查询拖住。"""
     now = time.time()
-    if _zt_pool_cache['data'] is not None and now - _zt_pool_cache['ts'] < 60:
-        return _zt_pool_cache['data']
     if _zt_timeline_pool_cache['data'] is not None and now - _zt_timeline_pool_cache['ts'] < 60:
         return _zt_timeline_pool_cache['data']
     try:
@@ -3352,13 +3357,29 @@ def _build_today_timeline_fast():
     _kpl_ensure_loaded()
     date_fmt = ''
     pool = []
-    if _is_trading_hours():
-        # 盘中才请求 AkShare 实时池；盘前/盘后直接用本地最后完整交易日，避免时间轴首屏被网络请求拖慢。
+    in_session = _is_trading_hours()
+    bj_today_fmt = _bj_now().strftime('%Y-%m-%d')
+    if in_session:
+        # 盘中只接受北京时间当天的实时池；禁止把供应商回退的昨日池伪装成今日数据。
         pool = _get_zt_timeline_pool_cached() or []
         if pool:
             raw_date = str(pool[0].get('trade_date') or '')
             if len(raw_date) == 8:
-                date_fmt = f'{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}'
+                candidate = f'{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}'
+                if candidate == bj_today_fmt:
+                    date_fmt = candidate
+                else:
+                    # AkShare 短暂返回上一交易日时，清空而不是展示昨日数据。
+                    pool = []
+        if not date_fmt:
+            return {
+                'date': bj_today_fmt,
+                'data_prior': False,
+                'trading': True,
+                'timeline': [],
+                'retrying': True,
+                'message': '今日涨停池暂未返回，正在重试',
+            }
     if not date_fmt:
         date_fmt = _get_latest_zt_data_date() or ''
     if date_fmt and not pool:
@@ -3400,7 +3421,7 @@ def _build_today_timeline_fast():
         })
     timeline.sort(key=lambda x: (999999 if x['minute'] is None else x['minute'], -x['lianban'], x['name']))
     bj_today = datetime.now(timezone(timedelta(hours=8))).strftime('%Y-%m-%d')
-    return {'date': date_fmt, 'data_prior': bool(date_fmt and date_fmt != bj_today),
+    return {'date': date_fmt, 'data_prior': bool(date_fmt and date_fmt != bj_today_fmt),
             'trading': _is_trading_hours(), 'timeline': timeline}
 
 
@@ -4661,23 +4682,27 @@ def _get_latest_zt_data_date():
     for folder in (
         os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'zt_ladder_cache'),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'zt_pool'),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'zt_data'),
     ):
         if not os.path.isdir(folder):
             continue
         for name in os.listdir(folder):
             stem, ext = os.path.splitext(name)
-            if ext.lower() not in ('.json', '.csv') or len(stem) != 8 or not stem.isdigit():
+            normalized = stem.replace('-', '')
+            if ext.lower() not in ('.json', '.csv') or len(normalized) != 8 or not normalized.isdigit():
                 continue
-            if stem > cutoff:
+            if normalized > cutoff:
                 continue
-            if ext.lower() == '.json' and 'zt_ladder_cache' in folder:
+            if ext.lower() == '.json' and ('zt_ladder_cache' in folder or 'zt_data' in folder):
                 try:
-                    payload = json.load(open(os.path.join(folder, name), 'r', encoding='utf-8'))
-                    if not (payload.get('StockList') or payload.get('stock_list')):
+                    with open(os.path.join(folder, name), 'r', encoding='utf-8') as fh:
+                        payload = json.load(fh)
+                    valid = (payload.get('StockList') or payload.get('stock_list')) if isinstance(payload, dict) else payload
+                    if not valid:
                         continue
                 except Exception:
                     continue
-            candidates.append(stem)
+            candidates.append(normalized)
     if not candidates:
         return ''
     latest = max(candidates)
@@ -8121,7 +8146,7 @@ def _get_zt_from_akshare(with_concepts=True):
     import akshare as ak
     import pandas as pd
 
-    today_ymd = datetime.now().strftime('%Y%m%d')
+    today_ymd = _bj_now().strftime('%Y%m%d')
     trade_dates = _trading_days
     if not trade_dates:
         return []
@@ -35842,8 +35867,11 @@ class Handler(BaseHTTPRequestHandler):
             # 盯盘首屏轻量接口：只返回今日涨停时间轴，避免等待完整题材风向重型计算。
             try:
                 no_cache = query.get('no_cache', ['0'])[0].strip() == '1'
-                cache_key = 'today_zt_timeline'
-                result = None if no_cache else _get_cached(cache_key, ttl=60 if _is_trading_hours() else 300)
+                live_session = _is_trading_hours()
+                bj_day = _bj_now().strftime('%Y%m%d')
+                # 盘前/盘后与盘中必须使用不同缓存键，避免 9:25 切换后继续返回盘前的昨日快照。
+                cache_key = 'today_zt_timeline:%s:%s' % (bj_day, 'live' if live_session else 'closed')
+                result = None if no_cache else _get_cached(cache_key, ttl=60 if live_session else 300)
                 if result is None:
                     result = _build_today_timeline_fast()
                     _set_cache(cache_key, result)
