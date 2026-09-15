@@ -4628,7 +4628,7 @@ def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
         themes = []
         for t, stocks in theme_map.items():
             stocks.sort(key=lambda x: (x['first_time'], -x['lianban'], x['name']))
-            themes.append({'theme': t, 'cnt': len(stocks), 'stocks': stocks, 'failures': []})
+            themes.append({'theme': t, 'cnt': len(stocks), 'stocks': stocks, 'failures': [], 'strong_gem': []})
 
         # 每一列都补充“晋级失败”：取上一交易日该细分题材的全部涨停股，
         # 当天未出现在同题材涨停池中的，放到题材卡片虚线下方，并填入该日涨跌幅。
@@ -4654,6 +4654,42 @@ def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
                         'board': _kpl_board_of_code(pc),
                     }
         current_theme_codes = {th['theme']: {s.get('code') for s in th.get('stocks', [])} for th in themes}
+
+        # 最新交易日补充“创/科大涨”：只取该细分题材成分中，今日实时涨幅 >10% 的创业板/科创板股票。
+        # 已在上方今日涨停区出现的股票不重复展示；所有题材统一批量取行情，避免逐题材联网请求。
+        if is_today and themes:
+            gem_candidates = {}
+            gem_by_theme = {}
+            today_codes = {s.get('code') for th in themes for s in th.get('stocks', []) if s.get('code')}
+            for th in themes:
+                try:
+                    members = _tws_build_members(th['theme'], df, today_codes)
+                except Exception:
+                    members = {'gem': [], 'star': []}
+                arr = []
+                for bucket in ('gem', 'star'):
+                    for m in (members.get(bucket) or []):
+                        code = m.get('code', '')
+                        if not code or code in current_theme_codes.get(th['theme'], set()):
+                            continue
+                        gem_candidates[code] = m
+                        arr.append(code)
+                if arr:
+                    gem_by_theme[th['theme']] = sorted(set(arr))
+            gem_quotes = _spot_quotes_for_codes(sorted(gem_candidates)) if gem_candidates else {}
+            for th in themes:
+                strong = []
+                for code in gem_by_theme.get(th['theme'], []):
+                    q = gem_quotes.get(code) or {}
+                    pct = q.get('change_pct')
+                    if not isinstance(pct, (int, float)) or pct <= 10:
+                        continue
+                    m = gem_candidates.get(code) or {}
+                    strong.append({'code': code, 'name': m.get('name', '') or code,
+                                   'change_pct': round(float(pct), 2),
+                                   'board': _kpl_board_of_code(code)})
+                strong.sort(key=lambda x: (-x['change_pct'], x.get('name') or ''))
+                th['strong_gem'] = strong[:20]
         failure_codes = sorted({pc for pt, members in prev_theme_map.items()
                                 for pc in members
                                 if pc not in current_theme_codes.get(pt, set())})
@@ -4676,7 +4712,7 @@ def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
             failed.sort(key=lambda x: (-int(x.get('lianban') or 0), x.get('name') or ''))
             th = theme_by_name.get(pt)
             if th is None:
-                th = {'theme': pt, 'cnt': 0, 'stocks': [], 'failures': []}
+                th = {'theme': pt, 'cnt': 0, 'stocks': [], 'failures': [], 'strong_gem': []}
                 themes.append(th)
                 theme_by_name[pt] = th
             th['failures'] = failed
@@ -11973,6 +12009,13 @@ td.lt-trajectory-cell {
 .tws-tp-fail-pct.up { color: #f87171; }
 .tws-tp-fail-pct.down { color: #4ade80; }
 .tws-tp-fail-pct.flat { color: #94a3b8; }
+.tws-tp-gem-divider { flex-basis: 100%; border-top: 1px dashed rgba(56,189,248,.55); margin: 4px 0 2px; }
+.tws-tp-gem-stocks { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 3px 7px; line-height: 1.55; }
+.tws-tp-gem-label { color: #67e8f9; font-size: .62em; font-weight: 800; margin-right: 2px; }
+.tws-tp-gem-item { color: #bae6fd; font-size: .66em; cursor: pointer; white-space: nowrap; }
+.tws-tp-gem-item:hover { color: #fff; text-shadow: 0 0 6px rgba(56,189,248,.45); }
+.tws-tp-gem-board { color: #c4b5fd; font-size: .88em; font-weight: 700; }
+.tws-tp-gem-pct { color: #f87171; font-weight: 700; }
 .tws-tp-tm { color: #4fc3f7; font-weight: 600; }
 /* 强势首板小标（细分题材晋级内）：一字板=金「一字」/ 高开秒板=青「秒」，超小不占布局 */
 .tws-tp-q { font-style: normal; font-size: 0.62em; font-weight: 800; border-radius: 3px; padding: 0 2px; margin-left: 2px; vertical-align: 1px; white-space: nowrap; letter-spacing: 0.3px; }
@@ -22889,8 +22932,20 @@ function _twsTpTheme(th) {
         }
         failureHtml = '<div class="tws-tp-fail-divider"></div><div class="tws-tp-failures"><span class="tws-tp-fail-label">晋级失败</span>' + failItems.join('、') + '</div>';
     }
+    var strongGem = th.strong_gem || [];
+    var strongGemHtml = '';
+    if (strongGem.length) {
+        var gemItems = [];
+        for (var gi = 0; gi < strongGem.length; gi++) {
+            var gs = strongGem[gi] || {};
+            var gp = (typeof gs.change_pct === 'number') ? ('+' + gs.change_pct.toFixed(2) + '%') : '--';
+            var gb = gs.board === '科' ? '科创' : '创业';
+            gemItems.push('<span class="tws-tp-gem-item" data-code="' + (gs.code || '') + '" data-name="' + (gs.name || '').replace(/'/g, '') + '" onclick="_twsSumOpenStock(this)">' + _kplEsc(gs.name || gs.code) + ' <span class="tws-tp-gem-board">' + gb + '</span> <span class="tws-tp-gem-pct">' + gp + '</span></span>');
+        }
+        strongGemHtml = '<div class="tws-tp-gem-divider"></div><div class="tws-tp-gem-stocks"><span class="tws-tp-gem-label">创/科大涨&gt;10%</span>' + gemItems.join('、') + '</div>';
+    }
     var themeKey = (th.theme || '').replace(/'/g, '');
-    return '<div class="tws-tp-theme">' + ftHtml + '<a class="tws-tp-t" href="javascript:void(0)" onclick="event.stopPropagation();_twsTpJump(\\x27' + themeKey + '\\x27)" title="点击跳转：下方板块-题材（含强度） 或 KPL涨停深挖">' + _kplEsc(th.theme) + '</a><span class="tws-tp-cnt">×' + th.cnt + '</span>' + newHtml + promoHtml + '<span class="tws-tp-stocks">' + stocks.join('、') + '</span>' + failureHtml + '</div>';
+    return '<div class="tws-tp-theme">' + ftHtml + '<a class="tws-tp-t" href="javascript:void(0)" onclick="event.stopPropagation();_twsTpJump(\\x27' + themeKey + '\\x27)" title="点击跳转：下方板块-题材（含强度） 或 KPL涨停深挖">' + _kplEsc(th.theme) + '</a><span class="tws-tp-cnt">×' + th.cnt + '</span>' + newHtml + promoHtml + '<span class="tws-tp-stocks">' + stocks.join('、') + '</span>' + failureHtml + strongGemHtml + '</div>';
 }
 function _twsRenderThemePromotion(twsData) {
     var days = twsData && twsData.promotion && twsData.promotion.days;
