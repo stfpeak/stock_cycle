@@ -4310,7 +4310,7 @@ def _build_theme_wind_strength(top_n=10):
         today_zt_stocks=(zt_stocks if pool else None),
         today_zt_date=(pool[0]['trade_date'] if pool else None))
     strong_arb = []
-    return {
+    result = {
         'date': date_fmt,
         'data_prior': bool(date_fmt and date_fmt != today_bj),
         'trading': _is_trading_hours(),
@@ -4325,6 +4325,10 @@ def _build_theme_wind_strength(top_n=10):
         'promotion': promotion_result,
         'strong_arb': strong_arb,
     }
+    # 今日题材复盘与「连板涨停表现 / 细分题材晋级」复用同一份 promotion 快照，
+    # 不另拉行情、不混入未来日数据，盘中随本接口的分钟快照一起更新。
+    result['today_theme_review'] = _build_today_theme_review(result)
+    return result
 
 
 # ===== 细分题材晋级（时间轴下方 · 4日连续观察）=====
@@ -4753,6 +4757,254 @@ def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
         for th in cols[-1]['themes']:
             th['is_new'] = th['theme'] not in prev_themes
     return {'days': cols}
+
+
+def _tws_review_time(value):
+    """今日题材复盘的首次封板时间，缺失时统一返回「无」。"""
+    try:
+        value = int(value or 0)
+    except (TypeError, ValueError):
+        value = 0
+    if not (0 < value < 999999):
+        return '无'
+    text = str(value).zfill(6)
+    return text[:2] + ':' + text[2:4]
+
+
+def _build_today_theme_review(tws_data):
+    """由题材风向同源的四日晋级快照，生成「今日题材复盘报告」的结构化事实数据。
+
+    昨日只取 2 板及以上的股票作为天梯样本；今天的晋级、失败、首板和创/科
+    大涨均来自同一份 promotion 今日列。多题材股票按昨日最高板归属优先，再以
+    今日主归属/首次出现顺序稳定归属，避免在报告中重复计数。
+    """
+    days = ((tws_data or {}).get('promotion') or {}).get('days') or []
+    if len(days) < 2:
+        return {'date': (tws_data or {}).get('date', ''), 'groups': [], 'unpromoted': [],
+                'new_themes': [], 'summary': {}, 'available': False}
+    yesterday, today = days[-2], days[-1]
+    yesterday_themes = yesterday.get('themes') or []
+    today_themes = today.get('themes') or []
+
+    # code -> 候选题材。昨日的高连板优先，保证「昨日最高板」归属稳定。
+    prev_candidates = {}
+    for th in yesterday_themes:
+        theme = (th.get('theme') or '').strip()
+        if not theme or _tws_is_generic_tag(theme):
+            continue
+        for s in th.get('stocks') or []:
+            lb = int(s.get('lianban') or 0)
+            if lb >= 2:
+                prev_candidates.setdefault(s.get('code'), []).append((theme, lb))
+    primary_prev = {}
+    for code, choices in prev_candidates.items():
+        if not code:
+            continue
+        choices.sort(key=lambda x: (-x[1], x[0]))
+        primary_prev[code] = choices[0][0]
+
+    # 今日股票的多标签只保留一个归属。若昨日已有天梯归属，始终沿用它。
+    today_candidates = {}
+    today_by_code = {}
+    for th in today_themes:
+        theme = (th.get('theme') or '').strip()
+        if not theme or _tws_is_generic_tag(theme):
+            continue
+        for s in th.get('stocks') or []:
+            code = s.get('code') or ''
+            if not code:
+                continue
+            today_candidates.setdefault(code, []).append(theme)
+            old = today_by_code.get(code)
+            if old is None or int(s.get('lianban') or 0) > int(old.get('lianban') or 0):
+                today_by_code[code] = dict(s)
+    primary_today = {}
+    for code, choices in today_candidates.items():
+        primary_today[code] = primary_prev.get(code) or sorted(set(choices))[0]
+
+    # 昨日 2 板+，按唯一题材归档。
+    prior_by_theme = {}
+    for th in yesterday_themes:
+        for s in th.get('stocks') or []:
+            code = s.get('code') or ''
+            lb = int(s.get('lianban') or 0)
+            theme = primary_prev.get(code)
+            if not code or lb < 2 or not theme:
+                continue
+            prior_by_theme.setdefault(theme, {})[code] = dict(s)
+
+    # 今天每个细分题材的唯一首板，供旧题材助攻和新题材识别共用。
+    first_by_theme = {}
+    for code, s in today_by_code.items():
+        if int(s.get('lianban') or 0) != 1:
+            continue
+        theme = primary_today.get(code)
+        if theme:
+            first_by_theme.setdefault(theme, []).append(dict(s))
+    for stocks in first_by_theme.values():
+        stocks.sort(key=lambda s: (int(s.get('first_time') or 999999), s.get('name') or ''))
+
+    # 报告需完整列出题材当日涨停，而不只显示首板助攻。
+    today_stocks_by_theme = {}
+    for code, s in today_by_code.items():
+        theme = primary_today.get(code)
+        if theme:
+            today_stocks_by_theme.setdefault(theme, []).append(dict(s))
+    for stocks in today_stocks_by_theme.values():
+        stocks.sort(key=lambda s: (-int(s.get('lianban') or 0), int(s.get('first_time') or 999999), s.get('name') or ''))
+
+    # 今日创/科 >10% 同样做唯一归属，严格按涨幅降序。
+    strong_by_theme = {}
+    strong_candidates = {}
+    seen_strong = set()
+    for th in today_themes:
+        theme = (th.get('theme') or '').strip()
+        if not theme or _tws_is_generic_tag(theme):
+            continue
+        for s in th.get('strong_gem') or []:
+            code = s.get('code') or ''
+            if code:
+                strong_candidates.setdefault(code, []).append((theme, dict(s)))
+            if not code or code in seen_strong:
+                continue
+            chosen = primary_today.get(code) or primary_prev.get(code) or theme
+            # 在没有涨停归属时，按本题材首次出现作为稳定归属。
+            if chosen != theme and code not in primary_today and code not in primary_prev:
+                chosen = theme
+            if chosen != theme:
+                continue
+            seen_strong.add(code)
+            strong_by_theme.setdefault(theme, []).append(dict(s))
+    for stocks in strong_by_theme.values():
+        stocks.sort(key=lambda s: (-float(s.get('change_pct') or 0), s.get('name') or ''))
+
+    groups, unpromoted = [], []
+    for theme, prior_map in prior_by_theme.items():
+        prior = sorted(prior_map.values(), key=lambda s: (-int(s.get('lianban') or 0), s.get('name') or ''))
+        promoted, failed = [], []
+        for old in prior:
+            code = old.get('code') or ''
+            current = today_by_code.get(code)
+            old_lb = int(old.get('lianban') or 0)
+            if current and int(current.get('lianban') or 0) > old_lb:
+                promoted.append(dict(current, prev_lianban=old_lb))
+            else:
+                failed.append(dict(old))
+        promoted.sort(key=lambda s: (-int(s.get('lianban') or 0), int(s.get('first_time') or 999999), s.get('name') or ''))
+        failed.sort(key=lambda s: (-int(s.get('lianban') or 0), s.get('name') or ''))
+        leader = prior[0]
+        record = {
+            'theme': theme, 'prior_max': int(leader.get('lianban') or 0), 'leader': leader,
+            'prior': prior, 'promoted': promoted, 'failed': failed,
+            'today_stocks': today_stocks_by_theme.get(theme, []),
+            'first_boards': first_by_theme.get(theme, []), 'strong_gem': strong_by_theme.get(theme, []),
+            'today_max': max([int(s.get('lianban') or 0) for s in promoted] or [0]),
+        }
+        (groups if promoted else unpromoted).append(record)
+
+    groups.sort(key=lambda r: (-r['prior_max'], -r['today_max'], r['theme']))
+    unpromoted.sort(key=lambda r: (-r['prior_max'], r['theme']))
+
+    # KPL 的细分标签有时把同一链条拆成相邻环节（例如 PCB / PCB铜箔 / PCB设备）。
+    # 复盘报告以“题材链”呈现：当日股票命中题材本身、其同名前后缀，或昨日
+    # 天梯股的共现标签时，均补入该题材的今日涨停。这里不做跨题材删除，优先
+    # 保证每个题材报告不遗漏其链条内的当日涨停股。
+    for record in groups + unpromoted:
+        linked_tags = {record['theme']}
+        for s in record.get('prior', []):
+            linked_tags.update(today_candidates.get(s.get('code'), []))
+        known_codes = {s.get('code') for s in record.get('today_stocks', []) if s.get('code')}
+        additions = []
+        for code, s in today_by_code.items():
+            if code in known_codes:
+                continue
+            tags = set(today_candidates.get(code, []))
+            theme = record['theme']
+            same_family = any(t == theme or t.startswith(theme) or theme.startswith(t) for t in tags)
+            if same_family or tags & linked_tags:
+                additions.append(dict(s))
+                known_codes.add(code)
+        if additions:
+            record['today_stocks'].extend(additions)
+            record['today_stocks'].sort(key=lambda s: (-int(s.get('lianban') or 0), int(s.get('first_time') or 999999), s.get('name') or ''))
+
+    prior_theme_set = set(prior_by_theme)
+    new_themes = []
+    for theme, firsts in first_by_theme.items():
+        if theme in prior_theme_set or len(firsts) < 2 or _tws_is_generic_tag(theme):
+            continue
+        new_themes.append({'theme': theme, 'stocks': firsts})
+    new_themes.sort(key=lambda r: (-len(r['stocks']), int(r['stocks'][0].get('first_time') or 999999), r['theme']))
+
+    # 不能形成至少两股联动的首板不定义为“新题材”，但仍须在报告中可追溯，
+    # 以确保今天每一只具有效细分标签的涨停都已归类、不会因阈值被静默遗漏。
+    covered_codes = {
+        s.get('code') for r in groups + unpromoted for s in r.get('today_stocks', []) if s.get('code')
+    }
+    covered_codes.update(s.get('code') for r in new_themes for s in r.get('stocks', []) if s.get('code'))
+    other_by_theme = {}
+    for code, s in today_by_code.items():
+        if code in covered_codes:
+            continue
+        theme = primary_today.get(code) or '其他'
+        other_by_theme.setdefault(theme, []).append(dict(s))
+    other_today = []
+    for theme, stocks in other_by_theme.items():
+        stocks.sort(key=lambda s: (int(s.get('first_time') or 999999), s.get('name') or ''))
+        other_today.append({'theme': theme, 'stocks': stocks})
+    other_today.sort(key=lambda r: (int(r['stocks'][0].get('first_time') or 999999), r['theme']))
+
+    # 创/科大涨不以是否涨停为前提：全部纳入报告。优先归入已有昨日天梯题材，
+    # 其次归入今日新题材，再归入其他当日题材；保证同一股票只在报告中出现一次。
+    for r in groups + unpromoted + new_themes + other_today:
+        r['strong_gem'] = []
+    old_targets = {r['theme']: r for r in groups + unpromoted}
+    new_targets = {r['theme']: r for r in new_themes}
+    other_targets = {r['theme']: r for r in other_today}
+    other_strong = []
+    other_strong_by_theme = {}
+    for code, choices in strong_candidates.items():
+        choices.sort(key=lambda x: x[0])
+        selected = None
+        stock = None
+        for target_map in (old_targets, new_targets, other_targets):
+            matched = [(theme, item) for theme, item in choices if theme in target_map]
+            if matched:
+                theme, stock = matched[0]
+                selected = target_map[theme]
+                break
+        if selected is None:
+            theme, stock = choices[0]
+            selected = other_strong_by_theme.get(theme)
+            if selected is None:
+                selected = {'theme': theme, 'stocks': [], 'strong_gem': []}
+                other_strong_by_theme[theme] = selected
+                other_strong.append(selected)
+        selected['strong_gem'].append(dict(stock))
+    for r in groups + unpromoted + new_themes + other_today + other_strong:
+        r['strong_gem'].sort(key=lambda s: (-float(s.get('change_pct') or 0), s.get('name') or ''))
+    other_strong.sort(key=lambda r: r['theme'])
+
+    max_today = None
+    for s in today_by_code.values():
+        if max_today is None or int(s.get('lianban') or 0) > int(max_today.get('lianban') or 0):
+            max_today = s
+    if max_today:
+        max_today = dict(max_today)
+        max_today['theme'] = primary_today.get(max_today.get('code')) or primary_prev.get(max_today.get('code')) or ''
+    return {
+        'date': today.get('date') or (tws_data or {}).get('date', ''), 'available': True,
+        'groups': groups, 'unpromoted': unpromoted, 'new_themes': new_themes,
+        'other_today': other_today, 'other_strong': other_strong,
+        'summary': {
+            'leader': max_today or {},
+            'promoted_themes': [r['theme'] for r in groups],
+            'unpromoted_themes': [r['theme'] for r in unpromoted],
+            'assisted_themes': [r['theme'] for r in groups + unpromoted if r.get('first_boards')],
+            'new_themes': [r['theme'] for r in new_themes],
+        },
+    }
+
 _ZT_LADDER_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'zt_ladder_cache')
 
 def _get_latest_zt_data_date():
@@ -10691,6 +10943,9 @@ tr.ds-stock-hover td { background: rgba(0, 212, 255, 0.08) !important; }
   .rt-zt-chart-thumb:hover { transform: translateX(-14px) scale(4.6); }
 }
 .rt-zt-chart-placeholder { color: #64748b; font-size: .72em; }
+.rt-zt-subthemes { display: block; margin-top: 2px; color: #67e8f9; font-size: .68em; line-height: 1.35; white-space: normal; max-width: 150px; }
+.rt-zt-subtheme { cursor: pointer; border-bottom: 1px dashed rgba(103,232,249,.45); }
+.rt-zt-subtheme:hover { color: #fff; border-bottom-color: #67e8f9; }
 
 .rt-lb {
     display: inline-block; padding: 2px 8px; border-radius: 4px;
@@ -12524,14 +12779,19 @@ td.lt-trajectory-cell {
 }
 @media (max-width:768px){.concept-kline-cell{padding:4px 4px 6px;}}
 .concept-kline-cell .sk-header {
-    display: flex; align-items: center; justify-content: center; gap: 6px;
+    display: block; text-align: center; position: relative;
     padding: 4px 8px; margin: -6px -6px 6px;
     border-radius: 8px 8px 0 0;
     background: linear-gradient(135deg, #1a3a6a, #0f3460); color: #fff;
 }
+.concept-kline-cell .sk-title-line { display: flex; align-items: center; justify-content: center; gap: 6px; }
+.concept-kline-cell .sk-zt-time { position: absolute; left: 7px; top: 5px; color: #fde68a; font-size: 9px; line-height: 1.2; font-weight: 600; white-space: nowrap; }
 @media (max-width:768px){.concept-kline-cell .sk-header{padding:3px 6px;margin:-4px -4px 4px;gap:4px;}}
 .concept-kline-cell .sk-name { font-size: 13px; font-weight: 700; }
 .concept-kline-cell .sk-code { font-size: 10px; opacity: 0.8; padding: 1px 6px; border-radius: 8px; background: rgba(255,255,255,0.15); }
+.concept-kline-cell .sk-subthemes { display: block; margin: 2px auto 0; color: #67e8f9; font-size: 10px; line-height: 1.35; white-space: normal; overflow: hidden; text-overflow: ellipsis; max-height: 27px; }
+.concept-kline-cell .sk-subtheme { cursor: pointer; }
+.concept-kline-cell .sk-subtheme:hover { color: #fff; text-decoration: underline; }
 .concept-kline-cell .sk-concepts { margin-left: auto; font-size: 9px; color: #888; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; text-align: right; flex-shrink: 1; }
 .concept-kline-cell .kline-img { width: 100%; height: auto; border-radius: 4px; background: #fff; margin-bottom: 3px; display: block; border: 1px solid #0f3460; }
 .concept-kline-cell .kline-img.min { margin-bottom: 0; }
@@ -13296,6 +13556,28 @@ td.lt-trajectory-cell {
 #tab-marketstructure .lt-cell-time { color: #bba77d; }
 #tab-marketstructure .lt-tag-mini { color: #9fb4bd; background: rgba(145,174,186,.08); }
 }
+/* 题材风向 · 今日题材复盘报告：纯文本层级，不使用表格，便于盘中快速扫读 */
+.ttr-report { border: 1px solid rgba(102,187,216,.24); border-radius: 9px; background: linear-gradient(135deg,rgba(13,28,42,.72),rgba(19,31,48,.45)); overflow: hidden; }
+.ttr-main-title { padding: 9px 12px 7px; font-size: .92em; font-weight: 700; color: #e6f4ff; border-bottom: 1px solid rgba(102,187,216,.18); letter-spacing: .02em; }
+.ttr-section { padding: 8px 12px 9px; border-bottom: 1px dashed rgba(148,190,210,.2); }
+.ttr-section:last-child { border-bottom: 0; }
+.ttr-section h4 { margin: 0 0 5px; color: #83c9e8; font-size: .82em; font-weight: 700; }
+.ttr-line { color: #c6d5df; font-size: .8em; line-height: 1.75; padding: 2px 0; word-break: break-word; }
+.ttr-theme { color: #ffd878; font-weight: 700; margin-right: 2px; }
+.ttr-stock { color: #d7ecff; font-weight: 650; }
+.ttr-label { color: #8ecae6; font-weight: 700; }
+.ttr-first-label { color: #ffd878; font-weight: 700; }
+.ttr-fail-label { color: #7fc9a3; font-weight: 700; }
+.ttr-strong-label { color: #ff9a8f; font-weight: 700; }
+.ttr-number { color: #ffc56f; font-weight: 800; padding: 0 1px; }
+.ttr-up { color: #ff8274; font-weight: 700; margin-left: 2px; }
+.ttr-down { color: #74c79e; font-weight: 700; margin-left: 2px; }
+.ttr-strong { color: #ff9a8f; font-weight: 700; }
+.ttr-empty { color: #8fa4b1; }
+.ttr-other-title { margin: 7px 0 3px; padding-top: 6px; border-top: 1px dashed rgba(148,190,210,.2); color: #9bb6c7; font-size: .76em; font-weight: 700; }
+.ttr-summary { background: rgba(76,175,160,.055); }
+.ttr-summary-list { display: grid; grid-template-columns: 1fr; gap: 3px; margin-top: 4px; color: #aebfca; font-size: .78em; line-height: 1.65; }
+.ttr-summary-list > div { padding: 2px 7px; border-left: 2px solid rgba(126,201,163,.55); background: rgba(126,201,163,.035); }
 </style>
 </head>
 <body>
@@ -13361,6 +13643,7 @@ td.lt-trajectory-cell {
                 <a class="np-sidebar-item" data-np-section="twLtTrajectoryLbSection" onclick="scrollToNpSection('twLtTrajectoryLbSection')">🔥 连板股轨迹</a>
                 <a class="np-sidebar-item" data-np-section="twLtTrajectorySection" onclick="scrollToNpSection('twLtTrajectorySection')">🌐 涨停标签轨迹</a>
                 <a class="np-sidebar-item" data-np-section="twTopThemeSection" onclick="scrollToNpSection('twTopThemeSection')">🏆 TOP题材风向</a>
+                <a class="np-sidebar-item" data-np-section="twTodayTopicReviewSection" onclick="scrollToNpSection('twTodayTopicReviewSection')">📝 今日题材复盘</a>
                 <a class="np-sidebar-item" data-np-section="twReviewSection" onclick="scrollToNpSection('twReviewSection')">🧭 连板演化复盘</a>
                 <div style="border-top:1px solid rgba(255,255,255,0.06);margin:6px 0;"></div>
                 <div class="np-sidebar-hide" onclick="toggleTabSidebar('twSidebar','twSidebarShow')" title="隐藏导航">✖ 隐藏</div>
@@ -19408,7 +19691,7 @@ function loadRealtime() {
 
         // === 今日涨停（全量显示，按首次封板时间排序） ===
         html += '<div class="rt-section" id="rtTodayZtSection">';
-        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;">⚡ 今日涨停 <span class="count-badge" id="rtTodayZtBadge">' + todayZt.length + '只</span><span class="rt-refresh-icon" onclick="manualRefreshTodayZt()" title="手动刷新今日涨停">↻</span></h3>';
+        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;display:flex;align-items:center;gap:6px;">⚡ 今日涨停 <span class="count-badge" id="rtTodayZtBadge">' + todayZt.length + '只</span><span style="margin-left:auto;display:inline-flex;align-items:center;gap:6px;"><button type="button" class="concept-btn" onclick="toggleKplKlines(\\x27rtTodayZt\\x27)" title="按涨停时间顺序查看今日涨停股票K线走势">📈 K线走势</button><span class="rt-refresh-icon" onclick="manualRefreshTodayZt()" title="手动刷新今日涨停">↻</span></span></h3>';
         html += '<div id="rtTodayZtBody">' + renderTodayZtList(todayZt) + '</div>';
         html += '</div>';
 
@@ -19585,7 +19868,13 @@ function loadThemeWind() {
         }
         html += '</div></div>';
 
-        // Section 4: 🧭 当前连板题材演化复盘（基准固定为最新交易日，不提供日期切换）
+        // Section 4: 📝 今日题材复盘报告（与连板涨停表现、细分题材晋级同源）
+        html += '<div class="rt-section lt-trajectory-section" id="twTodayTopicReviewSection">';
+        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ffd700;">📝 今日题材复盘报告 <span class="count-badge">' + _kplEsc((twsData && twsData.today_theme_review && twsData.today_theme_review.date) || '最新交易日') + '</span></h3>';
+        html += '<div id="twTodayTopicReviewBody">' + renderTodayThemeReview(twsData ? twsData.today_theme_review : null) + '</div>';
+        html += '</div>';
+
+        // Section 5: 🧭 当前连板题材演化复盘（基准固定为最新交易日，不提供日期切换）
         html += '<div class="rt-section lt-trajectory-section" id="twReviewSection">';
         html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ffd700;">\U0001F9ED 当前连板题材演化复盘 <span class="count-badge">最新交易日</span> <span class="rt-refresh-icon" onclick="manualRefreshReview(true)" title="刷新">\u21bb</span><button class="rt-auto-refresh-btn" id="reviewAutoBtn" onclick="toggleReviewAutoRefresh()">\u23f1 自动刷新 1分钟</button></h3>';
         html += '<div id="twReviewBody">' + (reviewData ? renderReviewSummary(reviewData) : '<div class="lt-trajectory-loading">暂无复盘数据</div>') + '</div>';
@@ -19594,7 +19883,7 @@ function loadThemeWind() {
         container.innerHTML = html;
         _fillTrajDefaultDates('tw');
         updateTrajLbBadge('tw');
-        initTabSidebarScroll('twSidebar', ['twWindStrengthSection','twLtTrajectoryLbSection','twLtTrajectorySection','twTopThemeSection','twReviewSection']);
+        initTabSidebarScroll('twSidebar', ['twWindStrengthSection','twLtTrajectoryLbSection','twLtTrajectorySection','twTopThemeSection','twTodayTopicReviewSection','twReviewSection']);
         updateReviewNavSel();   // 导航渲染在 _reviewSelDate 赋值之前，需手动补选中态
         _twsStartPoll();        // 精选板块强度细分卡片 30s 实时行情轮询
         _themeWindLoaded = true;
@@ -19666,7 +19955,7 @@ function _trajMaybeRollDefault() {
 }
 setInterval(_trajMaybeRollDefault, 60000);
 // 盘中实时刷新整个汇总区（时间轴+连板涨停表现+连板速览+断板重启+天梯）：全局 2分钟（题材风向+实时双 tab 都存在汇总块，实时 tab 下 _twsPoll 不运行，需独立定时器；_twsRefreshGate 内 9:25~15:30 才拉网络）
-setInterval(function() { if (_twsRefreshGate()) _twsRefreshBoardLive(); }, 120000);
+setInterval(function() { if (_twsRefreshGate()) _twsRefreshBoardLive(); }, 60000);
 
 // 把当前窗口日期填回输入框（rt/tw 各自独立；lb=连板轨迹, plain=涨停原因轨迹 两组输入框，HTML 动态生成后调用）
 function _fillTrajDefaultDates(tab) {
@@ -22939,7 +23228,7 @@ function _twsTpTheme(th) {
         for (var gi = 0; gi < strongGem.length; gi++) {
             var gs = strongGem[gi] || {};
             var gp = (typeof gs.change_pct === 'number') ? ('+' + gs.change_pct.toFixed(2) + '%') : '--';
-            var gb = gs.board === '科' ? '科创' : '创业';
+            var gb = gs.board === '科' ? '科' : '创';
             gemItems.push('<span class="tws-tp-gem-item" data-code="' + (gs.code || '') + '" data-name="' + (gs.name || '').replace(/'/g, '') + '" onclick="_twsSumOpenStock(this)">' + _kplEsc(gs.name || gs.code) + ' <span class="tws-tp-gem-board">' + gb + '</span> <span class="tws-tp-gem-pct">' + gp + '</span></span>');
         }
         strongGemHtml = '<div class="tws-tp-gem-divider"></div><div class="tws-tp-gem-stocks"><span class="tws-tp-gem-label">创/科大涨&gt;10%</span>' + gemItems.join('、') + '</div>';
@@ -22985,14 +23274,13 @@ function _twsTpJump(theme) {
     }
     jumpToKplSearch(theme);
 }
-// 刷新门控：仅北京时间 9:25~15:30 自动刷新（盘后停止自动网络请求，手动↻随时可用）
+// 刷新门控：仅北京时间 9:25~15:00 自动刷新（盘后停止自动网络请求，手动↻随时可用）
 function _twsRefreshGate() {
     var n = new Date();
     var t = ((n.getUTCHours() + 8) % 24) * 60 + n.getUTCMinutes();
-    return t >= 565 && t <= 930;   // 9:25 ~ 15:30 北京时间
+    return t >= 565 && t < 900;    // 9:25 ~ 15:00 北京时间
 }
-// 盘中实时刷新整个汇总区：随 2分钟 行情轮询，重拉 theme_wind_strength（盘中 30s 缓存）重建 .tws-summary
-// （时间轴+连板涨停表现+连板速览+断板重启+天梯 一并同步，各节与天梯同一份数据；实时 tab 的 rtTimelineBox 不在 .tws-summary 内，仍单独替换）
+// 盘中每分钟刷新汇总区和今日题材复盘，全部复用同一份 theme_wind_strength 快照。
 var _twsTlLastRefresh = 0;
 // 核心池联动推荐：模块级缓存 + 加载（/api/market_structure summary → _twsCorePool 题材索引）
 var _twsCorePool = null;      // {theme: {main:[], gem:[], star:[]}}  主板3板+ / 创科1/2板
@@ -23038,7 +23326,7 @@ function _twsRefreshBoardLive() {
     var summary = document.querySelector('.tws-summary');
     if (!summary && !document.querySelector('#rtTimelineBox')) return;
     var now = Date.now();
-    if (now - _twsTlLastRefresh < 115000) return;   // 与行情轮询同频（2分钟内聚合）
+    if (now - _twsTlLastRefresh < 55000) return;    // 同一分钟内不重复请求
     _twsTlLastRefresh = now;
     fetch('/api/theme_wind_strength?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }).then(function(d) {
         if (!d) return;
@@ -23049,6 +23337,8 @@ function _twsRefreshBoardLive() {
             var sh = _twsRenderBoardSummary(d);
             if (sh) summary.outerHTML = sh;
         }
+        var reportBody = document.getElementById('twTodayTopicReviewBody');
+        if (reportBody) reportBody.innerHTML = renderTodayThemeReview(d.today_theme_review || null);
         // 实时 tab 的时间轴块 rtTimelineBox 不在 .tws-summary 内，仍单独替换（题材风向 twTimelineBox 随汇总区一并重建）
         var rt = document.getElementById('rtTimelineBox');
         if (rt) {
@@ -23832,9 +24122,9 @@ function toggleTwsPlate(head) {
     if (arrow) arrow.textContent = vis ? '▼' : '▶';
 }
 
-// 实时行情 2分钟 轮询（仿弹性套利 _eaPoll/_eaApplyQuotes）
+// 实时行情分钟轮询（仿弹性套利 _eaPoll/_eaApplyQuotes）
 var _twsTimer = null;
-var _twsInterval = 120000;
+var _twsInterval = 60000;
 
 function _twsStartPoll() {
     if (_twsTimer) clearInterval(_twsTimer);
@@ -23845,7 +24135,7 @@ function _twsStartPoll() {
 function _twsPoll() {
     if (typeof currentTab !== 'undefined' && currentTab !== 'themewind') return;   // 后台空转保护
     if (!_twsRefreshGate()) return;   // 盘后停止自动网络请求（手动↻不受限）
-    _twsRefreshBoardLive();   // 盘中实时刷新整个汇总区（时间轴+连板涨停表现+连板速览+断板重启+天梯，2分钟同频）
+    _twsRefreshBoardLive();   // 盘中同步刷新汇总区和今日题材复盘（1分钟同频）
     var pctEls = document.querySelectorAll('.tws-pct[data-code]');
     var codes = [];
     for (var i = 0; i < pctEls.length; i++) {
@@ -23904,7 +24194,7 @@ var _twsAutoTimer = null;
 var _twsAutoCountdown = null;
 var _twsAutoRemaining = 0;
 var _twsAutoActive = false;
-var _TWS_AUTO_INTERVAL = 120;
+var _TWS_AUTO_INTERVAL = 60;
 
 function toggleTwsAutoRefresh() {
     var btn = document.getElementById('twsAutoBtn');
@@ -23912,7 +24202,7 @@ function toggleTwsAutoRefresh() {
     if (_twsAutoActive) {
         clearInterval(_twsAutoTimer); clearInterval(_twsAutoCountdown);
         _twsAutoActive = false; _twsAutoTimer = null; _twsAutoCountdown = null;
-        btn.innerHTML = '\u23f1 自动刷新 2分钟';
+        btn.innerHTML = '\u23f1 自动刷新 1分钟';
         btn.classList.remove('active');
         showToast('已停止细分卡片自动刷新', 'info');
         return;
@@ -23920,8 +24210,8 @@ function toggleTwsAutoRefresh() {
     var now = new Date();
     var beijingHour = (now.getUTCHours() + 8) % 24;
     var totalMin = beijingHour * 60 + now.getUTCMinutes();
-    if (totalMin < 565 || totalMin >= 930) {
-        showToast('⏰ 非交易时段 (9:25~15:30)，自动刷新不可用', 'warning');
+    if (totalMin < 565 || totalMin >= 900) {
+        showToast('⏰ 非交易时段 (9:25~15:00)，自动刷新不可用', 'warning');
         return;
     }
     _twsAutoActive = true;
@@ -23955,12 +24245,15 @@ function toggleTwsAutoRefresh() {
 function manualRefreshTws() {
     var body = document.getElementById('twWindStrengthBody');
     if (!body) return;
+    var reportBody = document.getElementById('twTodayTopicReviewBody');
     body.innerHTML = '<div class="lt-trajectory-loading">刷新中...</div>';
+    if (reportBody) reportBody.innerHTML = '<div class="lt-trajectory-loading">同步刷新题材复盘...</div>';
     Promise.all([
         fetch('/api/sector_ranking?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
         fetch('/api/theme_wind_strength?no_cache=1&_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
     ]).then(function(arr) {
         body.innerHTML = renderThemeWindStrength(arr[0], arr[1]);
+        if (reportBody) reportBody.innerHTML = renderTodayThemeReview(arr[1] ? arr[1].today_theme_review : null);
         _twsTlLastRefresh = Date.now();   // 手动↻ 已整体重渲染，抑制 _twsStartPoll 首轮 _twsPoll 内 2分钟聚合再次重渲染
         _twsStartPoll();
     }).catch(function() {
@@ -24213,6 +24506,91 @@ function _tstOpenStock(el) {
 }
 
 // ===== 复盘总结和交易计划（题材风向 Section 5）=====
+function renderTodayThemeReview(data) {
+    if (!data || !data.available) return '<div class="lt-trajectory-loading">暂无可对比的昨日连板数据</div>';
+    function esc(v) { return _kplEsc(v == null ? '' : String(v)); }
+    function timeOf(s) {
+        var raw = Number((s || {}).first_time || 0);
+        if (!(raw > 0 && raw < 999999)) return '无';
+        var t = String(Math.floor(raw)).padStart(6, '0');
+        return t.slice(0, 2) + ':' + t.slice(2, 4);
+    }
+    function stock(s, suffix) {
+        return '<span class="ttr-stock">' + esc((s || {}).name || '无') + '</span>' + (suffix || '');
+    }
+    function failedText(s) {
+        return stock(s) + '（昨日<span class="ttr-number">' + esc((s || {}).lianban || 0) + '</span>板）<span class="ttr-down">晋级失败</span>';
+    }
+    function firstText(s) { return stock(s) + '（' + timeOf(s) + '）'; }
+    function strongText(s) {
+        var pct = Number((s || {}).change_pct || 0);
+        return stock(s) + '（<span class="ttr-strong">+' + pct.toFixed(2) + '%</span>）';
+    }
+    function join(arr, fn) { return arr && arr.length ? arr.map(fn).join('、') : '无'; }
+    function todayText(s, promotedCodes) {
+        if (promotedCodes[s.code]) return stock(s) + '<span class="ttr-up">晋级<span class="ttr-number">' + esc(s.lianban || 0) + '</span>板</span>';
+        return stock(s) + '今日<span class="ttr-number">' + esc(s.lianban || 0) + '</span>板（' + timeOf(s) + '）';
+    }
+    function themeLine(r, firstLine) {
+        var promotedCodes = {};
+        (r.promoted || []).forEach(function(s) { promotedCodes[s.code] = true; });
+        var firsts = (r.today_stocks || []).filter(function(s) { return Number(s.lianban || 0) === 1; });
+        var chains = (r.today_stocks || []).filter(function(s) { return Number(s.lianban || 0) !== 1; });
+        var text = (firstLine ? '昨日最高板' : '') + '<span class="ttr-theme">【' + esc(r.theme) + '】</span>';
+        if (chains.length) text += '<span class="ttr-label">今日连板：</span>' + join(chains, function(s) { return todayText(s, promotedCodes); });
+        if (firsts.length) text += (chains.length ? '；' : '') + '<span class="ttr-first-label">首板：</span>' + join(firsts, firstText);
+        if (r.failed && r.failed.length) text += ((chains.length || firsts.length) ? '；' : '') + '<span class="ttr-fail-label">未晋级：</span>' + join(r.failed, failedText);
+        if (r.strong_gem && r.strong_gem.length) text += '；<span class="ttr-strong-label">创/科涨超10%：</span>' + join(r.strong_gem, strongText);
+        text += '。';
+        return '<div class="ttr-line">' + text + '</div>';
+    }
+    function listThemes(themes) { return themes && themes.length ? themes.map(esc).join('、') : '无'; }
+    var h = '<div class="ttr-report">';
+    h += '<div class="ttr-main-title"># 今日题材复盘</div>';
+    h += '<section class="ttr-section"><h4>一、昨日涨停天梯梳理</h4>';
+    if (data.groups && data.groups.length) {
+        for (var i = 0; i < data.groups.length; i++) h += themeLine(data.groups[i], i === 0);
+    } else h += '<div class="ttr-line ttr-empty">无。</div>';
+    h += '</section>';
+    h += '<section class="ttr-section"><h4>二、昨日天梯中未晋级题材</h4>';
+    if (data.unpromoted && data.unpromoted.length) {
+        data.unpromoted.forEach(function(r) {
+            var todayChains = (r.today_stocks || []).filter(function(s) { return Number(s.lianban || 0) !== 1; });
+            var todayFirsts = (r.today_stocks || []).filter(function(s) { return Number(s.lianban || 0) === 1; });
+            var today = todayChains.length ? '；<span class="ttr-label">今日连板：</span>' + join(todayChains, function(s) { return stock(s) + '今日<span class="ttr-number">' + esc(s.lianban || 0) + '</span>板（' + timeOf(s) + '）'; }) : '';
+            if (todayFirsts.length) today += (today ? '；' : '；') + '<span class="ttr-first-label">首板：</span>' + join(todayFirsts, firstText);
+            var strong = (r.strong_gem || []).length ? '；创/科涨超10%：' + join(r.strong_gem || [], strongText) : '';
+            h += '<div class="ttr-line"><span class="ttr-theme">【' + esc(r.theme) + '】</span>未晋级：' + join(r.prior || [], failedText) + today + strong + '。</div>';
+        });
+    } else h += '<div class="ttr-line ttr-empty">无。</div>';
+    h += '</section>';
+    h += '<section class="ttr-section"><h4>三、今日新题材</h4>';
+    if (data.new_themes && data.new_themes.length) {
+        data.new_themes.forEach(function(r) {
+            h += '<div class="ttr-line"><span class="ttr-theme">【' + esc(r.theme) + '】</span>' + join(r.stocks || [], firstText) + ((r.strong_gem || []).length ? '；<span class="ttr-strong-label">创/科涨超10%：</span>' + join(r.strong_gem || [], strongText) : '') + '。</div>';
+        });
+    } else h += '<div class="ttr-line ttr-empty">无。</div>';
+    if (data.other_today && data.other_today.length) {
+        h += '<div class="ttr-other-title">未形成两股联动的当日涨停（不定义为新题材）</div>';
+        data.other_today.forEach(function(r) {
+            h += '<div class="ttr-line"><span class="ttr-theme">【' + esc(r.theme) + '】</span>' + join(r.stocks || [], function(s) { return Number(s.lianban || 0) === 1 ? firstText(s) : stock(s) + '今日<span class="ttr-number">' + esc(s.lianban || 0) + '</span>板（' + timeOf(s) + '）'; }) + ((r.strong_gem || []).length ? '；<span class="ttr-strong-label">创/科涨超10%：</span>' + join(r.strong_gem || [], strongText) : '') + '。</div>';
+        });
+    }
+    if (data.other_strong && data.other_strong.length) {
+        h += '<div class="ttr-other-title">创/科涨超10%（非当日涨停）</div>';
+        data.other_strong.forEach(function(r) {
+            h += '<div class="ttr-line"><span class="ttr-theme">【' + esc(r.theme) + '】</span><span class="ttr-strong-label">创/科涨超10%：</span>' + join(r.strong_gem || [], strongText) + '。</div>';
+        });
+    }
+    h += '</section>';
+    var summary = data.summary || {}, leader = summary.leader || {};
+    h += '<section class="ttr-section ttr-summary"><h4>四、极简总结</h4>';
+    h += '<div class="ttr-line">今日涨停天梯最高板：' + (leader.name ? stock(leader) + '，' + esc(leader.lianban || 0) + '板，' + (leader.theme ? '<span class="ttr-theme">【' + esc(leader.theme) + '】</span>' : '无') : '无') + '。</div>';
+    h += '<div class="ttr-summary-list"><div>成功晋级题材：' + listThemes(summary.promoted_themes) + '</div><div>全部断板题材：' + listThemes(summary.unpromoted_themes) + '</div><div>有首板继续助攻的题材：' + listThemes(summary.assisted_themes) + '</div><div>今日新题材：' + listThemes(summary.new_themes) + '</div></div>';
+    h += '</section></div>';
+    return h;
+}
+
 function renderReviewSummary(data) {
     if (!data) return '<div class="lt-trajectory-loading">暂无复盘数据</div>';
     var h = '';
@@ -24854,14 +25232,39 @@ function refreshRtZtHover(pair) {
     });
 }
 
+// 实时·今日涨停的题材走势：复用题材复盘“涨停节奏”的K线卡片、列数和刷新交互。
+var _rtTodayZtKlineOpen = false;
+var _rtTodayZtKlineCols = '';
+function _rtTodayZtKlineWrapHtml() {
+    var hits = _kplSectionHits.rtTodayZt || [];
+    var open = _rtTodayZtKlineOpen;
+    var grid = open ? renderKplKlineGrid(hits, String(Date.now())) : '';
+    if (_rtTodayZtKlineCols && grid) grid = grid.replace('class="concept-kline-grid"', 'class="concept-kline-grid" style="grid-template-columns:repeat(' + _rtTodayZtKlineCols + ', minmax(340px, 1fr));"');
+    var wrap = '<div id="kpl-kline-wrap-rtTodayZt" class="concept-kline-wrap' + (open ? ' kpl-wrap-open' : '') + '" data-open="' + (open ? '1' : '0') + '" data-kline-cols="' + _rtTodayZtKlineCols + '" style="max-height:' + (open ? 'none' : '0') + ';overflow:hidden">';
+    wrap += _kplKlineColbarHtml('rtTodayZt');
+    wrap += '<div class="kpl-kline-grid-holder"><div class="kpl-kline-scroll">' + grid + '</div></div></div>';
+    return wrap;
+}
+
 function renderTodayZtList(stocks) {
     if (!stocks || stocks.length === 0) return '<div class="empty" style="padding:15px;">暂无今日涨停数据</div>';
+    // 表格与下方K线走势必须共用同一顺序：按今日首次封板时间从早到晚，避免接口按连板/板块分组后造成顺序错乱。
+    stocks = stocks.slice().sort(function(a, b) {
+        var at = Number(a.first_time || 999999), bt = Number(b.first_time || 999999);
+        if (at !== bt) return at - bt;
+        var al = Number(a.lianban || 0), bl = Number(b.lianban || 0);
+        if (al !== bl) return bl - al;
+        return String(a.name || '').localeCompare(String(b.name || ''), 'zh-CN');
+    });
     // 格式化封板时间: 简写HH:MM或9位数字转HH:MM:SS
     function fmtTime(t) {
         if (!t || t >= 999999) return '--:--';
         var s = String(t).padStart(6, '0');
         return s.slice(0, 2) + ':' + s.slice(2, 4);
     }
+    _kplSectionHits.rtTodayZt = stocks.map(function(s) {
+        return {stock_name: s.name || '', stock_code: s.code || '', subthemes: s.subthemes || [], first_time: s.first_time || 999999, show_zt_time: true};
+    });
     var html = '<table class="rt-zt-table zt-today-table"><tr><th>#</th><th>代码</th><th style="white-space:nowrap;min-width:90px;">名称</th><th style="min-width:90px;white-space:nowrap;">封板时间</th><th title="该涨停在K线走势中的状态：N连板 / 首板 / N·重启（+断板交易日）">涨停状态</th><th>涨停板结构</th><th>板块联动</th><th>概念</th><th class="rt-zt-chart-col">K线</th></tr>';
     stocks.forEach(function(s, i) {
         var lb = s.lianban || 0;
@@ -24872,7 +25275,14 @@ function renderTodayZtList(stocks) {
         html += '<tr class="' + rowCls + '" data-code="' + s.code + '" data-name="' + s.name + '">';
         html += '<td style="font-size:0.9em;">' + rankStr + '</td>';
         html += '<td><strong>' + s.code + '</strong></td>';
-        html += '<td style="white-space:nowrap;">' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code)) + '<span class="link-stock-name" onclick="event.stopPropagation();stockQueryGoTo(\\x27' + (s.name||'').replace(/'/g,'') + '\\x27)">' + (s.name || '') + '</span></td>';
+        var subthemes = s.subthemes || [];
+        var subHtml = '';
+        if (subthemes.length) {
+            subHtml = '<span class="rt-zt-subthemes">' + subthemes.map(function(tag) {
+                return '<span class="rt-zt-subtheme" onclick="event.stopPropagation();jumpToKplSearch(\\x27' + String(tag).replace(/'/g, '') + '\\x27)">' + _kplEsc(tag) + '</span>';
+            }).join('、') + '</span>';
+        }
+        html += '<td style="white-space:normal;">' + _watchStarHtml(s.code, s.name, _watchGetCategory(s.code)) + '<span class="link-stock-name" onclick="event.stopPropagation();stockQueryGoTo(\\x27' + (s.name||'').replace(/'/g,'') + '\\x27)">' + (s.name || '') + '</span>' + subHtml + '</td>';
         html += '<td style="color:#4fc3f7;font-weight:bold;font-size:0.9em;white-space:nowrap;">' + fmtTime(s.first_time) + '</td>';
         html += '<td>' + renderZtStatus(s) + '</td>';
         // 涨停板结构列：有细分题材今日涨停梯队（zt_echelon）则渲染梯队，否则回退原板结构串
@@ -24882,6 +25292,7 @@ function renderTodayZtList(stocks) {
         html += '<td class="rt-zt-chart-cell">' + renderRtZtCharts(s.code, s.name) + '</td></tr>';
     });
     html += '</table>';
+    html += _rtTodayZtKlineWrapHtml();
     return html;
 }
 
@@ -25558,7 +25969,7 @@ function renderDeepKlineGrid(hits, forceTs) {
         var s = hits[i];
         var key = s.name || '';
         var code = s.ts_code || '';
-        if (!seen[key] && code) { seen[key] = true; unique.push({name:key, code:code}); }
+        if (!seen[key] && code) { seen[key] = true; unique.push({name:key, code:code, subthemes:s.subthemes || s.theme_tags || []}); }
     }
     var cells = '';
     for (var i = 0; i < unique.length; i++) {
@@ -26401,7 +26812,7 @@ function renderKplKlineGrid(hits, forceTs) {
         var s = hits[i];
         var key = s.stock_name || '';
         var code = s.stock_code || '';
-        if (!seen[key] && code) { seen[key] = true; unique.push({name:key, code:code}); }
+        if (!seen[code] && code) { seen[code] = true; unique.push({name:key, code:code, subthemes:s.subthemes || s.theme_tags || [], first_time:s.first_time, show_zt_time:!!s.show_zt_time}); }
     }
     var cells = '';
     for (var i = 0; i < unique.length; i++) {
@@ -26410,8 +26821,10 @@ function renderKplKlineGrid(hits, forceTs) {
         var murl = sinaMinImg(s.code);
         var srcK = forceTs ? kurl.replace(/\?\d*$/, '') + '?' + forceTs : kurl;
         var srcM = forceTs ? murl.replace(/\?\d*$/, '') + '?' + forceTs : murl;
+        var subHtml = (s.subthemes && s.subthemes.length) ? '<span class="sk-subthemes">' + s.subthemes.map(function(tag) { return '<span class="sk-subtheme">' + _kplEsc(tag) + '</span>'; }).join('、') + '</span>' : '';
+        var ztTime = (s.show_zt_time && Number(s.first_time || 999999) < 999999) ? '<span class="sk-zt-time">涨停 ' + _kplLevelFormatTime(s.first_time) + '</span>' : '';
         cells += '<div class="concept-kline-cell" onclick="showEnlargedConceptCell(this)" style="cursor:pointer;">' +
-            '<div class="sk-header"><span class="sk-name">' + s.name + '</span><span class="sk-code">' + s.code + '</span></div>' +
+            '<div class="sk-header">' + ztTime + '<div class="sk-title-line"><span class="sk-name">' + s.name + '</span><span class="sk-code">' + s.code + '</span></div>' + subHtml + '</div>' +
             '<img class="kline-img" src="' + srcK + '" onerror="retryImg(this)">' +
             '<img class="kline-img min" src="' + srcM + '" onload="checkMinImgLoad(this)" onerror="retryImg(this)">' +
             '</div>';
@@ -26458,6 +26871,7 @@ function _kplKlineBtnsHtml(klineId) {
 // 展开/收起K线卡片区：展开用 .kpl-wrap-open 解除 max-height 上限（内容多时靠页面纵向展开，不截断卡片）
 function _kplWrapOpenState(wrap, open) {
     if (!wrap) return;
+    if (wrap.id === 'kpl-kline-wrap-rtTodayZt') _rtTodayZtKlineOpen = !!open;
     if (open) {
         wrap.classList.add('kpl-wrap-open');
         wrap.style.maxHeight = '';
@@ -26474,6 +26888,7 @@ function _kplWrapOpenState(wrap, open) {
 function setKplKlineCols(secId, btn, cols) {
     var wrap = document.getElementById('kpl-kline-wrap-' + secId);
     if (!wrap) return;
+    if (secId === 'rtTodayZt') _rtTodayZtKlineCols = cols || '';
     wrap.setAttribute('data-kline-cols', cols || '');
     var colbar = wrap.querySelector('.kpl-kline-colbar');
     if (colbar) {
@@ -35339,6 +35754,12 @@ class Handler(BaseHTTPRequestHandler):
                         s['board_structure'] = _kpl_board_structure(s.get('code', ''), date_fmt, s.get('lianban'))
                         s['zt_status'] = _kpl_zt_status(s.get('code', ''), date_fmt, s.get('lianban'))
                         s['zt_echelon'] = _kpl_today_echelon(s.get('code', ''), efmt, tag_rows, today_lb)
+                        _kpl_for_stock = _kpl_resolve_stock_kpl(s.get('code', ''), efmt) or {}
+                        _kpl_tags = _traj_valid_tags(_kpl_for_stock.get('reason_tag', '') or '',
+                                                     _kpl_for_stock.get('reason_brief', '') or '')
+                        if not _kpl_tags:
+                            _kpl_tags = [x.strip() for x in (_kpl_for_stock.get('tags') or []) if x and x.strip()]
+                        s['subthemes'] = list(dict.fromkeys(_kpl_tags))
                 self._respond_json(result or [], cors_headers)
             except Exception as e:
                 self._respond_json([], cors_headers)
