@@ -8233,6 +8233,7 @@ _update_progress_msg = ""
 
 # 分析结果缓存（大幅减少重复计算）
 _cache = {}  # {key: {'data': ..., 'time': timestamp}}
+_theme_wind_build_lock = threading.Lock()  # 首屏重型构建只允许一个请求执行
 _CACHE_TTL = 3600  # 缓存有效期1小时
 _CACHE_MAX_SIZE = 200  # 最多缓存200个key，超过时淘汰最旧的
 
@@ -36502,8 +36503,13 @@ class Handler(BaseHTTPRequestHandler):
                     ttl = 30 if live_session else 300   # 盘中30s / 非盘300s
                     result = _get_cached(cache_key, ttl=ttl)
                 if result is None:
-                    result = _build_theme_wind_strength(top_n=top_n)
-                    _set_cache(cache_key, result)
+                    # 题材风向和盯盘会在启动/切页时同时请求；二次请求直接复用
+                    # 第一个请求刚构建好的结果，避免并发执行两次 20 秒级计算。
+                    with _theme_wind_build_lock:
+                        result = None if no_cache else _get_cached(cache_key, ttl=ttl)
+                        if result is None:
+                            result = _build_theme_wind_strength(top_n=top_n)
+                            _set_cache(cache_key, result)
                 self._respond_json(result, cors_headers)
             except Exception as e:
                 import traceback
@@ -38671,6 +38677,30 @@ def main():
         except Exception as e:
             print(f"[预热] kpl_top_tags失败: {e}")
 
+    def _warm_high_frequency_pages():
+        """后台预热盯盘/题材风向首屏，避免用户首次点击时承担重型计算。"""
+        try:
+            bj_day = _bj_now().strftime('%Y%m%d')
+            session_kind = 'live' if _is_trading_hours() else 'closed'
+            wind_key = 'theme_wind_strength:10:%s:%s' % (bj_day, session_kind)
+            if _get_cached(wind_key, ttl=300 if session_kind == 'closed' else 60) is None:
+                wind = _build_theme_wind_strength(top_n=10)
+                _set_cache(wind_key, wind)
+                print('[预热] 题材风向首屏完成')
+            else:
+                print('[预热] 题材风向首屏已缓存')
+        except Exception as e:
+            print(f"[预热] 高频页签失败: {e}")
+        try:
+            theme_key = 'theme_map:40'
+            if _get_cached(theme_key, ttl=300 if not _is_trading_hours() else 60) is None:
+                _set_cache(theme_key, _build_theme_map(ndays=40))
+                print('[预热] 盯盘题材地图完成')
+            else:
+                print('[预热] 盯盘题材地图已缓存')
+        except Exception as e:
+            print(f"[预热] 题材地图失败: {e}")
+
     def _sentiment_bg_refresh():
         """后台守护线程，根据前端配置的间隔自动拉取帖子（即使浏览器已关闭）。"""
         _BG_CONFIG_PATH = os.path.join(_SENTIMENT_DIR, 'bg_config.json')
@@ -38696,6 +38726,7 @@ def main():
         threading.Thread(target=_warm_hot, daemon=True),
         threading.Thread(target=_warm_data_status, daemon=True),
         threading.Thread(target=_warm_kpl_top_tags, daemon=True),
+        threading.Thread(target=_warm_high_frequency_pages, daemon=True),
         threading.Thread(target=_sentiment_bg_refresh, daemon=True),
         threading.Thread(target=_rtw_loop, daemon=True),
         threading.Thread(target=_zt_auto_startup, daemon=True),
