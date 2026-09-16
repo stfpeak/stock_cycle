@@ -4058,22 +4058,44 @@ def _build_theme_wind_strength(top_n=10):
     # 题材风向的日期必须以涨停数据为准，不能用 K 线库最大日期（云端可能只更新到更早日期）。
     latest_zt_fmt = _get_latest_zt_data_date() or ''
     resolved_ymd = latest_zt_fmt.replace('-', '') if latest_zt_fmt else (_kpl_resolve_latest_zt_date() or '')
-    pool = _get_zt_pool_cached()
+    # 盘中以“实时 → 今日涨停”使用的轻量时间轴池为唯一事实来源。
+    # 完整题材池会额外做概念解析，偶发超时/空结果时不能让这里回退到昨日。
+    live_session = _is_trading_hours()
+    pool = (_get_zt_timeline_pool_cached() if live_session else _get_zt_pool_cached()) or []
     fallback = False
     date_fmt = ''
+    bj_today_fmt = _bj_now().strftime('%Y-%m-%d')
     if pool:
         # 锚点与今日涨停时间轴严格同源：取 akshare 池的数据日期（timeline 数据即来自 pool），
         # 保证 promotion 今日列 == 时间轴（同一份实时池、同一分钟快照）。池为空才回退最近有数据交易日。
         _pd = (pool[0].get('trade_date', '') or '')
         if _pd:
             _pdf = f"{_pd[:4]}-{_pd[4:6]}-{_pd[6:]}"
-            _bj_now = datetime.now(timezone(timedelta(hours=8)))
-            _bj_fmt = _bj_now.strftime('%Y-%m-%d')
-            _bj_hm = _bj_now.hour * 60 + _bj_now.minute
+            _bj_clock = _bj_now()
+            _bj_fmt = _bj_clock.strftime('%Y-%m-%d')
+            _bj_hm = _bj_clock.hour * 60 + _bj_clock.minute
             if _pdf == _bj_fmt and _bj_hm < 9 * 60:
                 pool = []   # 盘前守卫：北京 9:00 前未开盘，池被本地时区标成「当天」→ 不可信，按无实时数据处理（timeline/promotion 均回退 KPL 锚点日，保持一致）
             else:
                 date_fmt = _pdf   # 池日期可信（正常数据日 / 盘中当天）→ 锚点与时间轴严格同源
+    # 盘中实时池为空/日期不是今天时，严禁使用 resolved_ymd 或本地 KPL 文件。
+    # 否则页面看起来“有数据”，实际却是上一交易日，正是盯盘错日的根因。
+    if live_session and (not pool or date_fmt != bj_today_fmt):
+        return {
+            'date': bj_today_fmt,
+            'data_prior': False,
+            'trading': True,
+            'fallback': True,
+            'live_unavailable': True,
+            'live_source': 'akshare.stock_zt_pool_em',
+            'message': '盘中实时涨停数据暂不可用，正在重试',
+            'plates': [], 'codes': [], 'ladder': [], 'first_themes': [],
+            'restart_stocks': [], 'timeline': [], 'arch': [],
+            'promotion': {'days': []},
+            'strong_arb': [],
+            'today_theme_review': {'date': bj_today_fmt, 'available': False,
+                                   'live_unavailable': True, 'sections': []},
+        }
     if not date_fmt and resolved_ymd:
         date_fmt = f"{resolved_ymd[:4]}-{resolved_ymd[4:6]}-{resolved_ymd[6:]}"
     if not pool:
@@ -4315,6 +4337,7 @@ def _build_theme_wind_strength(top_n=10):
         'data_prior': bool(date_fmt and date_fmt != today_bj),
         'trading': _is_trading_hours(),
         'fallback': fallback,
+        'live_source': 'akshare.stock_zt_pool_em' if live_session else 'local_kpl_snapshot',
         'plates': plates_out,
         'codes': sorted(all_codes),
         'ladder': ladder,
@@ -21854,7 +21877,10 @@ function renderThemeWindStrength(sectorData, twsData) {
     h += _twsRenderPlateTable(sectorData);
     h += _twsRenderBoardSummary(twsData);
     if (!twsData || !twsData.plates || !twsData.plates.length) {
-        h += '<div class="lt-trajectory-loading">' + (twsData && twsData.fallback ? '实时板块数据不可用，已用历史涨停兜底' : '暂无板块数据，非交易时段或数据加载失败') + '</div>';
+        var emptyMsg = (twsData && twsData.live_unavailable)
+            ? (twsData.message || '盘中实时涨停数据暂不可用，正在重试')
+            : (twsData && twsData.fallback ? '实时板块数据不可用，已用历史涨停兜底' : '暂无板块数据，非交易时段或数据加载失败');
+        h += '<div class="lt-trajectory-loading">' + emptyMsg + '</div>';
         return h;
     }
     // 板块树（芯片/医药等折叠目录）已移至机会推演前方（_twsRenderArchDiagrams 内），此处不再渲染
