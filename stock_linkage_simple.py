@@ -5289,7 +5289,16 @@ def _build_theme_map(ndays=40):
     today_lb = {}
     _pool = []
     try:
-        _pool = _get_zt_pool_cached() or []
+        # 盯盘 TOP10 盘中必须复用“实时 → 今日涨停”的轻量实时池；
+        # 完整涨停池还会做概念解析，偶发空返回会导致 TOP10 误显示历史数据。
+        _pool = (_get_zt_timeline_pool_cached() if _is_trading_hours() else _get_zt_pool_cached()) or []
+        if _is_trading_hours():
+            _today_fmt = _bj_now().strftime('%Y-%m-%d')
+            _pool_date = str(_pool[0].get('trade_date') or '') if _pool else ''
+            if len(_pool_date) == 8:
+                _pool_date = f'{_pool_date[:4]}-{_pool_date[4:6]}-{_pool_date[6:]}'
+            if _pool_date != _today_fmt:
+                _pool = []
         today_codes = {p.get('code', '') for p in _pool if p.get('code')}
         today_lb = {p.get('code', ''): int(p.get('lianban', 0) or 1) for p in _pool if p.get('code')}
     except Exception:
@@ -5990,6 +5999,32 @@ def _build_market_structure(ndays=30, date_end=None, strict_cutoff=True):
     }
 
 
+def _build_ladder_linkage_structure(ndays=30):
+    """连板联动页复用市场结构，并为连板股补充近100个交易日的细分题材标签。"""
+    data = _build_market_structure(ndays=ndays)
+    if not data.get('theme_pyramids'):
+        return data
+    _kpl_ensure_loaded()
+    all_days = sorted(_trading_days)
+    window = all_days[-100:] if all_days else []
+    if window:
+        _kpl_ensure_loaded(window[0], window[-1])
+    excluded = set(_TM_NON_THEME) | {'中报增长', '资产重组', '并购重组', '业绩预增', 'ST板块'}
+    for topic in data.get('theme_pyramids') or []:
+        for stock in topic.get('stocks') or []:
+            tags = []
+            for row in _kpl_rows_by_stock.get(stock.get('code', ''), []) or []:
+                if window and (row.get('date', '') or '').replace('-', '') < window[0]:
+                    continue
+                for tag in _traj_valid_tags(row.get('reason_tag', '') or '', row.get('reason_brief', '') or ''):
+                    tag = str(tag).strip()
+                    if tag and tag not in excluded and not any(x in tag for x in ('次新', '中报', '资产重组', '并购重组')) and tag not in tags:
+                        tags.append(tag)
+            stock['historical_tags'] = tags[:4]
+    data['linkage_tag_window'] = 100
+    return data
+
+
 def _review_market_emotion_for_date(date_fmt):
     """levistock 市场情绪快照；显式传入复盘日期，禁止使用后续行情。
 
@@ -6390,6 +6425,12 @@ def _build_market_theme_pyramids(day_infos, recent_fmt, limit=60):
             today_date = latest_data_date
             today_max = max((int((s['events'].get(today_date) or {}).get('level') or 0) for s in tracked), default=0)
             today_count = sum(1 for s in tracked if today_date in s['events'])
+            daily_max_levels = {}
+            for _date in recent_fmt:
+                daily_max_levels[_date] = max(
+                    (int((s['events'].get(_date) or {}).get('level') or 0) for s in tracked),
+                    default=0,
+                )
             break_gaps = []
             if today_max == 0:
                 for s in tracked:
@@ -6402,6 +6443,7 @@ def _build_market_theme_pyramids(day_infos, recent_fmt, limit=60):
             out.append({
                 'theme': theme, 'max_level': theme_max, 'last_date': last_date,
                 'today_max_level': today_max, 'today_count': today_count,
+                'daily_max_levels': daily_max_levels,
                 'shortest_break_gap': shortest_break_gap, 'stocks': tracked,
             })
     # 先按今日连板天梯；今日无涨停的题材再按最短断板间隔升序，
@@ -8819,6 +8861,8 @@ button:disabled { background: #555; cursor: not-allowed; }
         .tabs.simple .tab[data-tab="kplsearch"] { order: 2; }
         .tabs.simple .tab[data-tab="stockquery"] { order: 3; }
         .tabs.simple .tab[data-tab="marketstructure"] { order: 3; }
+        .tabs.simple .tab[data-tab="ladderlinkage"] { order: 4; }
+        .tabs.simple .tab[data-tab="kpltree"] { order: 5; }
 .tabs.simple .tab[data-tab="etf"] { order: 5; }
 .tabs.simple .tab[data-tab="specialwatch"] { order: 6; }
 
@@ -13316,6 +13360,13 @@ td.lt-trajectory-cell {
 .race-toggle-icon:hover { border-color:#ffd700; color:#ffd700; }
 .race-toggle-icon.hidden { opacity:0.35; background:rgba(255,255,255,0.05); }
 @media (min-width: 999999px) {
+/* 连板联动：沿用市场结构天梯，仅增加历史题材标签提示。 */
+.ms-linkage-page { padding-bottom: 18px; }
+.ms-linkage-page .ms-linkage-card { margin-bottom: 10px; }
+.ms-linkage-page .ms-tp-chip { display:inline-grid; grid-template-columns:auto auto; align-items:center; column-gap:5px; row-gap:2px; vertical-align:top; white-space:nowrap; }
+.ms-linkage-page .ms-linkage-stock-name { min-width:0; }
+.ms-linkage-page .ms-linkage-tags { grid-column:1 / -1; color:#8bdcff; font-size:.74em; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:210px; }
+
 /* ===== 市场结构 · 素雅配色覆盖 =====
  * 保留涨停/断板的语义色，但统一降低饱和度与发光感，避免首版区域过于刺眼。
  */
@@ -13633,6 +13684,7 @@ td.lt-trajectory-cell {
         <div class="tab" data-tab="deepsearch" data-not-simple onclick="switchTab('deepsearch')">涨停</div>
         <div class="tab" data-tab="stockquery" onclick="switchTab('stockquery')">个股查询</div>
         <div class="tab" data-tab="marketstructure" onclick="switchTab('marketstructure')">市场结构</div>
+        <div class="tab" data-tab="ladderlinkage" onclick="switchTab('ladderlinkage')">连板联动</div>
         <div class="tab" data-tab="kpltree" onclick="switchTab('kpltree')">开盘啦</div>
         <div class="tab" data-tab="industrychain" onclick="switchTab('industrychain')">产业链</div>
         <div class="tab" data-tab="sentiment" onclick="switchTab('sentiment')">舆情监控</div>
@@ -13929,6 +13981,9 @@ td.lt-trajectory-cell {
             </div>
         </div>
     </div>
+    <div class="tab-content" id="tab-ladderlinkage">
+        <div id="ladderLinkageContainer"><div class="loading">加载连板联动...</div></div>
+    </div>
     <div class="tab-content" id="tab-industrychain">
         <div id="industryChainContainer"><div class="loading">加载产业链编辑器...</div></div>
     </div>
@@ -14193,6 +14248,7 @@ function switchTab(tab) {
         else if (_msIsBeijingTradingWindow()) loadMarketStructure(true, true);
         _msEnsureLiveRefresh();
     }
+    if (tab === 'ladderlinkage') loadLadderLinkage();
 }
 
 // Tab mode: simple / full
@@ -22140,6 +22196,8 @@ function _msLbCls(lb) {
 }
 
 function loadMarketStructure(force, silent) {
+    _msLinkageMode = false;
+    _msRecentEvolutionWindow = 10;
     var container = document.getElementById('marketStructureContainer');
     if (!container) return;
     if (_marketStructureLoading && !force) return;
@@ -22207,9 +22265,18 @@ function _msBuildIndexes() {
 
 var _msThemeDateIdx = {};  // 每张细分题材金字塔独立回放位置，0=最新交易日
 var _msEvolutionDate = ''; // 题材10日演化总结独立日期选择
+var _msLinkageMode = false;
+var _msRecentEvolutionWindow = 10;
 
 function _msThemeEvent(stock, date) {
-    return (stock.events || {})[date] || null;
+    var events = (stock && stock.events) || {};
+    if (events[date]) return events[date];
+    var target = String(date || '').replace(/[^0-9]/g, '');
+    var keys = Object.keys(events);
+    for (var i = 0; i < keys.length; i++) {
+        if (String(keys[i]).replace(/[^0-9]/g, '') === target) return events[keys[i]];
+    }
+    return null;
 }
 
 function _msThemePrior(stock, dates, idx) {
@@ -22247,7 +22314,10 @@ function _msThemeChip(stock, label, css, extra, themeName) {
     var code = _kplEsc(String(stock.code || '')).replace(/'/g, '');
     var name = _kplEsc(stock.name || stock.code || '');
     var theme = _kplEsc(themeName || '');
-    return '<span class="ms-tp-chip ' + css + '" data-code="' + code + '" data-name="' + name + '" data-theme="' + theme + '" title="点击查看股票K线" onclick="_msOpenStockKline(this.getAttribute(&quot;data-code&quot;),this.getAttribute(&quot;data-name&quot;))">' + name + ' <b>' + _kplEsc(label) + '</b>' + (extra || '') + '</span>';
+    var historicalTags = (_msLinkageMode && stock.historical_tags && stock.historical_tags.length)
+        ? ' <small class="ms-linkage-tags">' + _kplEsc(stock.historical_tags.join(' · ')) + '</small>' : '';
+    var linkageName = _msLinkageMode ? '<span class="ms-linkage-stock-name">' + name + '</span>' : name;
+    return '<span class="ms-tp-chip ' + css + '" data-code="' + code + '" data-name="' + name + '" data-theme="' + theme + '" title="点击查看股票K线" onclick="_msOpenStockKline(this.getAttribute(&quot;data-code&quot;),this.getAttribute(&quot;data-name&quot;))">' + linkageName + ' <b>' + _kplEsc(label) + '</b>' + (extra || '') + historicalTags + '</span>';
 }
 
 function _msPrepareThemeKline(theme, dates, pos, windowSize, sortMode) {
@@ -22323,8 +22393,9 @@ function _msRecent10NameHtml(stock) {
 // 题材金字塔近10日演化：以当前回放日期为截止点，只向更早交易日回看，避免混入未来数据。
 function _msRenderRecent10Summary(theme, dates, pos) {
     var stocks = theme.stocks || [];
-    var period = dates.slice(pos, pos + 10);
-    var h = '<div class="ms-tp-recent10"><div class="ms-tp-recent10-title">近10日题材演化</div>';
+    var period = dates.slice(pos, pos + (_msRecentEvolutionWindow || 10));
+    var recentWindow = _msRecentEvolutionWindow || 10;
+    var h = '<div class="ms-tp-recent10"><div class="ms-tp-recent10-title">近' + recentWindow + '日题材演化</div>';
     var shown = 0;
     for (var di = 0; di < period.length; di++) {
         var date = period[di];
@@ -22398,14 +22469,59 @@ function _msRenderEvolution10(pyramids, dates) {
     _msEvolutionDate = selected;
     var pos = dates.indexOf(selected);
     var withLimit = [], withoutLimit = [];
+    var selectedDayThemeMax = {};
+    // 优先使用市场结构原始天梯中所选日期的层级，避免题材轨迹索引滞后导致排序仍沿用最新日。
+    var selectedDay = null;
+    var selectedDateKey = String(selected || '').replace(/[^0-9]/g, '');
+    for (var sdi = 0; sdi < (_msData.days || []).length; sdi++) {
+        if (String((_msData.days[sdi] || {}).date || '').replace(/[^0-9]/g, '') === selectedDateKey) {
+            selectedDay = _msData.days[sdi];
+            break;
+        }
+    }
+    if (selectedDay) {
+        var selectedLevels = selectedDay.levels || {};
+        Object.keys(selectedLevels).forEach(function(levelKey) {
+            var level = Number(levelKey || 0);
+            var groups = selectedLevels[levelKey] || [];
+            for (var sgi = 0; sgi < groups.length; sgi++) {
+                var groupTheme = String((groups[sgi] || {}).theme || '');
+                if (groupTheme) selectedDayThemeMax[groupTheme] = Math.max(selectedDayThemeMax[groupTheme] || 0, level);
+            }
+        });
+    }
+    function selectedMaxLevel(topic) {
+        var dailyMax = topic.daily_max_levels || {};
+        if (dailyMax[selected] !== undefined) return Number(dailyMax[selected] || 0);
+        var selectedKey = String(selected || '').replace(/[^0-9]/g, '');
+        var dailyKeys = Object.keys(dailyMax);
+        for (var dki = 0; dki < dailyKeys.length; dki++) {
+            if (String(dailyKeys[dki]).replace(/[^0-9]/g, '') === selectedKey) return Number(dailyMax[dailyKeys[dki]] || 0);
+        }
+        if (selectedDayThemeMax[topic.theme] !== undefined) return selectedDayThemeMax[topic.theme];
+        var max = 0;
+        for (var si = 0; si < (topic.stocks || []).length; si++) {
+            var event = _msThemeEvent(topic.stocks[si], selected);
+            if (event) max = Math.max(max, Number(event.level || 0));
+        }
+        return max;
+    }
+    // 日期切换后必须按所选日期的连板高度重排，而不是沿用最新交易日的后端顺序。
+    var orderedTopics = [];
     for (var ci = 0; ci < pyramids.length; ci++) {
         var ct = pyramids[ci] || {};
         if (!ct.stocks || !ct.stocks.length) continue;
-        var hasLimit = false;
-        for (var csi = 0; csi < ct.stocks.length; csi++) {
-            if (_msThemeEvent(ct.stocks[csi], selected)) { hasLimit = true; break; }
-        }
-        (hasLimit ? withLimit : withoutLimit).push({topic: ct, index: ci});
+        var selectedMax = selectedMaxLevel(ct);
+        orderedTopics.push({topic: ct, index: ci, selectedMax: selectedMax});
+    }
+    orderedTopics.sort(function(a, b) {
+        return b.selectedMax - a.selectedMax ||
+            Number(b.topic.max_level || 0) - Number(a.topic.max_level || 0) ||
+            String(a.topic.theme || '').localeCompare(String(b.topic.theme || ''));
+    });
+    for (var oi = 0; oi < orderedTopics.length; oi++) {
+        var ordered = orderedTopics[oi];
+        (ordered.selectedMax > 0 ? withLimit : withoutLimit).push(ordered);
     }
     var h = '<section class="ms-evolution10" id="msEvolution10Section">';
     h += '<div class="ms-evolution10-head"><span class="ms-evolution10-title">🧭 题材10日演化总结</span><span class="ms-date-note">按上方题材卡片顺序 · 截止日期不包含未来数据</span>';
@@ -22413,10 +22529,9 @@ function _msRenderEvolution10(pyramids, dates) {
     for (var di = 0; di < dates.length; di++) h += '<option value="' + _kplEsc(dates[di]) + '"' + (dates[di] === selected ? ' selected' : '') + '>' + _kplEsc(dates[di]) + '</option>';
     h += '</select></div>';
     h += '<div class="ms-evolution10-nav"><span class="ms-theme-nav-title">题材导航</span>';
-    for (var ni = 0; ni < pyramids.length; ni++) {
-        var nt = pyramids[ni] || {};
-        if (!nt.stocks || !nt.stocks.length) continue;
-        h += '<a href="#msEvolution10Topic-' + ni + '">' + _kplEsc(nt.theme || '') + '</a>';
+    for (var ni = 0; ni < orderedTopics.length; ni++) {
+        var navTopic = orderedTopics[ni];
+        h += '<a href="#msEvolution10Topic-' + navTopic.index + '">' + _kplEsc(navTopic.topic.theme || '') + '</a>';
     }
     h += '</div>';
     function renderEvolutionGroup(label, items, accent) {
@@ -22425,7 +22540,7 @@ function _msRenderEvolution10(pyramids, dates) {
         gh += '<div class="ms-evolution10-cards">';
         for (var ii = 0; ii < items.length; ii++) {
             var item = items[ii], topic = item.topic, pi = item.index;
-            var todayMax = 0, todayMaxCount = 0;
+            var todayMax = selectedMaxLevel(topic), todayMaxCount = 0;
             for (var tssi = 0; tssi < (topic.stocks || []).length; tssi++) {
                 var todayEvent = _msThemeEvent(topic.stocks[tssi], selected);
                 if (!todayEvent) continue;
@@ -22433,12 +22548,12 @@ function _msRenderEvolution10(pyramids, dates) {
                 if (todayLevel > todayMax) { todayMax = todayLevel; todayMaxCount = 1; }
                 else if (todayLevel === todayMax) todayMaxCount++;
             }
-            var todayStat = '<span class="ms-evolution10-card-today">今日最高<span class="today-level">' + todayMax + '板</span>（<span class="today-count">' + todayMaxCount + '个</span>）</span>';
+            var todayStat = '<span class="ms-evolution10-card-today">当日最高<span class="today-level">' + todayMax + '板</span>（<span class="today-count">' + todayMaxCount + '个</span>）</span>';
             var evolutionKlineKey = _msPrepareThemeKline(topic, dates, pos, 10, 'evolution');
             var evolutionThemeName = String(topic.theme || '').replace(/'/g, '');
             var evolutionThemeTitle = _kplEsc(topic.theme || '');
             var evolutionKlineBtn = '<button type="button" class="ms-tp-kline-btn" onclick="event.stopPropagation();_tmmOpenThemeKline(\\x27' + evolutionThemeName + '\\x27,\\x27' + evolutionKlineKey + '\\x27)" title="查看近10个交易日内有涨停的股票K线走势">📈 K线</button>';
-            gh += '<article class="ms-evolution10-card" id="msEvolution10Topic-' + pi + '"><div class="ms-evolution10-card-head"><span class="ms-evolution10-theme-link"' + _msThemeSearchAttr(topic.theme) + '>' + evolutionThemeTitle + '</span>' + evolutionKlineBtn + '<span class="ms-evolution10-card-meta">最高' + Number(topic.max_level || 0) + '板 · ' + _kplEsc(selected.slice(5)) + '</span>' + todayStat + '</div>';
+            gh += '<article class="ms-evolution10-card" id="msEvolution10Topic-' + pi + '"><div class="ms-evolution10-card-head"><span class="ms-evolution10-theme-link"' + _msThemeSearchAttr(topic.theme) + '>' + evolutionThemeTitle + '</span>' + evolutionKlineBtn + '<span class="ms-evolution10-card-meta">最高' + todayMax + '板 · ' + _kplEsc(selected.slice(5)) + '</span>' + todayStat + '</div>';
             gh += _msRenderRecent10Summary(topic, dates, pos) + '</article>';
         }
         return gh + '</div></section>';
@@ -22550,11 +22665,11 @@ function _msRenderThemePyramidInner(idx, theme, dates, pos) {
                 var it = live[li];
                 var cls = it.actual >= 5 ? 'lvhigh' : 'lv' + it.actual;
                 var label = it.resumed ? '重启·' + it.actual + '板' : it.actual + '板';
-                var currentCum = (it.stock.cum_pcts || {})[date];
-                var cumLabel = currentCum === undefined ? '' : ' <i class="ms-tp-cum">累计' + _msThemePct(currentCum) + '</i>';
+                var currentValue = _msLinkageMode ? (it.stock.pcts || {})[date] : (it.stock.cum_pcts || {})[date];
+                var currentLabel = currentValue === undefined ? '' : ' <i class="ms-tp-cum">' + (_msLinkageMode ? '' : '累计') + _msThemePct(currentValue) + '</i>';
                 var liveTime = _kplLevelFormatTime(it.event.first_time);
                 var timeLabel = liveTime && liveTime !== '--' ? ' <i class="ms-tp-time">封板' + _kplEsc(liveTime) + '</i>' : '';
-                var extra = timeLabel + (it.resumed ? ' <i class="ms-tp-restart">沿' + lv + '板</i>' : '') + cumLabel;
+                var extra = timeLabel + (it.resumed ? ' <i class="ms-tp-restart">沿' + lv + '板</i>' : '') + currentLabel;
                 h += _msThemeChip(it.stock, label, 'live ' + cls, extra, theme.theme);
             }
         }
@@ -22564,10 +22679,12 @@ function _msRenderThemePyramidInner(idx, theme, dates, pos) {
         for (var bi = 0; bi < brokenHere.length; bi++) {
             var br = brokenHere[bi];
             // 历史日期回放的断板股展示首板以来累计涨幅；不再把单日缺失误显示为“涨跌幅待补”。
-            var brCum = br.cum === undefined ? '' : ' · 累计' + _msThemePct(br.cum);
+            var brCum = (_msLinkageMode || br.cum === undefined) ? '' : ' · 累计' + _msThemePct(br.cum);
             var breakLabel = (br.peak <= 1 ? '首板' : '曾' + br.peak + '板') + ' (+' + br.gap + ')';
-            var brMove = br.cum === undefined ? (br.pct === undefined ? '累计涨幅待补' : '当日' + _msThemePct(br.pct)) : '累计' + _msThemePct(br.cum);
-            var brPctValue = br.cum === undefined ? br.pct : br.cum;
+            var brMove = _msLinkageMode
+                ? (br.pct === undefined ? '' : _msThemePct(br.pct))
+                : (br.cum === undefined ? (br.pct === undefined ? '累计涨幅待补' : '当日' + _msThemePct(br.pct)) : '累计' + _msThemePct(br.cum));
+            var brPctValue = _msLinkageMode ? br.pct : (br.cum === undefined ? br.pct : br.cum);
             var brPctCls = brPctValue === undefined ? '' : (Number(brPctValue) >= 0 ? ' ms-pct-up' : ' ms-pct-down');
             h += _msThemeChip(br.stock, breakLabel, 'break', ' <i class="ms-tp-pct' + brPctCls + '">' + _kplEsc(brMove) + '</i>', theme.theme);
         }
@@ -22970,6 +23087,36 @@ function _msRender() {
     // 细分题材卡片先展示，市场细分题材结构及其表格总览放在页面末尾。
     h += _msRenderLadderPyramid();
     return h;
+}
+
+function _msRenderLadderLinkage(data) {
+    _msData = data;
+    _msLinkageMode = true;
+    _msRecentEvolutionWindow = 15;
+    var dates = (data.dates || []).slice().sort(function(a, b) { return String(b).localeCompare(String(a)); });
+    var pyramids = data.theme_pyramids || [];
+    var h = '<div class="ms-linkage-page"><div class="ms-sec-head">🔗 连板联动 <span class="ms-date-note">复制市场结构题材涨停天梯 · 近100日细分题材标签 · 近15日演化</span></div>';
+    if (!pyramids.length) h += '<div class="empty">暂无连板联动数据</div>';
+    else {
+        h += '<div class="ms-theme-nav"><span class="ms-theme-nav-title">题材导航</span>';
+        for (var ni = 0; ni < pyramids.length; ni++) h += '<a href="#msLinkagePyrCard-' + ni + '">' + _kplEsc(pyramids[ni].theme || '') + '</a>';
+        h += '</div><div class="ms-theme-pyramids">';
+        for (var i = 0; i < pyramids.length; i++) h += '<section class="ms-linkage-card" id="msLinkagePyrCard-' + i + '">' + _msRenderThemePyramidCard(i, pyramids[i], dates) + '</section>';
+        h += '</div>';
+        h += _msRenderEvolution10(pyramids, dates);
+    }
+    return h + '</div>';
+}
+
+var _ladderLinkageLoaded = false;
+function loadLadderLinkage() {
+    var box = document.getElementById('ladderLinkageContainer');
+    if (!box || _ladderLinkageLoaded) return;
+    box.innerHTML = '<div class="loading">加载连板联动...</div>';
+    fetch('/api/ladder_linkage?_t=' + Date.now(), {cache:'no-store'})
+        .then(function(r) { return r.json(); })
+        .then(function(data) { box.innerHTML = _msRenderLadderLinkage(data); _ladderLinkageLoaded = true; })
+        .catch(function(e) { box.innerHTML = '<div class="error">连板联动加载失败：' + _kplEsc(e.message || '') + '</div>'; });
 }
 
 function _msRenderSummary() {
@@ -36554,6 +36701,17 @@ class Handler(BaseHTTPRequestHandler):
                 if result is None:
                     result = _build_market_structure(ndays=ndays, date_end=date_end)
                     _set_cache(cache_key, result)
+                self._respond_json(result, cors_headers)
+            except Exception as e:
+                import traceback
+                self._respond_json({'error': str(e), 'traceback': traceback.format_exc()}, cors_headers)
+
+        elif path == '/api/ladder_linkage':
+            try:
+                result = _get_cached('ladder_linkage_structure', ttl=60 if _is_trading_hours() else 300)
+                if result is None:
+                    result = _build_ladder_linkage_structure(ndays=30)
+                    _set_cache('ladder_linkage_structure', result)
                 self._respond_json(result, cors_headers)
             except Exception as e:
                 import traceback
