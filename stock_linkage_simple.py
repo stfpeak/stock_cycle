@@ -7,6 +7,7 @@
 """
 
 import os
+import copy
 import sys
 import json
 import sqlite3
@@ -815,6 +816,8 @@ except Exception as e:
     print(f"加载KPL涨停深挖索引失败: {e}")
 
 _kpl_last_file_count = 0  # 记录上次扫描的文件数，用于自动检测目录变化
+_kpl_lianban_cache = {}   # {(code, date_fmt): 连续涨停数}，日文件变动时统一清空
+_tws_ladder_theme_cache = {}  # {(code, date_fmt): (板块, 细分题材)}，避免反复扫描当日全量行
 
 def _kpl_rescan():
     """重新扫描zt_data目录，刷新_kpl_day_files并清除行缓存"""
@@ -826,6 +829,8 @@ def _kpl_rescan():
         _kpl_rows = []
         _kpl_rows_by_date = {}
         _kpl_rows_by_stock = {}
+        _kpl_lianban_cache.clear()
+        _tws_ladder_theme_cache.clear()
 
 def _kpl_ensure_loaded(date_start=None, date_end=None):
     """按日期范围逐一加载日JSON到缓存"""
@@ -1466,8 +1471,13 @@ def _kpl_race_match_stock(sc, q_lower, strict):
 def _kpl_compute_lianban(stock_code, date_str):
     """根据KPL实际数据计算股票在指定日期的连续涨停天数（连板数）。
     date_str: YYYY-MM-DD 格式。"""
+    cache_key = (str(stock_code or ''), str(date_str or ''))
+    cached = _kpl_lianban_cache.get(cache_key)
+    if cached is not None:
+        return cached
     records = _kpl_rows_by_stock.get(stock_code, [])
     if not records:
+        _kpl_lianban_cache[cache_key] = 1
         return 1
     # 构建该股票的所有涨停日期set (YYYYMMDD格式)
     zt_set = set()
@@ -1477,6 +1487,7 @@ def _kpl_compute_lianban(stock_code, date_str):
             zt_set.add(d)
     date_ymd = date_str.replace('-', '')
     if date_ymd not in zt_set:
+        _kpl_lianban_cache[cache_key] = 1
         return 1
     lb = 1
     curr = date_ymd
@@ -1487,6 +1498,7 @@ def _kpl_compute_lianban(stock_code, date_str):
             curr = prev
         else:
             break
+    _kpl_lianban_cache[cache_key] = lb
     return lb
 
 
@@ -3549,18 +3561,28 @@ def _tws_build_focus(theme, matched, date_fmt, today_zt_codes):
 
 def _tws_ladder_plate_theme(code, date_fmt):
     """取某股今日(优先)/最近 KPL 行的板块名与细分题材。返回 (plate_name, reason_tag)。"""
+    cache_key = (str(code or ''), str(date_fmt or ''))
+    cached = _tws_ladder_theme_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    result = ('', '')
     if date_fmt:
         for r in _kpl_rows_by_date.get(date_fmt, []):
             if r.get('stock_code') == code:
-                return ((r.get('plate_name', '') or '').split(',')[0].strip(),
-                        (r.get('reason_tag', '') or '').strip())
+                result = ((r.get('plate_name', '') or '').split(',')[0].strip(),
+                          (r.get('reason_tag', '') or '').strip())
+                _tws_ladder_theme_cache[cache_key] = result
+                return result
     recs = _kpl_rows_by_stock.get(code, [])
     if recs:
         r = recs[-1]
-        return ((r.get('plate_name', '') or '').split(',')[0].strip(),
-                (r.get('reason_tag', '') or '').strip())
-    tag, _ = _kpl_resolve_tag(code)
-    return '', tag or ''
+        result = ((r.get('plate_name', '') or '').split(',')[0].strip(),
+                  (r.get('reason_tag', '') or '').strip())
+    else:
+        tag, _ = _kpl_resolve_tag(code)
+        result = ('', tag or '')
+    _tws_ladder_theme_cache[cache_key] = result
+    return result
 
 
 def _tws_build_ladder(date_fmt, prev_fmt, zt_stocks, today_zt_codes):
@@ -5086,6 +5108,178 @@ def _zt_effective_date_ymd():
         return latest.replace('-', '')
     previous = [d for d in _trading_days if d < today]
     return previous[-1] if previous else today
+
+
+# 市场情绪/大盘指数最后一次成功快照。指数实时接口只提供当前行情，
+# 因此非交易日必须复用最近一次成功的交易日数据，不能把周末/节假日当成新日期请求。
+_MARKET_SENTIMENT_SNAPSHOT_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), 'data', 'market_sentiment_latest.json')
+
+
+def _market_sentiment_effective_date():
+    """返回市场情绪应使用的日期及是否允许请求盘中实时数据。
+
+    盘中使用北京时间当天；盘后、盘前和非交易日使用本地已有数据的最近交易日。
+    这里不使用交易日历的最后一项，因为日历可能预生成到年末。
+    """
+    now_bj = datetime.now(timezone(timedelta(hours=8)))
+    today = now_bj.strftime('%Y%m%d')
+    realtime = _is_trading_hours()
+    if realtime:
+        return today, True
+    latest = (_get_latest_zt_data_date() or '').replace('-', '')
+    if latest and latest <= today:
+        return latest, False
+    previous = [d for d in _trading_days if d <= today]
+    return (previous[-1] if previous else today), False
+
+
+def _load_market_sentiment_snapshot():
+    """读取最近一次成功快照，并拒绝未来日期或空数据。"""
+    try:
+        with open(_MARKET_SENTIMENT_SNAPSHOT_PATH, 'r', encoding='utf-8') as fh:
+            payload = json.load(fh)
+        date_ymd = str(payload.get('data_date', '') or '').replace('-', '')
+        now_ymd = datetime.now(timezone(timedelta(hours=8))).strftime('%Y%m%d')
+        if date_ymd and date_ymd <= now_ymd and (
+                payload.get('indices') or payload.get('emotion')):
+            return payload
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
+def _save_market_sentiment_snapshot(payload):
+    """持久化最近成功的指数/情绪数据，保证重启和非交易日仍可展示。"""
+    try:
+        os.makedirs(os.path.dirname(_MARKET_SENTIMENT_SNAPSHOT_PATH), exist_ok=True)
+        tmp_path = _MARKET_SENTIMENT_SNAPSHOT_PATH + '.tmp'
+        with open(tmp_path, 'w', encoding='utf-8') as fh:
+            json.dump(payload, fh, ensure_ascii=False)
+        os.replace(tmp_path, _MARKET_SENTIMENT_SNAPSHOT_PATH)
+    except OSError:
+        # 快照只是兜底，不能让实时接口因为磁盘权限失败。
+        pass
+
+
+def _fetch_market_indices_fallback():
+    """指数主接口异常时的轻量备用源。
+
+    levistock.market_index_em 使用东方财富 push2delay 接口，偶发 502/连接
+    中断时会让整个指数列表为空。腾讯行情接口返回同一组指数的实时/收盘
+    快照，字段足够支撑当前卡片展示；这里只做数据源兜底，不改变主数据源。
+    """
+    url = 'https://qt.gtimg.cn/q=' + ','.join([
+        's_sh000001', 's_sz399001', 's_sz399006',
+        's_sh000688', 's_sh000300', 's_sh000905'
+    ])
+    code_map = {
+        '000001': '上证指数', '399001': '深证成指', '399006': '创业板指',
+        '000688': '科创50', '000300': '沪深300', '000905': '中证500',
+    }
+    response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=8)
+    response.raise_for_status()
+    text = response.content.decode('gb18030', errors='ignore')
+    result = []
+    for match in re.finditer(r'v_[^=]+="([^"]*)"', text):
+        fields = match.group(1).split('~')
+        if len(fields) < 8:
+            continue
+        code = str(fields[2] or '').strip()
+        name = code_map.get(code)
+        if not name:
+            continue
+        def _number(value, digits=2):
+            try:
+                return round(float(value), digits)
+            except (TypeError, ValueError):
+                return '-'
+        result.append({
+            'name': name,
+            'code': code,
+            'price': _number(fields[3]),
+            'change_pct': _number(fields[5]),
+            'change_amt': _number(fields[4]),
+            'volume': fields[6] or '-',
+            'amount': fields[7] or '-',
+        })
+    order = list(code_map.values())
+    result.sort(key=lambda item: order.index(item['name']))
+    return result
+
+
+def _build_market_sentiment():
+    """获取大盘指数与市场情绪；数据源失败时回退最近成功交易日快照。"""
+    import levistock as lk
+
+    requested_ymd, realtime = _market_sentiment_effective_date()
+    requested_fmt = '%s-%s-%s' % (requested_ymd[:4], requested_ymd[4:6], requested_ymd[6:])
+    previous = _load_market_sentiment_snapshot() or {}
+    result = {
+        'indices': previous.get('indices') or [],
+        'emotion': previous.get('emotion') or {},
+        'data_date': previous.get('data_date') or requested_ymd,
+        'data_source': '本地最近成功快照' if previous else 'levistock',
+        'data_prior': bool(previous),
+    }
+    fresh = False
+
+    # 指数接口返回当前行情；非交易日返回的通常就是最近收盘值，日期统一贴到
+    # 最近有效交易日，避免前端误认为是周末数据。
+    try:
+        indices = lk.market_index_em()
+        if isinstance(indices, list) and indices:
+            result['indices'] = indices
+            fresh = True
+    except Exception:
+        pass
+    if not result['indices']:
+        try:
+            indices = _fetch_market_indices_fallback()
+            if indices:
+                result['indices'] = indices
+                result['data_source'] = '腾讯行情备用'
+                fresh = True
+        except Exception:
+            pass
+
+    # 情绪接口支持历史日期。盘中先取当日，非交易日取最近有效日；若当日盘中
+    # 暂时没有数据，再回退最近本地有效日期，避免整块指数区一起失败。
+    try:
+        emotion = lk.market_emotion_kph(date=requested_fmt)
+        if isinstance(emotion, dict) and emotion:
+            result['emotion'] = emotion
+            fresh = True
+    except Exception:
+        if realtime:
+            fallback_ymd = (_get_latest_zt_data_date() or '').replace('-', '')
+            if fallback_ymd and fallback_ymd < requested_ymd:
+                try:
+                    fallback_fmt = '%s-%s-%s' % (fallback_ymd[:4], fallback_ymd[4:6], fallback_ymd[6:])
+                    emotion = lk.market_emotion_kph(date=fallback_fmt)
+                    if isinstance(emotion, dict) and emotion:
+                        result['emotion'] = emotion
+                        result['data_date'] = fallback_ymd
+                        result['data_prior'] = True
+                        fresh = True
+                except Exception:
+                    pass
+
+    if fresh:
+        if realtime and result.get('data_date') == previous.get('data_date'):
+            result['data_date'] = requested_ymd
+        elif not result.get('data_date'):
+            result['data_date'] = requested_ymd
+        result['data_date'] = str(result['data_date']).replace('-', '')
+        result['data_source'] = 'levistock' if not result.get('data_prior') else 'levistock/最近成功快照'
+        result['data_prior'] = result['data_date'] != requested_ymd
+        _save_market_sentiment_snapshot(result)
+    elif not result.get('indices') and not result.get('emotion'):
+        raise RuntimeError('暂无可用的大盘指数历史快照')
+
+    result['data_date'] = str(result.get('data_date') or requested_ymd).replace('-', '')
+    result['date'] = '%s-%s-%s' % (result['data_date'][:4], result['data_date'][4:6], result['data_date'][6:])
+    return result
 # 主线标签 → ETF 名关键词（用于关联 ETF 过滤）。键与 reason_tag 拆分后的标签匹配
 _REVIEW_ETF_TAG_KEYWORDS = {
     '算力': ['算力', '云计算', 'AI', '服务器', '光模块'],
@@ -5999,29 +6193,72 @@ def _build_market_structure(ndays=30, date_end=None, strict_cutoff=True):
     }
 
 
-def _build_ladder_linkage_structure(ndays=30):
+def _build_ladder_linkage_structure(ndays=30, include_history=True, include_history_tags=True):
     """连板联动页复用市场结构，并为连板股补充近100个交易日的细分题材标签。"""
-    data = _build_market_structure(ndays=ndays)
+    # 连板联动的底座与市场结构完全相同。优先复用同一份市场结构缓存，
+    # 避免用户切换两个页签时重复扫描历史天梯、KPL 标签与题材金字塔。
+    # 题材标签与 15 日天梯是连板联动页专属字段；深拷贝后再扩展，
+    # 避免把字段写回市场结构的共享缓存。
+    data = copy.deepcopy(_get_or_build_market_structure(ndays=ndays))
     if not data.get('theme_pyramids'):
         return data
-    _kpl_ensure_loaded()
-    all_days = sorted(_trading_days)
-    window = all_days[-100:] if all_days else []
-    if window:
-        _kpl_ensure_loaded(window[0], window[-1])
-    excluded = set(_TM_NON_THEME) | {'中报增长', '资产重组', '并购重组', '业绩预增', 'ST板块'}
-    for topic in data.get('theme_pyramids') or []:
-        for stock in topic.get('stocks') or []:
-            tags = []
-            for row in _kpl_rows_by_stock.get(stock.get('code', ''), []) or []:
-                if window and (row.get('date', '') or '').replace('-', '') < window[0]:
-                    continue
-                for tag in _traj_valid_tags(row.get('reason_tag', '') or '', row.get('reason_brief', '') or ''):
-                    tag = str(tag).strip()
-                    if tag and tag not in excluded and not any(x in tag for x in ('次新', '中报', '资产重组', '并购重组')) and tag not in tags:
-                        tags.append(tag)
-            stock['historical_tags'] = tags[:4]
+    if include_history_tags:
+        _kpl_ensure_loaded()
+        all_days = sorted(_trading_days)
+        window = all_days[-100:] if all_days else []
+        if window:
+            _kpl_ensure_loaded(window[0], window[-1])
+        excluded = set(_TM_NON_THEME) | {'中报增长', '资产重组', '并购重组', '业绩预增', 'ST板块'}
+        for topic in data.get('theme_pyramids') or []:
+            for stock in topic.get('stocks') or []:
+                tags = []
+                for row in _kpl_rows_by_stock.get(stock.get('code', ''), []) or []:
+                    if window and (row.get('date', '') or '').replace('-', '') < window[0]:
+                        continue
+                    for tag in _traj_valid_tags(row.get('reason_tag', '') or '', row.get('reason_brief', '') or ''):
+                        tag = str(tag).strip()
+                        if tag and tag not in excluded and not any(x in tag for x in ('次新', '中报', '资产重组', '并购重组')) and tag not in tags:
+                            tags.append(tag)
+                stock['historical_tags'] = tags[:4]
+    else:
+        for topic in data.get('theme_pyramids') or []:
+            for stock in topic.get('stocks') or []:
+                stock['historical_tags'] = []
     data['linkage_tag_window'] = 100
+    # 近15日逐日连板涨停表现：数据结构刻意与题材风向的 _twsRenderLadder 完全一致。
+    if include_history:
+        history_days = [d for d in sorted(_trading_days) if d <= _zt_effective_date_ymd()][-15:]
+        if history_days:
+            _kpl_ensure_loaded(history_days[0], history_days[-1])
+        snapshots = []
+        for idx, ymd in enumerate(reversed(history_days)):
+            date_fmt = f'{ymd[:4]}-{ymd[4:6]}-{ymd[6:]}'
+            prev_ymd = history_days[len(history_days) - 1 - idx - 1] if (len(history_days) - 1 - idx) > 0 else ''
+            prev_fmt = f'{prev_ymd[:4]}-{prev_ymd[4:6]}-{prev_ymd[6:]}' if prev_ymd else ''
+            rows = _kpl_rows_by_date.get(date_fmt, []) or []
+            seen, stocks = set(), []
+            for row in rows:
+                code = str(row.get('stock_code', '') or '').zfill(6)
+                if not code or code in seen:
+                    continue
+                seen.add(code)
+                stocks.append({'code': code, 'name': row.get('stock_name', '') or code,
+                               'lianban': _kpl_compute_lianban(code, date_fmt),
+                               'change_pct': None, 'first_time': row.get('first_time') or 999999,
+                               'reason_tag': row.get('reason_tag', '') or ''})
+            codes = [s['code'] for s in stocks]
+            pct_map = _review_load_daily_change_pct(codes, [date_fmt], allow_live=False) if codes else {}
+            for stock in stocks:
+                stock['change_pct'] = (pct_map.get(date_fmt) or {}).get(stock['code'])
+            code_set = set(codes)
+            snapshots.append({'date': date_fmt,
+                              'ladder': _tws_build_ladder(date_fmt, prev_fmt, stocks, code_set),
+                              'first_themes': _tws_build_first_themes(stocks, date_fmt)})
+        data['ladder_history'] = snapshots
+        data['ladder_history_pending'] = False
+    else:
+        data['ladder_history'] = []
+        data['ladder_history_pending'] = True
     return data
 
 
@@ -8276,33 +8513,105 @@ _update_progress_msg = ""
 # 分析结果缓存（大幅减少重复计算）
 _cache = {}  # {key: {'data': ..., 'time': timestamp}}
 _theme_wind_build_lock = threading.Lock()  # 首屏重型构建只允许一个请求执行
+_cache_lock = threading.RLock()
+_market_structure_build_locks = {}
+_market_structure_build_locks_lock = threading.Lock()
+_ladder_linkage_build_lock = threading.Lock()
 _CACHE_TTL = 3600  # 缓存有效期1小时
 _CACHE_MAX_SIZE = 200  # 最多缓存200个key，超过时淘汰最旧的
 
 def _get_cached(key, ttl=None):
     """获取缓存，过期返回None"""
-    entry = _cache.get(key)
+    with _cache_lock:
+        entry = _cache.get(key)
     if entry and (time.time() - entry['time'] < (ttl or _CACHE_TTL)):
         return entry['data']
     return None
 
 def _set_cache(key, data):
     """设置缓存（超过上限时淘汰最旧的1/3）"""
-    _cache[key] = {'data': data, 'time': time.time()}
-    if len(_cache) > _CACHE_MAX_SIZE:
-        # 按时间排序，保留最新的 2/3
-        sorted_keys = sorted(_cache.keys(), key=lambda k: _cache[k]['time'])
-        for old_key in sorted_keys[:len(sorted_keys) // 3]:
-            del _cache[old_key]
+    with _cache_lock:
+        _cache[key] = {'data': data, 'time': time.time()}
+        if len(_cache) > _CACHE_MAX_SIZE:
+            # 按时间排序，保留最新的 2/3
+            sorted_keys = sorted(_cache.keys(), key=lambda k: _cache[k]['time'])
+            for old_key in sorted_keys[:len(sorted_keys) // 3]:
+                del _cache[old_key]
 
 def _invalidate_cache(prefix=None):
     """清除缓存。prefix=None清全部，否则清匹配前缀的key"""
-    if prefix is None:
-        _cache.clear()
-    else:
-        for k in list(_cache.keys()):
-            if k.startswith(prefix):
-                del _cache[k]
+    with _cache_lock:
+        if prefix is None:
+            _cache.clear()
+        else:
+            for k in list(_cache.keys()):
+                if k.startswith(prefix):
+                    del _cache[k]
+
+
+def _market_structure_cache_key(ndays, date_end=None):
+    return 'market_structure:%s:%s' % (int(ndays), date_end or '')
+
+
+def _market_structure_cache_ttl():
+    # 盘中数据每 30 秒更新，盘后 5 分钟复用；与原接口策略保持一致。
+    return 30 if _is_trading_hours() else 300
+
+
+def _get_market_structure_build_lock(cache_key):
+    """按请求参数合并重型构建，避免并发切页触发同一份全量扫描。"""
+    with _market_structure_build_locks_lock:
+        lock = _market_structure_build_locks.get(cache_key)
+        if lock is None:
+            lock = threading.Lock()
+            _market_structure_build_locks[cache_key] = lock
+        return lock
+
+
+def _get_or_build_market_structure(ndays=30, date_end=None, force=False):
+    """读取或单飞构建市场结构；返回结构与原 API 完全一致。"""
+    cache_key = _market_structure_cache_key(ndays, date_end)
+    ttl = _market_structure_cache_ttl()
+    if not force:
+        cached = _get_cached(cache_key, ttl=ttl)
+        if cached is not None:
+            return cached
+    lock = _get_market_structure_build_lock(cache_key)
+    with lock:
+        # 等待同一请求的首个构建完成后直接拿结果，而不是再次计算。
+        if not force:
+            cached = _get_cached(cache_key, ttl=ttl)
+            if cached is not None:
+                return cached
+        result = _build_market_structure(ndays=ndays, date_end=date_end)
+        _set_cache(cache_key, result)
+        return result
+
+
+def _get_or_build_ladder_linkage(include_history=True):
+    """连板联动构建，并复用30日市场结构缓存。
+
+    摘要和完整历史使用独立缓存：摘要用于首屏快速展示，完整历史在后台补齐。
+    """
+    ttl = 60 if _is_trading_hours() else 300
+    cache_key = 'ladder_linkage_structure:%s' % ('full' if include_history else 'summary')
+    cached = _get_cached(cache_key, ttl=ttl)
+    if cached is not None:
+        return cached
+    with _ladder_linkage_build_lock:
+        cached = _get_cached(cache_key, ttl=ttl)
+        if cached is not None:
+            return cached
+        # 摘要只负责首屏当前联动卡片，复用市场结构页的20日底座；
+        # 完整历史仍使用30日底座并在后台补齐，避免首屏等待近100日/15日计算。
+        build_ndays = 30 if include_history else 20
+        result = _build_ladder_linkage_structure(
+            ndays=build_ndays,
+            include_history=include_history,
+            include_history_tags=include_history,
+        )
+        _set_cache(cache_key, result)
+        return result
 
 def _load_industry_chain_data():
     """惰性加载产业链数据"""
@@ -13366,6 +13675,28 @@ td.lt-trajectory-cell {
 .ms-linkage-page .ms-tp-chip { display:inline-grid; grid-template-columns:auto auto; align-items:center; column-gap:5px; row-gap:2px; vertical-align:top; white-space:nowrap; }
 .ms-linkage-page .ms-linkage-stock-name { min-width:0; }
 .ms-linkage-page .ms-linkage-tags { grid-column:1 / -1; color:#8bdcff; font-size:.74em; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:210px; }
+.ms-linkage-15day { margin-bottom:14px; }
+.ms-linkage-history-head { display:flex; align-items:center; gap:8px; margin:0 0 7px; padding:7px 10px; border:1px solid rgba(148,163,184,.2); border-radius:8px; background:rgba(15,52,96,.16); }
+.ms-linkage-history-head b { color:#8bdcff; font-size:.82em; letter-spacing:.02em; }
+.ms-linkage-history-head span { color:#ffd166; font-size:.74em; font-weight:800; }
+.ms-linkage-history-body { min-width:0; }
+.ms-linkage-history-slider { display:grid; grid-template-columns:34px minmax(0,1fr) 84px; align-items:center; gap:8px; margin-top:8px; padding:6px 9px; border:1px solid rgba(148,163,184,.16); border-radius:8px; color:#8aa6c5; font-size:.72em; background:rgba(15,23,42,.24); }
+.ms-linkage-history-slider span:last-child { text-align:right; }
+.ms-linkage-history-slider input { width:100%; min-width:0; accent-color:#ffd166; cursor:pointer; }
+.ms-linkage-15day-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:8px; }
+.ms-linkage-day-card { min-width:0; padding:8px 9px; border:1px solid rgba(148,163,184,.2); border-radius:8px; background:rgba(15,52,96,.16); }
+.ms-linkage-day-card.latest { border-color:rgba(255,209,102,.5); background:linear-gradient(135deg,rgba(255,209,102,.12),rgba(15,52,96,.2)); box-shadow:0 0 12px rgba(255,209,102,.1); }
+.ms-linkage-day-head { color:#8bdcff; font-weight:800; font-size:.78em; padding-bottom:5px; border-bottom:1px dashed rgba(148,163,184,.22); }
+.ms-linkage-day-head i { margin-left:5px; color:#ffd166; font-style:normal; font-size:.84em; }
+.ms-linkage-day-level { display:grid; grid-template-columns:34px minmax(0,1fr); gap:5px; padding:4px 0; border-bottom:1px solid rgba(148,163,184,.1); }
+.ms-linkage-day-level > b { color:#ffd166; font-size:.73em; }
+.ms-linkage-day-stocks { display:flex; flex-direction:column; gap:4px; }
+.ms-linkage-day-stock { display:grid; grid-template-columns:minmax(0,1fr); gap:2px; padding:3px 4px; border:1px solid rgba(148,163,184,.14); border-radius:5px; color:#eaf3ff; font-size:.73em; cursor:pointer; white-space:nowrap; overflow:hidden; }
+.ms-linkage-day-stock-main { overflow:hidden; text-overflow:ellipsis; }
+.ms-linkage-day-stock-main b { color:#ffd166; font-weight:800; }
+.ms-linkage-day-stock small { overflow:hidden; text-overflow:ellipsis; color:#8bdcff; font-size:.88em; }
+.ms-linkage-day-stock:hover { color:#67e8f9; text-decoration:underline; }
+.ms-linkage-day-empty { color:#718096; font-size:.73em; padding:8px 0; }
 
 /* ===== 市场结构 · 素雅配色覆盖 =====
  * 保留涨停/断板的语义色，但统一降低饱和度与发光感，避免首版区域过于刺眼。
@@ -13653,6 +13984,64 @@ td.lt-trajectory-cell {
 .ttr-summary { background: rgba(76,175,160,.055); }
 .ttr-summary-list { display: grid; grid-template-columns: 1fr; gap: 3px; margin-top: 4px; color: #aebfca; font-size: .78em; line-height: 1.65; }
 .ttr-summary-list > div { padding: 2px 7px; border-left: 2px solid rgba(126,201,163,.55); background: rgba(126,201,163,.035); }
+/* 连板联动 · 近15日历史天梯：日期控件与天梯视口固定在连板联动页内，避免受市场结构媒体样式影响 */
+#tab-ladderlinkage .ms-linkage-15day { margin: 0 0 14px; }
+#tab-ladderlinkage .ms-linkage-history-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 0 8px; padding:8px 11px; border:1px solid rgba(102,187,216,.26); border-radius:10px; background:linear-gradient(135deg,rgba(24,57,78,.88),rgba(19,31,48,.72)); box-shadow:0 5px 16px rgba(0,0,0,.12); }
+#tab-ladderlinkage .ms-linkage-history-date { display:flex; align-items:baseline; gap:8px; min-width:0; }
+#tab-ladderlinkage .ms-linkage-history-date b { color:#f4d58a; font-size:1.02em; letter-spacing:.02em; white-space:nowrap; }
+#tab-ladderlinkage .ms-linkage-history-date small { color:#89b9cc; font-size:.72em; white-space:nowrap; }
+#tab-ladderlinkage .ms-linkage-history-state { flex:0 0 auto; padding:2px 8px; border:1px solid rgba(244,213,138,.35); border-radius:999px; color:#f4d58a; background:rgba(244,213,138,.08); font-size:.7em; font-weight:800; }
+#tab-ladderlinkage .ms-linkage-history-body { min-height:calc(var(--linkage-ladder-rows, 5) * 52px + 18px); height:auto; overflow:visible; padding:1px 2px 3px; }
+#tab-ladderlinkage .ms-linkage-history-slider { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:9px; margin-top:8px; padding:7px 10px 6px; border:1px solid rgba(102,187,216,.2); border-radius:10px; background:rgba(12,25,40,.62); color:#8faec0; font-size:.72em; }
+#tab-ladderlinkage .ms-linkage-history-slider input { width:100%; min-width:0; margin:0; accent-color:#f4d58a; cursor:pointer; }
+#tab-ladderlinkage .ms-linkage-history-slider span { white-space:nowrap; }
+#tab-ladderlinkage .ms-linkage-history-slider span:first-child { color:#f4d58a; font-weight:800; }
+#tab-ladderlinkage .ms-linkage-history-slider span:last-child { text-align:right; }
+#tab-ladderlinkage .ms-linkage-history-ticks { display:grid; grid-template-columns:repeat(var(--linkage-history-count, 15), minmax(34px, 1fr)); gap:2px; margin:3px 10px 0; overflow-x:auto; }
+#tab-ladderlinkage .ms-linkage-history-tick { position:relative; min-width:34px; padding:4px 1px 1px; border:0; background:transparent; color:#708b9c; font:inherit; font-size:.68em; line-height:1.2; white-space:nowrap; cursor:pointer; text-align:center; }
+#tab-ladderlinkage .ms-linkage-history-tick::before { content:''; display:block; width:1px; height:5px; margin:0 auto 2px; background:rgba(137,185,204,.48); }
+#tab-ladderlinkage .ms-linkage-history-tick:hover { color:#dbeefa; }
+#tab-ladderlinkage .ms-linkage-history-tick.active { color:#f4d58a; font-weight:800; }
+#tab-ladderlinkage .ms-linkage-history-tick.active::before { width:3px; height:7px; background:#f4d58a; box-shadow:0 0 6px rgba(244,213,138,.7); }
+@media (max-width: 680px) {
+  #tab-ladderlinkage .ms-linkage-history-date small { display:none; }
+  #tab-ladderlinkage .ms-linkage-history-body { min-height:calc(var(--linkage-ladder-rows, 5) * 58px + 18px); }
+  #tab-ladderlinkage .ms-linkage-history-ticks { justify-content:start; }
+}
+/* 连板联动下方题材卡片：提高明度与层次，仅作用于本页，不改变市场结构原有配色 */
+#tab-ladderlinkage .ms-linkage-card .ms-tp-card { background:rgba(15,52,96,.25); border-color:#1e3a5f; box-shadow:0 2px 10px rgba(0,0,0,.12); }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-head { background:linear-gradient(90deg,rgba(46,171,199,.26),rgba(35,91,157,.16)); border-bottom-color:rgba(111,222,239,.3); }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-theme { color:#ffe49a; text-shadow:0 0 8px rgba(255,228,154,.16); }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-theme-link:hover { color:#fff8dc; }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-meta { color:#a9d9e8; }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-date { color:#a7d7e4; }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-slider-row { color:#a8cfdf; }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-slider-track input { accent-color:#ffd66e; }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-sides-head { color:#a9d9e8; }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-sides-head span:last-child { border-left-color:rgba(255,214,110,.5); }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-level { border-bottom-color:rgba(125,211,232,.22); }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-lv { color:#a8d9e8; }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-lv.on { color:#ffe49a; }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-lv.zero { color:#ffaaa0; }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-side-broken { border-left-color:rgba(255,174,160,.58); background:rgba(255,116,104,.08); }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-chip.live { color:#eefaff; background:linear-gradient(135deg,rgba(42,126,164,.82),rgba(30,80,122,.82)); border-color:rgba(125,224,244,.68); }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-chip.live.lv2 { border-left-color:#ffad5c; box-shadow:inset 3px 0 0 rgba(255,173,92,.18); }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-chip.live.lv3 { border-left-color:#ff7777; box-shadow:inset 3px 0 0 rgba(255,119,119,.18); }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-chip.live.lv4 { border-left-color:#c59cff; box-shadow:inset 3px 0 0 rgba(197,156,255,.18); }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-chip.live.lvhigh { border-left-color:#ffe27b; box-shadow:inset 3px 0 0 rgba(255,226,123,.2); }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-chip.ghost { color:#b9d9e6; background:rgba(77,130,160,.24); border-color:rgba(137,202,222,.44); }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-chip.break { color:#ffd0ca; background:rgba(194,68,76,.28); border-color:rgba(255,145,135,.62); }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-chip .ms-tp-time { color:#8fe8f4; }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-chip .ms-tp-restart { color:#76f0d1; }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-chip .ms-tp-pct { color:#d9edf5; }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-chip .ms-tp-pct.ms-pct-up { color:#ff8f85; }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-chip .ms-tp-pct.ms-pct-down { color:#75e0a6; }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-aside { border-left-color:rgba(125,211,232,.3); color:#b5d4df; }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-daily-summary { background:linear-gradient(90deg,rgba(45,129,164,.2),rgba(30,72,115,.16)); border-top-color:rgba(109,226,240,.55); }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-recent10 { background:linear-gradient(135deg,rgba(255,214,110,.12),rgba(37,116,151,.2)); border-top-color:rgba(255,214,110,.48); }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-recent10-title { color:#ffe18b; }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-recent10-date { color:#91e8f2; }
+#tab-ladderlinkage .ms-linkage-card .ms-tp-recent10-text { color:#d4e8ef; }
 </style>
 </head>
 <body>
@@ -14154,16 +14543,38 @@ function _cachedFetch(url) {
 function _clearTabCache() { _tabCache = {}; }
 
 function _prefetchAllTabs() {
-    // 高频页签现在由“盯盘 → 题材风向 → 实时”启动链按顺序主动加载，
-    // 这里不再并行抢跑它们，避免首屏顺序被后台预取打乱。
+    // 高频页签由“盯盘 → 题材风向 → 实时”启动链按顺序主动加载。
+    // 低频页签必须等高频内容完成后再进入空闲预取，避免手机首屏抢带宽/CPU。
     var critical = [
         '/api/kpl_name_code_map'
     ];
     Promise.all(critical.map(function(url) {
         return _cachedFetch(url).catch(function() { return null; });
     })).then(function() {
-        // 首屏关键数据完成后，再让低频页签进入后台缓存。
-        setTimeout(function() {
+        function scheduleLowPriorityWarmup() {
+            var run = function() {
+            // 页面实际使用的是 20 日市场结构；连板联动基于 30 日结构。
+            // 按顺序预热，避免两个重型构建与首屏网络请求并发争抢 CPU / 磁盘。
+            // 后端会将同参数的前台请求合并为一次构建，用户提前切换也不会重复计算。
+            var waitStructure = function() {
+                if (_marketStructureLoaded) return Promise.resolve();
+                if (!_marketStructureLoading) loadMarketStructure(false, true);
+                return new Promise(function(resolve) {
+                    var poll = function() {
+                        if (_marketStructureLoaded || (!_marketStructureLoading && _themeWindLoaded)) {
+                            resolve();
+                        } else {
+                            setTimeout(poll, 250);
+                        }
+                    };
+                    poll();
+                });
+            };
+            var warmStructure = waitStructure()
+                .then(function() { return _cachedFetch('/api/market_structure?ndays=30').catch(function() { return null; }); })
+                .then(function() {
+                    return _cachedFetch('/api/ladder_linkage').catch(function() { return null; });
+                });
             var deferred = [
                 '/api/stats', '/api/stats?top_n=20',
                 '/api/hot_stocks?top_n=200', '/api/hot_stocks?top_n=100',
@@ -14171,13 +14582,30 @@ function _prefetchAllTabs() {
                 '/api/market_wind_data', '/api/market_mainline',
                 '/api/n_pattern', '/api/abnormal_movement'
             ];
-            deferred.forEach(function(url) {
-                _cachedFetch(url).catch(function() {});
+            warmStructure.then(function() {
+                deferred.forEach(function(url) {
+                    _cachedFetch(url).catch(function() {});
+                });
             });
-            if (localStorage.getItem('tabMode') !== 'simple') {
-                _cachedFetch('/api/market_structure?ndays=30').catch(function() {});
+            // 保持引用，避免某些浏览器在页面空闲时过早回收预热 Promise。
+            window._marketStructureWarmup = warmStructure;
+            };
+            if (window.requestIdleCallback) {
+                window.requestIdleCallback(run, {timeout: 2500});
+            } else {
+                setTimeout(run, 1200);
             }
-        }, 800);
+        }
+
+        // 盯盘地图、题材风向和实时完成后才启动低频预取。
+        var waitHighFrequency = function() {
+            if (_themeWindLoaded && _realtimeLoaded) {
+                scheduleLowPriorityWarmup();
+            } else {
+                setTimeout(waitHighFrequency, 250);
+            }
+        };
+        waitHighFrequency();
     });
 }
 
@@ -16054,7 +16482,11 @@ function loadSniper(mode) {
             // 大盘指数
             if (sentimentData && !sentimentData.error && sentimentData.indices && sentimentData.indices.length > 0) {
                 html2 += '<div style="margin-bottom:15px;">';
-                html2 += '<div style="color:#aac;font-size:0.85em;margin-bottom:8px;">\U0001F4C8 大盘指数</div>';
+                html2 += '<div style="color:#aac;font-size:0.85em;margin-bottom:8px;">\U0001F4C8 大盘指数';
+                if (sentimentData.date) {
+                    html2 += ' <span style="color:#718096;font-size:0.9em;">数据截至 ' + _kplEsc(sentimentData.date) + '</span>';
+                }
+                html2 += '</div>';
                 html2 += '<div class="si-grid">';
                 sentimentData.indices.forEach(function(idx) {
                     var pct = !isNaN(Number(idx.change_pct)) ? Number(idx.change_pct) : null;
@@ -19882,7 +20314,7 @@ function loadThemeWind() {
         _cachedFetch('/api/top_theme_trajectory?n=20'),
         fetch('/api/review_summary?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
         fetch('/api/sector_ranking?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
-        fetch('/api/theme_wind_strength?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
+        _loadThemeWindStrength(false),
         _kplLevelEnsureHotRank(),   // 热股 top100 R 标签数据（渲染前就绪，供各 chip 标 R1/R2/R50）
     ]).then(function(results) {
         var lbTrajectory = results[0];
@@ -19971,9 +20403,8 @@ function loadThemeWind() {
         loadKplThemeMap();
         // 高频三页签按顺序主动加载：盯盘首屏 → 题材风向 → 实时。
         if (typeof _realtimeLoaded === 'undefined' || !_realtimeLoaded) loadRealtime();
-        // 题材风向完成后立即后台加载市场结构；切换页签时直接复用已渲染内容。
-        // 不依赖用户点击市场结构，且由 loading 锁避免切换瞬间重复请求。
-        loadMarketStructure(false, true);
+        // 市场结构及后续重型页签由 _prefetchAllTabs 在实时页完成后进入空闲预取，
+        // 避免与高频三页签争抢手机端带宽和 CPU；用户提前点击时仍由 switchTab 立即加载。
     }).catch(function(e) {
         container.innerHTML = '<div class="error">题材风向加载失败: ' + e.message + '</div>';
         _themeWindLoaded = true;
@@ -23089,19 +23520,70 @@ function _msRender() {
     return h;
 }
 
+var _linkageLadderHistory = [];
+var _linkageLadderIndex = 0;
+var _linkageLadderPending = false;
+function _linkageLadderRows(history) {
+    var maxLevel = 0, hasFirst = false;
+    (history || []).forEach(function(snapshot) {
+        (snapshot.ladder || []).forEach(function(row) { maxLevel = Math.max(maxLevel, Number(row.level) || 0); });
+        if ((snapshot.first_themes || []).length) hasFirst = true;
+    });
+    // 最高板为 N 时，天梯主体展示 N 到 2 共 N-1 行，首板题材另占 1 行。
+    return Math.max(2, (maxLevel >= 2 ? maxLevel - 1 : 1) + (hasFirst ? 1 : 0));
+}
+function _renderLinkage15DayLadder() {
+    var history = _linkageLadderHistory || [];
+    if (!history.length) return _linkageLadderPending
+        ? '<div class="ms-linkage-15day"><div class="ms-sec-head">📈 近15日连板天梯</div><div class="loading" style="padding:18px;text-align:center;">正在补齐近15日历史天梯...</div></div>'
+        : '<div class="empty">暂无近15个交易日连板天梯数据</div>';
+    _linkageLadderIndex = Math.max(0, Math.min(history.length - 1, _linkageLadderIndex));
+    var snapshot = history[_linkageLadderIndex] || {};
+    var latestDate = (history[0] || {}).date || '';
+    var oldestDate = (history[history.length - 1] || {}).date || '';
+    var rows = _linkageLadderRows(history);
+    var h = '<section class="ms-linkage-15day"><div class="ms-sec-head">📈 近15日连板天梯 <span class="ms-date-note">左侧最新 · 向右回看历史</span></div>';
+    h += '<div class="ms-linkage-history-head"><div class="ms-linkage-history-date"><b>' + _kplEsc(snapshot.date || '') + '</b><small>第' + (_linkageLadderIndex + 1) + ' / ' + history.length + '个交易日</small></div><span class="ms-linkage-history-state">' + (_linkageLadderIndex === 0 ? '最新' : '历史回看') + '</span></div>';
+    h += '<div class="ms-linkage-history-body" style="--linkage-ladder-rows:' + rows + '">' + _twsRenderLadder(snapshot) + '</div>';
+    h += '<div class="ms-linkage-history-slider"><span>' + _kplEsc(latestDate) + '</span><input aria-label="近15日连板天梯日期" type="range" min="0" max="' + (history.length - 1) + '" value="' + _linkageLadderIndex + '" oninput="_linkageSlideLadder(this.value)"><span>' + _kplEsc(oldestDate) + '</span></div>';
+    h += '<div class="ms-linkage-history-ticks" style="--linkage-history-count:' + history.length + '" aria-label="近15个交易日日期刻度">';
+    for (var ti = 0; ti < history.length; ti++) {
+        var tickDate = String((history[ti] || {}).date || '');
+        var tickLabel = tickDate.length >= 10 ? tickDate.slice(5) : tickDate;
+        h += '<button type="button" class="ms-linkage-history-tick' + (ti === _linkageLadderIndex ? ' active' : '') + '" onclick="_linkageSlideLadder(' + ti + ')" title="查看 ' + _kplEsc(tickDate) + '">' + _kplEsc(tickLabel) + '</button>';
+    }
+    h += '</div></section>';
+    return h;
+}
+function _linkageSlideLadder(raw) {
+    _linkageLadderIndex = Number(raw) || 0;
+    var box = document.getElementById('linkage15DayLadder');
+    if (box) box.innerHTML = _renderLinkage15DayLadder();
+}
+
 function _msRenderLadderLinkage(data) {
     _msData = data;
     _msLinkageMode = true;
     _msRecentEvolutionWindow = 15;
+    _linkageLadderPending = !!data.ladder_history_pending;
     var dates = (data.dates || []).slice().sort(function(a, b) { return String(b).localeCompare(String(a)); });
     var pyramids = data.theme_pyramids || [];
-    var h = '<div class="ms-linkage-page"><div class="ms-sec-head">🔗 连板联动 <span class="ms-date-note">复制市场结构题材涨停天梯 · 近100日细分题材标签 · 近15日演化</span></div>';
+    _linkageLadderHistory = data.ladder_history || [];
+    _linkageLadderIndex = 0;
+    var h = '<div class="ms-linkage-page"><div id="linkage15DayLadder">' + _renderLinkage15DayLadder() + '</div><div class="ms-sec-head">🔗 连板联动 <span class="ms-date-note">近100日细分题材标签 · 近15日演化</span></div>';
     if (!pyramids.length) h += '<div class="empty">暂无连板联动数据</div>';
     else {
         h += '<div class="ms-theme-nav"><span class="ms-theme-nav-title">题材导航</span>';
-        for (var ni = 0; ni < pyramids.length; ni++) h += '<a href="#msLinkagePyrCard-' + ni + '">' + _kplEsc(pyramids[ni].theme || '') + '</a>';
+        for (var ni = 0; ni < pyramids.length; ni++) {
+            var navPyramid = pyramids[ni] || {};
+            h += '<a href="#msLinkagePyrCard-' + ni + '">' + _kplEsc(navPyramid.theme || '') + '</a>';
+        }
         h += '</div><div class="ms-theme-pyramids">';
-        for (var i = 0; i < pyramids.length; i++) h += '<section class="ms-linkage-card" id="msLinkagePyrCard-' + i + '">' + _msRenderThemePyramidCard(i, pyramids[i], dates) + '</section>';
+        for (var i = 0; i < pyramids.length; i++) {
+            var pagePyramid = pyramids[i];
+            if (!pagePyramid) continue;
+            h += '<section class="ms-linkage-card" id="msLinkagePyrCard-' + i + '">' + _msRenderThemePyramidCard(i, pagePyramid, dates) + '</section>';
+        }
         h += '</div>';
         h += _msRenderEvolution10(pyramids, dates);
     }
@@ -23109,14 +23591,35 @@ function _msRenderLadderLinkage(data) {
 }
 
 var _ladderLinkageLoaded = false;
+var _ladderLinkageFullLoading = false;
 function loadLadderLinkage() {
     var box = document.getElementById('ladderLinkageContainer');
     if (!box || _ladderLinkageLoaded) return;
     box.innerHTML = '<div class="loading">加载连板联动...</div>';
-    fetch('/api/ladder_linkage?_t=' + Date.now(), {cache:'no-store'})
+    var requestId = Date.now();
+    // 先取轻量摘要，当前连板卡片先显示；历史15日天梯随后后台补齐。
+    fetch('/api/ladder_linkage?summary=1&_t=' + requestId, {cache:'no-store'})
         .then(function(r) { return r.json(); })
-        .then(function(data) { box.innerHTML = _msRenderLadderLinkage(data); _ladderLinkageLoaded = true; })
-        .catch(function(e) { box.innerHTML = '<div class="error">连板联动加载失败：' + _kplEsc(e.message || '') + '</div>'; });
+        .then(function(data) {
+            if (!data || data.error) throw new Error((data && data.error) || '摘要数据为空');
+            box.innerHTML = _msRenderLadderLinkage(data);
+            _ladderLinkageLoaded = true;
+            _ladderLinkageFullLoading = true;
+            return fetch('/api/ladder_linkage?_t=' + requestId, {cache:'no-store'});
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            _ladderLinkageFullLoading = false;
+            if (!data || data.error) return;
+            box.innerHTML = _msRenderLadderLinkage(data);
+        })
+        .catch(function(e) {
+            _ladderLinkageFullLoading = false;
+            // 摘要已经成功时，保留当前卡片，不因历史补齐暂时失败而覆盖首屏。
+            if (!_ladderLinkageLoaded) {
+                box.innerHTML = '<div class="error">连板联动加载失败：' + _kplEsc(e.message || '') + '</div>';
+            }
+        });
 }
 
 function _msRenderSummary() {
@@ -26003,10 +26506,7 @@ switchTab('kpllevel');
 })();
 _prefetchAllTabs();
 _loadKplDataEager();
-// 产业链属于低频页签，待首屏五个常用页签完成后再后台加载。
-setTimeout(function() { loadIndustryChain(); }, 6500);
-if (typeof _sniperLoaded === 'undefined') _sniperLoaded = true;
-loadSniper();
+// 产业链、精准狙击只在用户进入对应页签时加载，避免手机首屏无感知抢占资源。
 // 初始化简版/完整版切换
 var savedMode = localStorage.getItem('tabMode') || 'simple';
 setTabMode(savedMode);
@@ -31423,6 +31923,20 @@ var _tmmData = null;
 var _tmmSectorData = null;   // 精选板块强度 Top10（sector_ranking，与题材风向同源，实时刷新一致）
 var _tmmSentData = null;     // 市场情绪 · 大盘指数（market_sentiment，与精准狙击同源，实时刷新一致）
 var _themeWindStrengthData = null; // 题材风向已加载的同源时间轴，供“盯盘”复用
+var _themeWindStrengthPromise = null;
+
+// 盯盘与题材风向共用同一份精选板块强度请求，避免首屏重复请求重型接口。
+function _loadThemeWindStrength(force) {
+    if (!force && _themeWindStrengthData) return Promise.resolve(_themeWindStrengthData);
+    if (!force && _themeWindStrengthPromise) return _themeWindStrengthPromise;
+    var url = '/api/theme_wind_strength' + (force ? '?no_cache=1&_t=' + Date.now() : '?_t=' + Date.now());
+    var request = fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+        if (data) _themeWindStrengthData = data;
+        return data;
+    }).catch(function() { return null; });
+    if (!force) _themeWindStrengthPromise = request;
+    return request;
+}
 var _tmmFilterInit = false;
 var _tmmFilter = {boards: {'\u4e3b': true, '\u521b': true, '\u79d1': true}, lbs: {}, maxBreak: null, search: ''};
 // 过滤条搜索框自动补全数据：板块/细分题材/股票名称（由 _tmmBuildSearchData 从 _tmmData 构建）
@@ -31869,25 +32383,21 @@ function loadKplThemeMap(force) {
     var url = '/api/theme_map?ndays=40' + (force ? '&no_cache=1&_t=' + Date.now() : '');
     // 盯盘时间轴与题材风向完全同源：复用精选板块强度接口及其渲染数据，
     // 不再单独请求轻量时间轴接口，避免内容、日期和刷新节奏出现分叉。
-    var timelineDataPromise = (!force && _themeWindStrengthData)
-        ? Promise.resolve(_themeWindStrengthData)
-        : fetch('/api/theme_wind_strength' + (force ? '?no_cache=1&_t=' + Date.now() : '?_t=' + Date.now())).then(function(r) { return r.json(); }).catch(function() { return null; });
+    var timelineDataPromise = _loadThemeWindStrength(!!force);
     // 地图主数据单独先返回；精选板块/指数等辅助数据不阻塞首屏。
     Promise.all([
         fetch(url).then(function(r) { return r.json(); }).catch(function() { return null; }),
         Promise.resolve(_tmmSectorData),
-        Promise.resolve(_tmmSentData),
-        timelineDataPromise
+        Promise.resolve(_tmmSentData)
     ]).then(function(arr) {
         _kplThemeMapLoaded = true;
         var data = arr[0];
         _tmmData = data;
         _tmmSectorData = arr[1];
         _tmmSentData = arr[2];
-        _themeWindStrengthData = arr[3] || _themeWindStrengthData;
         _tmmBuildSearchData(data);
         if (!_tmmFilterInit) _tmmInitFilter(data);
-        // 首屏只生成核心摘要，海量卡片延迟到首帧后再生成。
+        // 首屏只生成地图核心摘要，精选强度/涨停时间轴稍后补齐。
         container.innerHTML = _tmmRender(data, _tmmSectorData, _tmmSentData, _themeWindStrengthData, true);
         var _finishTmmDetails = function() {
             if (_tmmData !== data) return;
@@ -31899,6 +32409,14 @@ function loadKplThemeMap(force) {
         else setTimeout(_finishTmmDetails, 80);
         // 首次打开即取一次当天最终/实时值；只有交易时段才会继续周期刷新。
         setTimeout(function() { _tmmRefreshAllQuotes(true); }, 0);
+        // 精选板块强度与题材风向共用请求；返回后只重绘同源时间轴区域。
+        timelineDataPromise.then(function(twsData) {
+            if (_tmmData !== data || !twsData) return;
+            _themeWindStrengthData = twsData;
+            _tmmCaptureCollapsed(container);
+            container.innerHTML = _tmmRender(data, _tmmSectorData, _tmmSentData, _themeWindStrengthData, false);
+            _tmmRestoreCollapsed(container);
+        });
         // 辅助行情面板后台补齐，不影响地图首屏。
         Promise.all([
             fetch('/api/sector_ranking?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
@@ -36693,14 +37211,9 @@ class Handler(BaseHTTPRequestHandler):
                 except (ValueError, TypeError):
                     ndays = 30
                 date_end = query.get('date_end', [None])[0]
-                cache_key = 'market_structure:%s:%s' % (ndays, date_end or '')
-                result = None
-                if not no_cache:
-                    ttl = 30 if _is_trading_hours() else 300   # 盘中30s / 非盘300s
-                    result = _get_cached(cache_key, ttl=ttl)
-                if result is None:
-                    result = _build_market_structure(ndays=ndays, date_end=date_end)
-                    _set_cache(cache_key, result)
+                result = _get_or_build_market_structure(
+                    ndays=ndays, date_end=date_end, force=no_cache
+                )
                 self._respond_json(result, cors_headers)
             except Exception as e:
                 import traceback
@@ -36708,10 +37221,8 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == '/api/ladder_linkage':
             try:
-                result = _get_cached('ladder_linkage_structure', ttl=60 if _is_trading_hours() else 300)
-                if result is None:
-                    result = _build_ladder_linkage_structure(ndays=30)
-                    _set_cache('ladder_linkage_structure', result)
+                summary_only = query.get('summary', [''])[0] in ('1', 'true', 'yes')
+                result = _get_or_build_ladder_linkage(include_history=not summary_only)
                 self._respond_json(result, cors_headers)
             except Exception as e:
                 import traceback
@@ -37185,21 +37696,15 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == '/api/market_sentiment':
             try:
-                import levistock as lk
                 cache_key = 'market_sentiment'
                 refresh = query.get('refresh', [''])[0]
-                today_str = datetime.now().strftime('%Y-%m-%d')
                 if refresh:
-                    result = {}
-                    result['indices'] = lk.market_index_em()
-                    result['emotion'] = lk.market_emotion_kph(today_str)
+                    result = _build_market_sentiment()
                     _set_cache(cache_key, result)
                 else:
                     result = _get_cached(cache_key, ttl=60)
                     if result is None:
-                        result = {}
-                        result['indices'] = lk.market_index_em()
-                        result['emotion'] = lk.market_emotion_kph(today_str)
+                        result = _build_market_sentiment()
                         _set_cache(cache_key, result)
                 self._respond_json(result, cors_headers)
             except Exception as e:
@@ -38859,6 +39364,30 @@ def main():
         except Exception as e:
             print(f"[预热] 题材地图失败: {e}")
 
+    def _warm_market_structure_pages():
+        """顺序预热市场结构与连板联动，保证切页只读取已完成的缓存。
+
+        这里刻意不和高频首屏构建绑定：题材风向的数据源偶发超时也不能
+        阻塞市场结构的可用性。20 日结构对应市场结构页，30 日结构供连板联动复用。
+        """
+        try:
+            _get_or_build_market_structure(ndays=20)
+            print('[预热] 市场结构(20日)完成')
+        except Exception as e:
+            print(f"[预热] 市场结构(20日)失败: {e}")
+            return
+        try:
+            _get_or_build_market_structure(ndays=30)
+            print('[预热] 市场结构(30日)完成')
+        except Exception as e:
+            print(f"[预热] 市场结构(30日)失败: {e}")
+            return
+        try:
+            _get_or_build_ladder_linkage()
+            print('[预热] 连板联动完成')
+        except Exception as e:
+            print(f"[预热] 连板联动失败: {e}")
+
     def _sentiment_bg_refresh():
         """后台守护线程，根据前端配置的间隔自动拉取帖子（即使浏览器已关闭）。"""
         _BG_CONFIG_PATH = os.path.join(_SENTIMENT_DIR, 'bg_config.json')
@@ -38885,6 +39414,8 @@ def main():
         threading.Thread(target=_warm_data_status, daemon=True),
         threading.Thread(target=_warm_kpl_top_tags, daemon=True),
         threading.Thread(target=_warm_high_frequency_pages, daemon=True),
+        # 市场结构/连板联动由前端在首屏完成后按 20日 → 30日 → 联动顺序预热。
+        # 不在服务启动时与首屏高频任务并发，避免用户刚切页时排队等待同一把构建锁。
         threading.Thread(target=_sentiment_bg_refresh, daemon=True),
         threading.Thread(target=_rtw_loop, daemon=True),
         threading.Thread(target=_zt_auto_startup, daemon=True),
