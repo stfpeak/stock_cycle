@@ -15,6 +15,7 @@ import threading
 import bisect
 import time
 import importlib
+import hashlib
 from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlparse
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -113,8 +114,8 @@ _SENTIMENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data'
 _POSTS_FILE = os.path.join(_SENTIMENT_DIR, 'posts.json')
 STALE_THRESHOLD = 30 * 60  # 30分钟阈值，超过则自动从韭研公社抓取
 _FEISHU_WEBHOOK_URL = 'https://open.feishu.cn/open-apis/bot/v2/hook/2883efe9-1af7-4afa-815a-c33168bba440'
-_FEISHU_NOTIFY_LIMIT = 60   # 分析用帖子数量
-_FEISHU_TOP_K = 20          # 关键词/个股 TOP N
+_FEISHU_NOTIFY_LIMIT = 60   # 历史配置保留；舆情 webhook 推送已停用
+_FEISHU_TOP_K = 20          # 历史配置保留
 # 非题材类标签（并购重组类），精准狙击+KPL搜索统一过滤
 SNIPER_EXCLUDE_TAGS = {'并购重组', '股权转让', '实控人变更', '借壳上市',
                        '资产注入', '定增', '增发'}
@@ -202,74 +203,11 @@ def _fetch_jiuyan_posts(existing_items=None, existing_urls=None):
     return merged, new_count
 
 def _send_feishu_webhook():
-    """后台发送飞书Webhook通知，静默处理所有异常。"""
-    try:
-        posts_path = _POSTS_FILE
-        if not os.path.exists(posts_path):
-            return
-        with open(posts_path, 'r', encoding='utf-8') as f:
-            all_posts = json.load(f)
-        all_posts.sort(key=lambda x: x.get('create_time', ''), reverse=True)
-        slice_posts = all_posts[:_FEISHU_NOTIFY_LIMIT]
-
-        # 加载 sector_hierarchy L1+L2 标签 (同前端 emtRunKeywordAnalysis 算法)
-        sh_path = os.path.join(os.path.dirname(__file__), 'data', 'kpl_concept', 'sector_hierarchy.json')
-        kw_set = set()
-        if os.path.exists(sh_path):
-            with open(sh_path, 'r', encoding='utf-8') as f:
-                sh = json.load(f)
-            s_data = sh.get('s') or {}
-            for l1_name, l1_val in s_data.items():
-                kw_set.add(l1_name)
-                l2_tags = (l1_val or {}).get('g') or {}
-                for l2_name in l2_tags:
-                    kw_set.add(l2_name)
-
-        # 关键词频度 (同前端 emtRunKeywordAnalysis 算法)
-        all_kw = sorted(kw_set, key=lambda x: (-len(x), x))
-        kw_freq = {}
-        for post in slice_posts:
-            title = post.get('title', '') or ''
-            for kw in all_kw:
-                if kw and title.find(kw) >= 0:
-                    kw_freq[kw] = kw_freq.get(kw, 0) + 1
-        kw_sorted = sorted(kw_freq.items(), key=lambda x: (-x[1], x[0]))
-
-        # 个股频度 (同前端 emtRunStockAnalysis 算法)
-        stock_freq = {}
-        for post in slice_posts:
-            stocks = post.get('stocks') or []
-            for s in stocks:
-                parts = str(s).split(' ')
-                name = ' '.join(parts[1:]) if len(parts) > 1 else parts[0]
-                if name:
-                    stock_freq[name] = stock_freq.get(name, 0) + 1
-        stock_sorted = sorted(stock_freq.items(), key=lambda x: (-x[1], x[0]))
-
-        # 格式化消息
-        lines = ['【舆情监控分析】', '来源：近{}篇韭研帖子'.format(_FEISHU_NOTIFY_LIMIT), '']
-        lines.append('【关键词频度】')
-        if kw_sorted:
-            for idx, (kw, cnt) in enumerate(kw_sorted, 1):
-                lines.append('{}. {} ({}次)'.format(idx, kw, cnt))
-        else:
-            lines.append('无匹配KPL-LEVEL标签')
-        lines.append('')
-        lines.append('【个股频度】')
-        if stock_sorted:
-            for idx, (name, cnt) in enumerate(stock_sorted, 1):
-                lines.append('{}. {} ({}次)'.format(idx, name, cnt))
-        else:
-            lines.append('无匹配个股')
-        text = '\n'.join(lines)
-
-        payload = {'msg_type': 'text', 'content': {'text': text}}
-        requests.post(_FEISHU_WEBHOOK_URL, json=payload, timeout=10)
-    except Exception:
-        pass
+    """旧版舆情 webhook 已停用（保留空函数兼容旧调用）。"""
+    return False
 
 # ===== 实时盯盘 · 飞书推送（新细分题材 / 题材新增股票）=====
-_RTW_ENABLED = True          # 总开关（False 关闭推送）
+_RTW_ENABLED = False         # 旧版盘中新题材/新增股票/收盘推送永久关闭
 _RTW_INTERVAL = 60           # 轮询间隔（秒）
 _RTW_PUSH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'rtw_seen.json')  # 已通知状态（跨重启持久化，防重启重复推送）
 _rtw_seen = {}               # {date: {theme: {code: {code,name,first_time,lianban,board}}}} 已推送过的 题材→股票
@@ -291,11 +229,429 @@ def _rtw_level_time(ft):
 
 
 def _send_feishu_realtime(text):
-    """发送【实时盯盘】飞书推送，静默处理所有异常。"""
+    """旧版实时文本推送已停用，防止遗留调用重新产生增量消息。"""
+    return False
+
+
+# 新 webhook 只保留两份完整快照：竞价报告、细分题材晋级。
+_FEISHU_PUSH_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'feishu_push_state.json')
+_feishu_push_lock = threading.RLock()
+_feishu_push_state = {'promotion': {}, 'top10': {}}
+_feishu_push_state_loaded = False
+
+
+def _feishu_load_push_state():
+    """只在首个推送线程读取一次状态，避免多个后台线程相互覆盖。"""
+    global _feishu_push_state, _feishu_push_state_loaded
+    with _feishu_push_lock:
+        if _feishu_push_state_loaded:
+            return
+        try:
+            if os.path.exists(_FEISHU_PUSH_STATE_FILE):
+                with open(_FEISHU_PUSH_STATE_FILE, 'r', encoding='utf-8') as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    _feishu_push_state = loaded
+        except Exception:
+            _feishu_push_state = {'promotion': {}, 'top10': {}}
+        _feishu_push_state.setdefault('promotion', {})
+        _feishu_push_state.setdefault('top10', {})
+        _feishu_push_state_loaded = True
+
+
+def _feishu_save_push_state():
     try:
-        requests.post(_FEISHU_WEBHOOK_URL, json={'msg_type': 'text', 'content': {'text': text}}, timeout=10)
+        os.makedirs(os.path.dirname(_FEISHU_PUSH_STATE_FILE), exist_ok=True)
+        tmp = _FEISHU_PUSH_STATE_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(_feishu_push_state, f, ensure_ascii=False)
+        os.replace(tmp, _FEISHU_PUSH_STATE_FILE)
     except Exception:
         pass
+
+
+def _feishu_send_cards(title, template, blocks, footer=''):
+    """发送单张结构化飞书卡片：全部题材合并在一个正文内，绝不按题材拆消息。"""
+    try:
+        if not _FEISHU_WEBHOOK_URL:
+            return False
+        report = '\n\n'.join(str(block or '').strip() for block in (blocks or []) if str(block or '').strip())
+        # 只生成一张卡片；超过保守上限时记录失败，不能偷偷截断或拆分“完整版”。
+        if len(report) > 28000:
+            print('[飞书推送] 单卡正文过长（%s字），未发送以避免截断' % len(report))
+            return False
+        elements = [{'tag': 'div', 'text': {'tag': 'lark_md', 'content': report or '暂无可展示数据'}}]
+        if footer:
+            elements.append({'tag': 'note', 'elements': [{'tag': 'plain_text', 'content': footer}]})
+        payload = {'msg_type': 'interactive', 'card': {
+            'config': {'wide_screen_mode': True},
+            'header': {'template': template, 'title': {'tag': 'plain_text', 'content': title}},
+            'elements': elements,
+        }}
+        response = requests.post(_FEISHU_WEBHOOK_URL, json=payload, timeout=12)
+        if response.status_code >= 300:
+            print('[飞书推送] HTTP %s: %s' % (response.status_code, response.text[:180]))
+            return False
+        return True
+    except Exception as exc:
+        print('[飞书推送] 发送失败: %s' % exc)
+        return False
+
+
+def _feishu_stock_line(item, include_open=False):
+    """飞书卡片紧凑单股文案：不显示代码框、无关符号，保持页面阅读节奏。"""
+    name = item.get('name') or item.get('code') or ''
+    lb = int(item.get('lianban') or item.get('prev_lianban') or 1)
+    text = '**%s** ' % name
+    if include_open:
+        next_lb = int(item.get('next_board') or (lb + 1 if lb >= 2 else 1))
+        text += '昨%s板，竞价%s板' % (lb, next_lb)
+        pct = item.get('open_pct')
+        if pct is not None:
+            text += '，%+.2f%%' % float(pct)
+    else:
+        text += '%s板' % lb if lb >= 2 else '首板'
+        tm = _rtw_level_time(item.get('first_time'))
+        if tm:
+            text += '（%s）' % tm
+    return text
+
+
+def _feishu_color(text, color):
+    """飞书 lark_md 的轻量颜色标记；只用于标签，不给正文铺满颜色。"""
+    return "<font color='%s'>%s</font>" % (color, text)
+
+
+def _feishu_publish_auction_report(report):
+    """推送完整竞价快照：初版/复核版各一份，和磁盘报告严格同源。"""
+    if not report or not report.get('available'):
+        return False
+    stage = '9:29:20 复核版' if report.get('stage') == 'verified' else '9:25 初版'
+    blocks = []
+    for group in report.get('groups') or []:
+        priority_color = {'主攻观察': 'red', '重点验证': 'blue', '弱化观察': 'grey'}.get(group.get('priority'), 'grey')
+        lines = ['**%s**　%s' % (_feishu_color(group.get('theme') or '未分类', 'blue'),
+                              _feishu_color(group.get('priority') or '观察', priority_color))]
+        if group.get('one_word'):
+            lines.append('%s %s' % (_feishu_color('一字板', 'red'), '、'.join(_feishu_stock_line(x, True) for x in group['one_word'])))
+        if group.get('near_limit'):
+            lines.append('%s %s' % (_feishu_color('接近涨停', 'orange'), '、'.join(_feishu_stock_line(x, True) for x in group['near_limit'])))
+        if group.get('weak_ladder'):
+            lines.append('%s %s' % (_feishu_color('连板低开', 'green'), '、'.join(_feishu_stock_line(x, True) for x in group['weak_ladder'])))
+        breadth = group.get('breadth') or {}
+        if breadth.get('sample'):
+            avg = breadth.get('avg_open_pct')
+            avg_text = '%+.2f%%' % float(avg) if avg is not None else '--'
+            lines.append('%s 红开 %s/%s，强势 %s，均开 %s' % (_feishu_color('近20日涨停股竞价', 'grey'),
+                breadth.get('positive', 0), breadth.get('sample', 0), breadth.get('strong', 0), avg_text))
+        matches = group.get('sector_matches') or []
+        if matches:
+            lines.append('%s %s' % (_feishu_color('板块 Top5', 'purple'),
+                                    '、'.join('%s %+.2f%%' % (x.get('name'), float(x.get('change_pct') or 0)) for x in matches)))
+        blocks.append('\n'.join(lines))
+    if not blocks:
+        blocks = ['当日竞价强势股暂未形成可归类的细分题材。']
+    return _feishu_send_cards('竞价报告 · %s' % stage, 'turquoise', blocks,
+                              '数据同源于盯盘页面，报告已保存')
+
+
+def _feishu_promotion_blocks(tws_data):
+    """将“细分题材晋级”今日列完整转换为飞书卡片块。"""
+    days = ((tws_data or {}).get('promotion') or {}).get('days') or []
+    today = next((d for d in reversed(days) if d.get('today')), None)
+    if not today:
+        return [], ''
+    blocks = []
+    for theme in today.get('themes') or []:
+        lines = ['**%s**　%s' % (_feishu_color(theme.get('theme') or '未分类', 'blue'),
+                              _feishu_color('涨停 %s 家' % theme.get('cnt', 0), 'grey'))]
+        stocks = theme.get('stocks') or []
+        if stocks:
+            lines.append('%s %s' % (_feishu_color('今日涨停', 'red'), '、'.join(_feishu_stock_line(s) for s in stocks)))
+        failures = theme.get('failures') or []
+        if failures:
+            fail_lines = []
+            for f in failures:
+                pct = f.get('change_pct')
+                pct_text = ('%+.2f%%' % float(pct)) if isinstance(pct, (int, float)) else '--'
+                fail_lines.append('**%s** 昨%s板未晋级，%s' % (
+                    f.get('name') or f.get('code'), f.get('lianban') or 0, pct_text))
+            lines.append('%s %s' % (_feishu_color('晋级失败', 'green'), '、'.join(fail_lines)))
+        gem = theme.get('strong_gem') or []
+        if gem:
+            lines.append('%s %s' % (_feishu_color('创/科大涨', 'purple'), '、'.join(
+                '**%s** %s %+.2f%%' % (s.get('name') or s.get('code'), s.get('board') or '', float(s.get('change_pct') or 0)) for s in gem))
+            )
+        blocks.append('\n'.join(lines))
+    return blocks, today.get('date') or (tws_data or {}).get('date') or ''
+
+
+def _tmm_today_top10(theme_map):
+    """盯盘「涨停板数量 TOP10」的服务端同构版。
+
+    前端 ``_tmmTodayTop10`` 也只读取 attack/defense/neutral 三个区的
+    ``is_today`` 股票：这里逐字段复刻其去重、排序与截断规则，让飞书和页面
+    永远使用同一张题材地图，而非另外拼一份口径相近的数据。
+    """
+    themes = {}
+    for zone in ('attack', 'defense', 'neutral'):
+        for plate in (theme_map or {}).get(zone, []) or []:
+            for theme in plate.get('themes', []) or []:
+                name = (theme.get('name') or '').strip()
+                if not name:
+                    continue
+                entry = themes.setdefault(name, {})
+                for stock in theme.get('stocks', []) or []:
+                    code = str(stock.get('code') or '').strip()
+                    if stock.get('is_today') and code and code not in entry:
+                        entry[code] = stock
+
+    def _first_time(stock):
+        try:
+            value = int(stock.get('first_time') or 999999)
+        except (ValueError, TypeError):
+            value = 999999
+        return value if 0 < value < 999999 else 999999
+
+    result = []
+    for name, by_code in themes.items():
+        stocks = list(by_code.values())
+        stocks.sort(key=lambda s: (_first_time(s), s.get('name') or ''))
+        if stocks:
+            result.append({'name': name, 'stocks': stocks, 'count': len(stocks)})
+    result.sort(key=lambda item: (-item['count'], item['name']))
+    return result[:10]
+
+
+def _tmm_top10_members(top10):
+    """Top10 内容成员快照：只以当前可见的题材-股票归属决定是否需要推送。"""
+    members = {}
+    for item in top10 or []:
+        theme = item.get('name') or ''
+        for stock in item.get('stocks') or []:
+            code = str(stock.get('code') or '').strip()
+            if code:
+                members[code] = {'name': stock.get('name') or code, 'theme': theme}
+    return members
+
+
+def _feishu_timeline_text(timeline, update_codes=None):
+    """盯盘时间轴的飞书同构文本：顺序、徽标、板块/题材标签均来自 timeline。"""
+    update_codes = set(update_codes or [])
+    ordered = sorted(timeline or [], key=lambda x: (
+        999999 if x.get('minute') is None else x.get('minute'),
+        -int(x.get('lianban') or 0), x.get('name') or ''))
+    lines = ['**⏱ 今日涨停时间轴（9:25~15:00）**　%s' % _feishu_color('%s 只' % len(ordered), 'red')]
+    for stock in ordered:
+        code = str(stock.get('code') or '')
+        tm = _rtw_level_time(stock.get('first_time')) or '--:--'
+        typ = stock.get('type') or 'normal'
+        badge = ''
+        if typ == 'ladder':
+            badge = '%s　' % _feishu_color('%s连板' % int(stock.get('lianban') or 1), 'orange')
+        elif typ == 'restart':
+            badge = '%s　' % _feishu_color('重启', 'green')
+        tags = []
+        for tag in stock.get('mab') or []:
+            text = (tag.get('t') or '').strip() if isinstance(tag, dict) else str(tag or '').strip()
+            if text and text not in tags:
+                tags.append(text)
+        if not tags:
+            for text in (stock.get('plate') or '', stock.get('theme') or ''):
+                if text and text not in tags:
+                    tags.append(text)
+        tag_text = ' · '.join(tags) if tags else '未分类'
+        updated = '%s　' % _feishu_color('更新', 'red') if code in update_codes else ''
+        lines.append('%s%s%s**%s**　%s　%s' % (
+            updated, badge, _feishu_color(tm, 'orange'), stock.get('name') or code,
+            _feishu_color(code, 'grey'), _feishu_color(tag_text, 'blue')))
+    return '\n'.join(lines)
+
+
+def _feishu_send_top10_card(top10, date_fmt, update_codes=None, timeline=None, test=False):
+    """将盯盘时间轴 + Top10 合并为一张飞书互动卡片（非按题材拆卡）。"""
+    if not _FEISHU_WEBHOOK_URL or not top10:
+        return False
+    try:
+        update_codes = set(update_codes or [])
+        elements = []
+        if timeline:
+            elements.append({'tag': 'div', 'text': {'tag': 'lark_md',
+                'content': _feishu_timeline_text(timeline, update_codes)}})
+            elements.append({'tag': 'hr'})
+            elements.append({'tag': 'div', 'text': {'tag': 'lark_md',
+                'content': '**🏁 涨停板数量 TOP10**　%s' % _feishu_color('按细分题材聚合', 'grey')}})
+        for rank, item in enumerate(top10, 1):
+            stock_lines = []
+            for stock in item.get('stocks') or []:
+                tm = _rtw_level_time(stock.get('first_time')) or '--:--'
+                lb = int(stock.get('lianban') or 1)
+                lb_text = '%s连板' % lb if lb >= 2 else '首板'
+                restart = ''
+                if stock.get('is_restart_5d'):
+                    restart = '　%s' % _feishu_color('重启 · 断%s日' % (stock.get('restart_gap') or 0), 'green')
+                updated = '%s　' % _feishu_color('更新', 'red') if str(stock.get('code') or '') in update_codes else ''
+                stock_lines.append('%s%s　**%s**　%s　%s%s' % (
+                    updated,
+                    _feishu_color(tm, 'orange'), stock.get('name') or stock.get('code') or '',
+                    _feishu_color(stock.get('code') or '', 'grey'), _feishu_color(lb_text, 'orange'), restart))
+            body = '**%s**　%s\n%s' % (
+                _feishu_color(item.get('name') or '未分类', 'blue'),
+                _feishu_color('%s板' % item.get('count', 0), 'red'),
+                '\n'.join(stock_lines),
+            )
+            elements.append({
+                'tag': 'column_set', 'flex_mode': 'none', 'background_style': 'grey',
+                'columns': [
+                    {'tag': 'column', 'width': 'weighted', 'weight': 1,
+                     'elements': [{'tag': 'div', 'text': {'tag': 'lark_md',
+                                                           'content': '**%s**' % _feishu_color('#%s' % rank, 'orange')}}]},
+                    {'tag': 'column', 'width': 'weighted', 'weight': 9,
+                     'elements': [{'tag': 'div', 'text': {'tag': 'lark_md', 'content': body}}]},
+                ],
+            })
+            if rank != len(top10):
+                elements.append({'tag': 'hr'})
+        elements.append({'tag': 'note', 'elements': [{'tag': 'plain_text',
+            'content': '按细分题材聚合 · 同题材股票按首次封板时间排序 · 与盯盘页面同源'}]})
+        if test:
+            title_suffix = '测试'
+        elif update_codes:
+            title_suffix = '更新 %s 只' % len(update_codes)
+        else:
+            title_suffix = '首发'
+        payload = {'msg_type': 'interactive', 'card': {
+            'config': {'wide_screen_mode': True},
+            'header': {'template': 'turquoise', 'title': {'tag': 'plain_text',
+                'content': '今日涨停时间轴 + TOP10 · %s · %s' % (title_suffix, date_fmt)}},
+            'elements': elements,
+        }}
+        response = requests.post(_FEISHU_WEBHOOK_URL, json=payload, timeout=12)
+        if response.status_code >= 300:
+            print('[飞书 TOP10 推送] HTTP %s: %s' % (response.status_code, response.text[:180]))
+            return False
+        return True
+    except Exception as exc:
+        print('[飞书 TOP10 推送] 发送失败: %s' % exc)
+        return False
+
+
+def _shared_theme_wind_snapshot(top_n=10):
+    """盘中推送与页面共用的题材风向快照。
+
+    同一分钟只允许一次实时池解析，时间轴、细分题材晋级和组合卡因而绝不
+    出现“同一分钟但两份涨停名单不同”的问题；页面强制刷新写入同一缓存后，
+    后台也会自然复用该快照。
+    """
+    now = _bj_now()
+    live = _is_trading_hours()
+    key = 'theme_wind_strength:%s:%s:%s' % (top_n, now.strftime('%Y%m%d'), 'live' if live else 'closed')
+    ttl = 60 if live else 300
+    data = _get_cached(key, ttl=ttl)
+    if data is not None:
+        return data
+    with _theme_wind_build_lock:
+        data = _get_cached(key, ttl=ttl)
+        if data is None:
+            data = _build_theme_wind_strength(top_n=top_n)
+            _set_cache(key, data)
+    return data
+
+
+def _feishu_top10_loop():
+    """每 50 秒检查盯盘时间轴；每新增一只涨停股即推送一张完整「时间轴 + Top10」卡片。"""
+    _feishu_load_push_state()
+    while True:
+        try:
+            if not _is_trading_hours():
+                time.sleep(50)
+                continue
+            now = _bj_now()
+            day = now.strftime('%Y%m%d')
+            # 同一份题材地图也由盯盘的盘中刷新接口强制重建；后台每分钟预先构建并刷新缓存，
+            # 手机/网页下次读取即可直接复用，且推送不依赖某个浏览器是否打开。
+            data = _build_theme_map(ndays=40)
+            _set_cache('theme_map:40', data)
+            if not data or not data.get('ok') or not data.get('trading'):
+                time.sleep(10)
+                continue
+            tws = _shared_theme_wind_snapshot(top_n=10)
+            if not tws or tws.get('live_unavailable') or tws.get('date') != now.strftime('%Y-%m-%d'):
+                time.sleep(10)
+                continue
+            timeline = tws.get('timeline') or []
+            if not timeline:
+                time.sleep(10)
+                continue
+            top10 = data.get('today_top10') or _tmm_today_top10(data)
+            if not top10:
+                time.sleep(10)
+                continue
+            # 盘中地图窗口末日可能仍是本地 KPL 的上一交易日；Top10 是实时涨停池，
+            # 标题必须标注北京时间当天，不能误写成窗口末日。
+            date_fmt = now.strftime('%Y-%m-%d') if data.get('trading') else ((data.get('window') or {}).get('end') or now.strftime('%Y-%m-%d'))
+            members = _tmm_top10_members(top10)
+            with _feishu_push_lock:
+                prior = (_feishu_push_state.get('top10') or {}).get(day)
+            # 兼容上一版仅保存分钟字符串的状态文件：下一次有效快照视为首发。
+            old_members = prior.get('members', {}) if isinstance(prior, dict) else {}
+            timeline_members = {str(s.get('code') or ''): {'name': s.get('name') or '', 'theme': s.get('theme') or ''}
+                                for s in timeline if s.get('code')}
+            old_timeline = prior.get('timeline_members', {}) if isinstance(prior, dict) else {}
+            update_codes = sorted(set(timeline_members) - set(old_timeline))
+            # 当天首次取到时间轴发一次完整首发；之后每有一只新增涨停即推送。
+            should_send = not isinstance(prior, dict) or not old_timeline or bool(update_codes)
+            if should_send and _feishu_send_top10_card(top10, date_fmt, update_codes=update_codes, timeline=timeline):
+                with _feishu_push_lock:
+                    _feishu_push_state.setdefault('top10', {})[day] = {
+                        'members': members, 'timeline_members': timeline_members,
+                        'updated_at': now.strftime('%H:%M'),
+                    }
+                    _feishu_push_state['top10'] = {day: _feishu_push_state['top10'][day]}
+                    _feishu_save_push_state()
+            time.sleep(50)
+        except Exception as exc:
+            print('[飞书 TOP10 推送] 循环异常: %s' % exc)
+            time.sleep(50)
+
+
+def _feishu_promotion_loop():
+    """盘中每分钟检查晋级全量快照；仅内容变化才发送，发送时永远为完整今日列。"""
+    _feishu_load_push_state()
+    while True:
+        try:
+            if not _is_trading_hours():
+                time.sleep(60)
+                continue
+            tws = _shared_theme_wind_snapshot(top_n=10)
+            if not tws or tws.get('live_unavailable') or not tws.get('trading'):
+                time.sleep(60)
+                continue
+            today = _bj_now().strftime('%Y-%m-%d')
+            if tws.get('date') != today:
+                time.sleep(60)
+                continue
+            blocks, date_fmt = _feishu_promotion_blocks(tws)
+            if not blocks:
+                time.sleep(60)
+                continue
+            digest = hashlib.sha256(json.dumps(blocks, ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
+            with _feishu_push_lock:
+                previous = ((_feishu_push_state.get('promotion') or {}).get(today) or '')
+                if digest == previous:
+                    should_send = False
+                else:
+                    should_send = True
+            if should_send and _feishu_send_cards('今日细分题材晋级 · %s' % date_fmt, 'blue', blocks,
+                                                   '完整快照，与页面同源；内容变化后自动更新'):
+                with _feishu_push_lock:
+                    _feishu_push_state.setdefault('promotion', {})[today] = digest
+                    _feishu_push_state['promotion'] = {today: digest}
+                    _feishu_save_push_state()
+            time.sleep(60)
+        except Exception as exc:
+            print('[飞书晋级推送] 循环异常: %s' % exc)
+            time.sleep(60)
 
 
 def _rtw_load_seen():
@@ -3351,6 +3707,255 @@ def _get_zt_pool_cached():
 
 _zt_timeline_pool_cache = {'data': None, 'ts': 0}
 
+# ===== 盯盘 · 竞价报告（9:25 初版 / 9:29:20 复核） =====
+# 竞价数据只在集合竞价窗口可取，不能用盘中行情回填。因此每个交易日单独落盘，
+# 页面回看时只读取快照，既保证历史不漂移，也不把网络请求压到盯盘首屏。
+_AUCTION_REPORT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'auction_reports')
+_auction_report_lock = threading.RLock()
+_auction_report_cache = {}
+
+
+def _auction_report_path(day_ymd):
+    return os.path.join(_AUCTION_REPORT_DIR, '%s.json' % (day_ymd or ''))
+
+
+def _auction_prev_trade_day(day_ymd):
+    days = [d for d in _trading_days if d < (day_ymd or '')]
+    return days[-1] if days else ''
+
+
+def _auction_stock_tags(code, date_fmt):
+    """竞价归因只使用 KPL 细分题材；无有效标签则不硬归类。"""
+    kpl = _kpl_resolve_stock_kpl(code, date_fmt, window=100) or {}
+    return _traj_valid_tags(kpl.get('reason_tag', ''), kpl.get('reason_brief', '')) or list(kpl.get('tags') or [])
+
+
+def _auction_quote_item(code, quote, prev_lianban=0, tags=None):
+    """将实时行情标准化为竞价条目。开盘价为主，缺失时不用盘中涨幅伪造竞价。"""
+    code = str(code or '').zfill(6)
+    quote = quote or {}
+    prev_close = float(quote.get('prev_close') or 0)
+    open_px = float(quote.get('open') or 0)
+    open_pct = ((open_px - prev_close) / prev_close * 100.0) if prev_close > 0 and open_px > 0 else None
+    limit_pct = float(quote.get('limit_pct') or _limit_pct_for(code, quote.get('name', '')))
+    # 用价格判断而非“当前涨幅”，确保 9:25 的一字板在尚未连续成交时也能识别。
+    is_yizi = bool(open_pct is not None and open_pct >= limit_pct - 0.12)
+    near_limit = bool(open_pct is not None and open_pct >= limit_pct * 0.75 and not is_yizi)
+    return {
+        'code': code, 'name': quote.get('name') or code,
+        'open_pct': round(open_pct, 2) if open_pct is not None else None,
+        'prev_lianban': int(prev_lianban or 0),
+        'next_board': int(prev_lianban or 0) + 1 if prev_lianban else 1,
+        'is_yizi': is_yizi, 'near_limit': near_limit,
+        'tags': list(dict.fromkeys(tags or [])),
+    }
+
+
+def _auction_sector_top5():
+    """盘红精选板块竞价 Top5。字段兼容 levistock 不同版本。"""
+    try:
+        rows = _get_sector_ranking(refresh=True) or []
+    except Exception:
+        rows = []
+    out = []
+    for row in rows:
+        name = str(row.get('plate_name') or row.get('name') or row.get('sector_name') or '').strip()
+        if not name or _tws_is_generic_tag(name):
+            continue
+        pct = row.get('change_pct', row.get('pct_chg', row.get('change', 0)))
+        try:
+            pct = float(pct)
+        except (TypeError, ValueError):
+            pct = 0.0
+        out.append({'name': name, 'change_pct': round(pct, 2),
+                    'stock_count': int(row.get('stock_count') or row.get('count') or 0)})
+    return sorted(out, key=lambda x: (-x['change_pct'], -x['stock_count'], x['name']))[:5]
+
+
+def _auction_build_report(stage='initial'):
+    """构建并持久化单日竞价报告。
+
+    事实来源：levistock 东财竞价异动（候选池）+ 批量开盘行情（开盘价/昨收），
+    题材归因和近 20 日涨停成员来自本地 KPL 索引。这样一字、连板和群众基础
+    分别有可核验来源，而不是根据盘中涨停池倒推集合竞价。
+    """
+    now_bj = _bj_now()
+    today = now_bj.strftime('%Y%m%d')
+    prev = _auction_prev_trade_day(today)
+    if not prev:
+        return {'date': today, 'available': False, 'message': '缺少前一交易日天梯数据'}
+    _kpl_ensure_loaded()
+    prev_fmt = '%s-%s-%s' % (prev[:4], prev[4:6], prev[6:])
+    today_fmt = '%s-%s-%s' % (today[:4], today[4:6], today[6:])
+
+    # 昨日连板（>=2）是题材强弱锚点；同一股存在多个细分标签时均展示，但不重复计数。
+    ladder = {}
+    for r in _kpl_rows_by_date.get(prev_fmt, []) or []:
+        code = str(r.get('stock_code') or '').zfill(6)
+        if not code:
+            continue
+        lb = _kpl_compute_lianban(code, prev_fmt)
+        if lb >= 2:
+            ladder[code] = {'name': r.get('stock_name') or code, 'lianban': lb,
+                            'tags': _auction_stock_tags(code, prev_fmt)}
+
+    # levistock 的竞价上涨列表是高开候选池。补上昨日连板及近20日涨停成员，
+    # 避免“并未触发异动事件但确实一字”的核心股被遗漏。
+    event_codes = set()
+    try:
+        import levistock as lk
+        for row in (lk.stock_changes_em(change_type='8209', filter_st=False) or []):
+            code = str(row.get('stock_code') or '').zfill(6)
+            if len(code) == 6:
+                event_codes.add(code)
+    except Exception as exc:
+        print('[竞价报告] levistock 竞价异动获取失败: %s' % exc)
+    members = _kpl_tag_member_index(prev_fmt, window=20)
+    # 先仅查询竞价异动股和昨日连板，识别需要观察的细分题材；随后才批量查询
+    # 这些题材的近20日涨停成员。不能把全市场20日涨停股都塞进首轮行情请求。
+    seed_codes = sorted(event_codes | set(ladder))
+    quotes = _spot_quotes_for_codes(seed_codes)
+    item_by_code = {}
+    for code in seed_codes:
+        info = ladder.get(code, {})
+        tags = info.get('tags') or _auction_stock_tags(code, prev_fmt)
+        item_by_code[code] = _auction_quote_item(code, quotes.get(code), info.get('lianban', 0), tags)
+
+    observed_tags = {tag for item in item_by_code.values() for tag in item['tags']
+                     if item['is_yizi'] or item['near_limit'] or item['prev_lianban'] >= 2}
+    breadth_codes = sorted({code for tag in observed_tags for code in (members.get(tag) or {}) if code not in item_by_code})
+    breadth_quotes = _spot_quotes_for_codes(breadth_codes)
+    for code in breadth_codes:
+        item_by_code[code] = _auction_quote_item(code, breadth_quotes.get(code), 0, _auction_stock_tags(code, prev_fmt))
+
+    # 题材聚合：所有一字/接近一字以及昨日连板都进入。没有有效细分题材的股不造题材。
+    groups = {}
+    for item in item_by_code.values():
+        if not (item['is_yizi'] or item['near_limit'] or item['prev_lianban'] >= 2):
+            continue
+        for tag in item['tags']:
+            g = groups.setdefault(tag, {'theme': tag, 'one_word': [], 'near_limit': [],
+                                       'ladder': [], 'weak_ladder': [], 'breadth': {}})
+            if item['is_yizi']:
+                g['one_word'].append(item)
+            elif item['near_limit']:
+                g['near_limit'].append(item)
+            if item['prev_lianban'] >= 2:
+                g['ladder'].append(item)
+                if item['open_pct'] is not None and item['open_pct'] < 0:
+                    g['weak_ladder'].append(item)
+
+    # “群众基础”：近20日曾涨停的同题材股票在本次竞价的开盘表现。
+    for tag, group in groups.items():
+        codes = list((members.get(tag) or {}).keys())
+        rows = [item_by_code[c] for c in codes if c in item_by_code and item_by_code[c]['open_pct'] is not None]
+        positive = sum(1 for x in rows if x['open_pct'] > 0)
+        strong = sum(1 for x in rows if x['near_limit'] or x['is_yizi'])
+        avg = round(sum(x['open_pct'] for x in rows) / len(rows), 2) if rows else None
+        group['breadth'] = {'sample': len(rows), 'positive': positive, 'strong': strong, 'avg_open_pct': avg}
+        for key in ('one_word', 'near_limit', 'ladder', 'weak_ladder'):
+            group[key] = sorted({x['code']: x for x in group[key]}.values(),
+                                key=lambda x: (-(x['prev_lianban'] or 0), -(x['open_pct'] or -999), x['name']))
+
+    sectors = _auction_sector_top5()
+    for group in groups.values():
+        theme = group['theme']
+        # 盘红的板块名和细分题材不能强行等同，仅做包含关系交叉提示。
+        group['sector_matches'] = [s for s in sectors if theme in s['name'] or s['name'].replace('概念', '') in theme]
+        b = group['breadth']
+        score = len(group['one_word']) * 4 + len(group['near_limit']) * 2 + b.get('strong', 0) + (1 if group['sector_matches'] else 0) - len(group['weak_ladder']) * 2
+        group['score'] = score
+        group['priority'] = '主攻观察' if group['one_word'] and group['ladder'] and (group['sector_matches'] or b.get('positive', 0) >= 2) else ('重点验证' if group['one_word'] or group['near_limit'] else '弱化观察')
+
+    result_groups = sorted(groups.values(), key=lambda g: (-g['score'], -len(g['one_word']), -max([x['prev_lianban'] for x in g['ladder']] or [0]), g['theme']))
+    report = {
+        'date': today_fmt, 'available': True, 'stage': stage,
+        'generated_at': now_bj.strftime('%Y-%m-%d %H:%M:%S'),
+        'source': 'levistock 东财竞价异动 + 实时开盘行情 + KPL细分题材/近20日涨停索引',
+        'one_word_count': sum(len(g['one_word']) for g in result_groups),
+        'groups': result_groups, 'sector_top5': sectors,
+        'message': '9:29:20 复核版' if stage == 'verified' else '9:25 初版，9:29:20 自动复核',
+    }
+    return report
+
+
+def _auction_save_report(report):
+    day = (report or {}).get('date', '').replace('-', '')
+    if not day:
+        return
+    os.makedirs(_AUCTION_REPORT_DIR, exist_ok=True)
+    path = _auction_report_path(day)
+    # 初版也独立留档，复核版写入日度默认文件；以后可同时还原 9:25 原貌与最终竞价。
+    if report.get('stage') == 'initial':
+        path = path.replace('.json', '.initial.json')
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+    if report.get('stage') != 'initial':
+        _auction_report_cache[day] = report
+
+
+def _auction_load_report(day_ymd=None):
+    day = (day_ymd or '').replace('-', '')
+    if not day:
+        day = _bj_now().strftime('%Y%m%d')
+    if day in _auction_report_cache:
+        return _auction_report_cache[day]
+    path = _auction_report_path(day)
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                report = json.load(f)
+            _auction_report_cache[day] = report
+            return report
+        except Exception:
+            pass
+    return {'date': '%s-%s-%s' % (day[:4], day[4:6], day[6:]) if len(day) == 8 else '',
+            'available': False, 'message': '当日竞价报告尚未生成'}
+
+
+def _auction_report_loop():
+    """常驻调度：9:25 初版落盘，9:29:20 用更稳定的竞价结果覆盖为最终版。"""
+    fired = set()
+    while True:
+        try:
+            now = _bj_now()
+            day = now.strftime('%Y%m%d')
+            sec = now.hour * 3600 + now.minute * 60 + now.second
+            if day in _trading_days:
+                # 严格限制在集合竞价时点附近：错过时宁可留空，也绝不能用 9:30 后行情
+                # 冒充 9:25/9:29 快照，破坏以后复盘的时间真实性。
+                initial_start = 9 * 3600 + 25 * 60
+                verify_start = 9 * 3600 + 29 * 60 + 20
+                if initial_start <= sec < verify_start and (day, 'initial') not in fired:
+                    with _auction_report_lock:
+                        if not _auction_load_report(day).get('available'):
+                            report = _auction_build_report('initial')
+                            _auction_save_report(report)
+                            _feishu_publish_auction_report(report)
+                            print('[竞价报告] %s 9:25 初版已保存' % day)
+                    fired.add((day, 'initial'))
+                if verify_start <= sec < 9 * 3600 + 30 * 60 + 30 and (day, 'verified') not in fired:
+                    with _auction_report_lock:
+                        # 进程若在复核窗口内重启，默认日度文件已是复核版时不重复推送。
+                        existing = _auction_load_report(day)
+                        if existing.get('available') and existing.get('stage') == 'verified':
+                            print('[竞价报告] %s 9:29:20 复核版已存在，跳过重复推送' % day)
+                        else:
+                            report = _auction_build_report('verified')
+                            _auction_save_report(report)
+                            _feishu_publish_auction_report(report)
+                            print('[竞价报告] %s 9:29:20 复核版已保存' % day)
+                    fired.add((day, 'verified'))
+            # 只保留当前进程所需的去重标记；历史报告全部留在磁盘。
+            if len(fired) > 8:
+                fired = {x for x in fired if x[0] >= day}
+            time.sleep(5)
+        except Exception as exc:
+            print('[竞价报告] 调度异常: %s' % exc)
+            time.sleep(15)
+
 
 def _get_zt_timeline_pool_cached():
     """时间轴专用轻量涨停池：不逐只查询同花顺概念，避免首屏被 90+ 次慢查询拖住。"""
@@ -3409,7 +4014,9 @@ def _build_today_timeline_fast():
         code = str(item.get('code') or '').strip()
         if not code:
             continue
-        kpl = _kpl_resolve_stock_kpl(code, date_fmt) if date_fmt else {}
+        # 部分实时涨停股当天还没有 KPL 标签记录；解析函数会返回 None，
+        # 时间轴仍应保留该股票，不能因标签缺失让整个接口 500。
+        kpl = (_kpl_resolve_stock_kpl(code, date_fmt) or {}) if date_fmt else {}
         latest = _kpl_stock_latest_tag.get(code, {}) or {}
         stock = {
             'code': code,
@@ -5223,16 +5830,35 @@ def _build_market_sentiment():
         'data_prior': bool(previous),
     }
     fresh = False
+    indices_fresh = False
+    emotion_fresh = False
+    indices_source = ''
 
-    # 指数接口返回当前行情；非交易日返回的通常就是最近收盘值，日期统一贴到
-    # 最近有效交易日，避免前端误认为是周末数据。
-    try:
-        indices = lk.market_index_em()
-        if isinstance(indices, list) and indices:
-            result['indices'] = indices
-            fresh = True
-    except Exception:
-        pass
+    # 非交易时段优先取腾讯行情的最新快照：levistock 的东方财富接口在
+    # 盘前/盘后偶尔会返回上一交易日旧值，不能只凭“请求成功”判断数据新鲜。
+    # 交易时段仍优先使用 levistock 实时指数，失败再走同一备用源。
+    if not realtime:
+        try:
+            indices = _fetch_market_indices_fallback()
+            if indices:
+                result['indices'] = indices
+                result['data_source'] = '腾讯行情最新收盘'
+                fresh = True
+                indices_fresh = True
+                indices_source = '腾讯行情最新收盘'
+        except Exception:
+            pass
+
+    if not result['indices']:
+        try:
+            indices = lk.market_index_em()
+            if isinstance(indices, list) and indices:
+                result['indices'] = indices
+                fresh = True
+                indices_fresh = True
+                indices_source = 'levistock实时指数'
+        except Exception:
+            pass
     if not result['indices']:
         try:
             indices = _fetch_market_indices_fallback()
@@ -5240,16 +5866,22 @@ def _build_market_sentiment():
                 result['indices'] = indices
                 result['data_source'] = '腾讯行情备用'
                 fresh = True
+                indices_fresh = True
+                indices_source = '腾讯行情备用'
         except Exception:
             pass
 
     # 情绪接口支持历史日期。盘中先取当日，非交易日取最近有效日；若当日盘中
     # 暂时没有数据，再回退最近本地有效日期，避免整块指数区一起失败。
     try:
-        emotion = lk.market_emotion_kph(date=requested_fmt)
+        # levistock 内部用 date.today() 判断是否“今天”，该判断受服务器
+        # 系统时区影响。盘中必须传 None 走实时接口，不能传北京时间日期，
+        # 否则在非北京时间服务器上会被误判为历史请求。
+        emotion = lk.market_emotion_kph(date=None if realtime else requested_fmt)
         if isinstance(emotion, dict) and emotion:
             result['emotion'] = emotion
             fresh = True
+            emotion_fresh = True
     except Exception:
         if realtime:
             fallback_ymd = (_get_latest_zt_data_date() or '').replace('-', '')
@@ -5262,16 +5894,24 @@ def _build_market_sentiment():
                         result['data_date'] = fallback_ymd
                         result['data_prior'] = True
                         fresh = True
+                        emotion_fresh = True
                 except Exception:
                     pass
 
     if fresh:
-        if realtime and result.get('data_date') == previous.get('data_date'):
+        # 任一实时/目标交易日数据成功，就把快照日期推进到本次请求的有效日。
+        # 旧逻辑只在盘中且日期相等时推进，导致盘后从旧快照恢复后仍显示数日前日期。
+        if indices_fresh or emotion_fresh:
             result['data_date'] = requested_ymd
         elif not result.get('data_date'):
             result['data_date'] = requested_ymd
         result['data_date'] = str(result['data_date']).replace('-', '')
-        result['data_source'] = 'levistock' if not result.get('data_prior') else 'levistock/最近成功快照'
+        if emotion_fresh and indices_source:
+            result['data_source'] = indices_source + '+levistock情绪'
+        elif indices_fresh:
+            result['data_source'] = indices_source or '指数最新快照'
+        else:
+            result['data_source'] = 'levistock/最近成功快照'
         result['data_prior'] = result['data_date'] != requested_ymd
         _save_market_sentiment_snapshot(result)
     elif not result.get('indices') and not result.get('emotion'):
@@ -5865,7 +6505,7 @@ def _build_theme_map(ndays=40):
         groups[k].sort(key=lambda x: (-x['count'], x['name']))
 
     total_themes = sum(len(p['themes']) for p in plates.values())
-    return {
+    result = {
         'ok': True,
         'trading': _is_trading_hours(),
         'window': {
@@ -5881,6 +6521,10 @@ def _build_theme_map(ndays=40):
         'ladder': ladder,
         'first_themes': first_themes,
     }
+    # Top10 排序在服务端只计算一次。页面与飞书均直接读取它，避免浏览器
+    # localeCompare 和 Python 中文排序在“同涨停数”时出现不同的名次。
+    result['today_top10'] = _tmm_today_top10(result)
+    return result
 
 
 def _market_structure_live_zt_rows(date_fmt):
@@ -8771,6 +9415,7 @@ def _kpl_fetch_missing_days(missing_ymds, source='auto', max_days=30):
     幂等：目标日文件已存在则跳过。max_days 默认 30（与按钮一致，控制单次请求量）。"""
     global _kpl_stock_index, _kpl_reason_index, _kpl_unique_plates, _kpl_unique_tags, _kpl_unique_concepts
     global _kpl_day_files, _kpl_day_cache, _kpl_rows, _kpl_rows_by_date, _kpl_rows_by_stock
+    global _rtw_live_cache, _rtw_live_ts, _zt_pool_cache, _zt_timeline_pool_cache
     zt_dir = _KPL_DATA_DIR
     missing_to_fetch = missing_ymds[-max_days:] if len(missing_ymds) > max_days else missing_ymds
     if not missing_to_fetch:
@@ -8814,6 +9459,13 @@ def _kpl_fetch_missing_days(missing_ymds, source='auto', max_days=30):
             _kpl_rows_by_date = {}
             _kpl_rows_by_stock = {}
             print('[%s] 完成: 拉取 %d/%d 天' % (source, fetched, len(missing_to_fetch)))
+            # 日文件补齐后，必须清除已经按旧日期生成的页面/行情缓存。
+            # 否则服务启动时先返回 09-28，后台补完 09-29 后仍会继续显示旧快照。
+            _zt_pool_cache = {'data': None, 'ts': 0}
+            _zt_timeline_pool_cache = {'data': None, 'ts': 0}
+            _rtw_live_cache = None
+            _rtw_live_ts = 0
+            _invalidate_cache()
             _kpl_search_cache_clear()
             _elastic_ensure_preset()
     except Exception as e:
@@ -12559,6 +13211,34 @@ td.lt-trajectory-cell {
 .tws-tl-chip.tws-tl-restart .tws-tl-theme { color: #a5f3fc; }
 .tws-tl-chip .tws-tl-theme:hover { color: #ffd700; text-decoration: underline; }
 .tws-tl-chip .tws-mab-tag { cursor: pointer; }
+/* 竞价报告：只呈现已落盘的 9:25/9:29 快照，避免首屏触发竞价联网请求。 */
+.auction-report { margin: 6px 0 8px; padding: 8px 10px; border: 1px solid rgba(34,211,238,.42); border-radius: 10px; background: linear-gradient(135deg, rgba(8,47,73,.42), rgba(15,52,96,.22)); }
+.auction-head { display:flex; align-items:center; gap:7px; flex-wrap:wrap; font-size:.84em; font-weight:800; color:#d8f6ff; }
+.auction-stage { font-size:.68em; color:#a5f3fc; border:1px solid rgba(103,232,249,.45); border-radius:5px; padding:1px 5px; background:rgba(6,182,212,.12); }
+.auction-meta { margin-left:auto; color:#7da4b2; font-size:.68em; font-weight:500; }
+.auction-empty { color:#8ba5b1; font-size:.76em; padding:3px 0; }
+.auction-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:7px; margin-top:7px; }
+.auction-card { border-left:3px solid #64748b; border-radius:7px; background:rgba(15,23,42,.34); padding:5px 7px; min-width:0; }
+.auction-card.attack { border-left-color:#fbbf24; background:rgba(120,53,15,.13); }
+.auction-card.verify { border-left-color:#22d3ee; background:rgba(8,145,178,.11); }
+.auction-card.weak { border-left-color:#94a3b8; opacity:.86; }
+.auction-theme { display:flex; align-items:center; gap:5px; flex-wrap:wrap; line-height:1.35; }
+.auction-theme-link { color:#fef3c7; font-weight:800; cursor:pointer; font-size:.82em; }
+.auction-theme-link:hover { color:#fff; text-decoration:underline; }
+.auction-priority { font-size:.62em; border-radius:4px; padding:1px 4px; font-weight:800; }
+.auction-card.attack .auction-priority { color:#fde68a; background:rgba(251,191,36,.15); }
+.auction-card.verify .auction-priority { color:#a5f3fc; background:rgba(34,211,238,.13); }
+.auction-card.weak .auction-priority { color:#cbd5e1; background:rgba(148,163,184,.13); }
+.auction-line { margin-top:3px; color:#aec4ce; font-size:.7em; line-height:1.55; }
+.auction-label { color:#7dd3fc; font-weight:700; margin-right:3px; }
+.auction-stock { color:#f8fafc; font-weight:700; cursor:pointer; white-space:nowrap; }
+.auction-stock:hover { color:#fde68a; }
+.auction-board { color:#fbbf24; font-weight:800; }
+.auction-pct { color:#fb7185; font-weight:800; }
+.auction-neg { color:#86efac; font-weight:800; }
+.auction-sector { color:#67e8f9; }
+.auction-breadth { color:#94a3b8; }
+@media (max-width:700px) { .auction-grid { grid-template-columns:1fr; } .auction-meta { width:100%; margin-left:0; } }
 /* 核心池联动推荐（时间轴下方、细分题材晋级上方）：今日涨停 → 老龙头核心标的 */
 .cpr-box { margin-top: 6px; border: 1px solid #1e3a5f; border-radius: 10px; background: rgba(15,52,96,0.2); padding: 6px 10px; }
 .cpr-theme { padding: 4px 0; border-bottom: 1px dashed rgba(148,163,184,.14); }
@@ -16393,7 +17073,7 @@ function loadSniper(mode) {
     Promise.all([
         _cachedFetch('/api/sniper_data?exclude_data=1').catch(function() { return null; }),
         _cachedFetch('/api/sector_ranking').catch(function() { return null; }),
-        _cachedFetch('/api/market_sentiment').catch(function() { return null; }),
+        _cachedFetch('/api/market_sentiment?refresh=1&_t=' + Date.now()).catch(function() { return null; }),
         _cachedFetch('/api/market_wind_data').catch(function() { return null; }),
         _cachedFetch('/api/market_mainline').catch(function() { return null; }),
         _cachedFetch('/api/hot_concept_20').catch(function() { return null; }),
@@ -22465,6 +23145,33 @@ function _twsRenderBoardSummary(twsData) {
 // 在连板涨停表现上方：连板/重启 特别标注（金/青），全部标注题材，chip 点击弹框
 // 布局=横向时间轴（绝对定位按分钟分布 + 同分钟垂直堆叠 + 贪心多lane分散），超出屏宽横向滚动
 // 盘中实时更新：_twsRefreshBoardLive() 随 2分钟 行情轮询重拉整个汇总区（时间轴+连板涨停表现+连板速览+断板重启+天梯，_twsRefreshGate 内 9:25~15:30 才拉网络）
+function _auctionEscAttr(s) { return String(s || '').replace(/'/g, '').replace(/"/g, ''); }
+function _auctionStock(item) {
+    var pct = item.open_pct === null || item.open_pct === undefined ? '--' : (item.open_pct >= 0 ? '+' : '') + Number(item.open_pct).toFixed(2) + '%';
+    var cls = Number(item.open_pct) < 0 ? 'auction-neg' : 'auction-pct';
+    var board = item.prev_lianban >= 2 ? '昨' + item.prev_lianban + '板→今' + item.next_board + '板' : '首板';
+    return '<span class="auction-stock" onclick="showEnlargedCardDetail(\\x27' + _auctionEscAttr(item.code) + '\\x27)" title="点击查看K线">' + _kplEsc(item.name) + '</span><em class="auction-board">' + board + '</em><b class="' + cls + '">' + pct + '</b>';
+}
+function _tmmRenderAuctionReport(report) {
+    if (!report || !report.available) return '<div class="auction-report"><div class="auction-head">📋 竞价报告</div><div class="auction-empty">' + _kplEsc((report && report.message) || '交易日北京时间 9:25 自动生成并保存，9:29:20 自动复核') + '</div></div>';
+    var stage = report.stage === 'verified' ? '9:29:20 复核版' : '9:25 初版';
+    var h = '<section class="auction-report"><div class="auction-head">📋 竞价报告 <span class="auction-stage">' + stage + '</span><span class="auction-meta">' + _kplEsc(report.date || '') + ' · 一字 ' + Number(report.one_word_count || 0) + ' 只 · 已保存</span></div>';
+    var groups = report.groups || [];
+    if (!groups.length) return h + '<div class="auction-empty">竞价强势股暂未形成可归类的细分题材；9:29:20 将自动复核。</div></section>';
+    h += '<div class="auction-grid">';
+    groups.forEach(function(g) {
+        var tone = g.priority === '主攻观察' ? 'attack' : (g.priority === '重点验证' ? 'verify' : 'weak');
+        var b = g.breadth || {};
+        h += '<div class="auction-card ' + tone + '"><div class="auction-theme"><span class="auction-theme-link" onclick="tmmSearchApply(\\x27' + _auctionEscAttr(g.theme) + '\\x27)" title="在下方题材地图筛选">' + _kplEsc(g.theme) + '</span><span class="auction-priority">' + _kplEsc(g.priority) + '</span></div>';
+        if ((g.one_word || []).length) h += '<div class="auction-line"><span class="auction-label">一字</span>' + g.one_word.map(_auctionStock).join('、') + '</div>';
+        if ((g.near_limit || []).length) h += '<div class="auction-line"><span class="auction-label">接近涨停</span>' + g.near_limit.map(_auctionStock).join('、') + '</div>';
+        if ((g.weak_ladder || []).length) h += '<div class="auction-line"><span class="auction-label">连板低开</span>' + g.weak_ladder.map(_auctionStock).join('、') + '</div>';
+        if (b.sample) h += '<div class="auction-line auction-breadth">近20日涨停股竞价：' + b.positive + '/' + b.sample + ' 红开 · 强势 ' + b.strong + ' · 均开 ' + (b.avg_open_pct >= 0 ? '+' : '') + b.avg_open_pct + '%</div>';
+        if ((g.sector_matches || []).length) h += '<div class="auction-line auction-sector">板块Top5交叉：' + g.sector_matches.map(function(s){ return _kplEsc(s.name) + ' ' + (s.change_pct >= 0 ? '+' : '') + s.change_pct + '%'; }).join('、') + '</div>';
+        h += '</div>';
+    });
+    return h + '</div></section>';
+}
 function _twsTlFmt(minute) {
     if (minute == null || minute < 0) return '--:--';
     var t = 9 * 60 + minute;
@@ -31924,6 +32631,7 @@ var _tmmSectorData = null;   // 精选板块强度 Top10（sector_ranking，与�
 var _tmmSentData = null;     // 市场情绪 · 大盘指数（market_sentiment，与精准狙击同源，实时刷新一致）
 var _themeWindStrengthData = null; // 题材风向已加载的同源时间轴，供“盯盘”复用
 var _themeWindStrengthPromise = null;
+var _tmmAuctionData = null;  // 竞价报告只读 9:25/9:29 已保存快照，不阻塞题材地图首屏
 
 // 盯盘与题材风向共用同一份精选板块强度请求，避免首屏重复请求重型接口。
 function _loadThemeWindStrength(force) {
@@ -32384,6 +33092,8 @@ function loadKplThemeMap(force) {
     // 盯盘时间轴与题材风向完全同源：复用精选板块强度接口及其渲染数据，
     // 不再单独请求轻量时间轴接口，避免内容、日期和刷新节奏出现分叉。
     var timelineDataPromise = _loadThemeWindStrength(!!force);
+    // 本地文件读取，独立于地图/行情请求；未到 9:25 时自然显示等待提示。
+    var auctionReportPromise = fetch('/api/auction_report?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; });
     // 地图主数据单独先返回；精选板块/指数等辅助数据不阻塞首屏。
     Promise.all([
         fetch(url).then(function(r) { return r.json(); }).catch(function() { return null; }),
@@ -32407,6 +33117,12 @@ function loadKplThemeMap(force) {
         };
         if (window.requestIdleCallback) requestIdleCallback(_finishTmmDetails, {timeout: 1200});
         else setTimeout(_finishTmmDetails, 80);
+        auctionReportPromise.then(function(report) {
+            if (_tmmData !== data || !report) return;
+            _tmmAuctionData = report;
+            var auctionBox = document.getElementById('tmmAuctionReport');
+            if (auctionBox) auctionBox.innerHTML = _tmmRenderAuctionReport(report);
+        });
         // 首次打开即取一次当天最终/实时值；只有交易时段才会继续周期刷新。
         setTimeout(function() { _tmmRefreshAllQuotes(true); }, 0);
         // 精选板块强度与题材风向共用请求；返回后只重绘同源时间轴区域。
@@ -32420,7 +33136,7 @@ function loadKplThemeMap(force) {
         // 辅助行情面板后台补齐，不影响地图首屏。
         Promise.all([
             fetch('/api/sector_ranking?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
-            fetch('/api/market_sentiment?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; })
+            fetch('/api/market_sentiment?refresh=1&_t=' + Date.now(), {cache: 'no-store'}).then(function(r) { return r.json(); }).catch(function() { return null; })
         ]).then(function(extra) {
             _tmmSectorData = extra[0]; _tmmSentData = extra[1];
             var sb = document.getElementById('tmmSentBody');
@@ -32444,9 +33160,10 @@ function _tmmRefreshLive() {
     Promise.all([
         fetch('/api/theme_map?ndays=40&no_cache=1&_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
         fetch('/api/sector_ranking?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
-        fetch('/api/market_sentiment?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
+        fetch('/api/market_sentiment?refresh=1&_t=' + Date.now(), {cache: 'no-store'}).then(function(r) { return r.json(); }).catch(function() { return null; }),
         // 与题材风向使用同一份精选板块强度数据，保证时间轴内容和刷新结果一致。
-        fetch('/api/theme_wind_strength?no_cache=1&_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; })
+        fetch('/api/theme_wind_strength?no_cache=1&_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
+        fetch('/api/auction_report?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; })
     ]).then(function(arr) {
         if (!_tmmIsSessionNow()) return;
         var data = arr[0];
@@ -32457,6 +33174,7 @@ function _tmmRefreshLive() {
         _tmmSectorData = arr[1];
         _tmmSentData = arr[2];
         _themeWindStrengthData = arr[3] || _themeWindStrengthData;
+        _tmmAuctionData = arr[4] || _tmmAuctionData;
         c.innerHTML = _tmmRender(data, _tmmSectorData, _tmmSentData, _themeWindStrengthData);
         _tmmRestoreCollapsed(c);
         if (data.trading) setTimeout(_tmmRefreshAllQuotes, 0);
@@ -32520,6 +33238,8 @@ function _renderMarketIndices(sentimentData) {
     return h;
 }
 function _tmmTodayTop10(data) {
+    // 服务端已按页面规则聚合并排序；飞书也复用同一数组，保证名次与卡片内股票顺序完全一致。
+    if (data && Array.isArray(data.today_top10)) return data.today_top10;
     // 同名细分题材跨板块时合并，按今日实际涨停股票去重计数。
     var themes = {};
     ['attack', 'defense', 'neutral'].forEach(function(zone) {
@@ -32586,6 +33306,7 @@ function _tmmRender(data, sectorData, sentData, twsData, fast) {
     // 连板涨停表现（题材风向同款/同源，置于 Top10细分题材卡片下方、搜索过滤条上方；含首板细分题材）
     h += _twsRenderLadder(data);
     // 与题材风向完全复用的今日涨停时间轴：紧接连板涨停表现，位于过滤条前。
+    h += '<div id="tmmAuctionReport">' + _tmmRenderAuctionReport(_tmmAuctionData) + '</div>';
     h += _twsRenderTimeline(twsData, 'tmmTimelineBox');
     // 过滤器（题材地图头下 / 进攻板块上）
     h += _tmmFilterBar(matched);
@@ -37133,6 +37854,12 @@ class Handler(BaseHTTPRequestHandler):
                 _set_cache(cache_key, result)
             self._respond_json(result, cors_headers)
 
+        elif path == '/api/auction_report':
+            # 仅读取已落盘的集合竞价快照；生成由后台 9:25 / 9:29:20 调度负责，
+            # 不让手机首次打开盯盘时触发行情网络请求。
+            day = query.get('date', [''])[0].strip().replace('-', '')
+            self._respond_json(_auction_load_report(day), cors_headers)
+
         elif path == '/api/today_zt_timeline':
             # 盯盘首屏轻量接口：只返回今日涨停时间轴，避免等待完整题材风向重型计算。
             try:
@@ -37201,6 +37928,25 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 import traceback
                 self._respond_json({'error': str(e), 'traceback': traceback.format_exc()}, cors_headers)
+
+        elif path == '/api/feishu_top10_test':
+            # 仅供页面侧手动核验：从当前服务正在使用的题材地图发送，不允许独立进程
+            # 重新拉旧数据，从而保证测试卡片和屏幕上的 Top10 是同一份快照。
+            try:
+                data = _get_cached('theme_map:40', ttl=3600)
+                if data is None:
+                    data = _build_theme_map(ndays=40)
+                    _set_cache('theme_map:40', data)
+                top10 = data.get('today_top10') or _tmm_today_top10(data)
+                tws = _shared_theme_wind_snapshot(top_n=10)
+                now = _bj_now()
+                date_fmt = now.strftime('%Y-%m-%d') if data.get('trading') else ((data.get('window') or {}).get('end') or now.strftime('%Y-%m-%d'))
+                sent = _feishu_send_top10_card(top10, date_fmt, timeline=(tws.get('timeline') or []), test=True)
+                self._respond_json({'ok': bool(sent), 'date': date_fmt, 'themes': len(top10),
+                                    'stocks': sum(item.get('count', 0) for item in top10),
+                                    'timeline_stocks': len(tws.get('timeline') or [])}, cors_headers)
+            except Exception as e:
+                self._respond_json({'ok': False, 'error': str(e)}, cors_headers)
 
         elif path == '/api/market_structure':
             # 市场结构金字塔：每日涨停天梯 + 掉队观察（见 _build_market_structure）
@@ -37702,7 +38448,9 @@ class Handler(BaseHTTPRequestHandler):
                     result = _build_market_sentiment()
                     _set_cache(cache_key, result)
                 else:
-                    result = _get_cached(cache_key, ttl=60)
+                    # 盘中由盯盘/题材风向每分钟显式 refresh；普通请求也只保留
+                    # 30 秒保护性缓存，避免跨分钟继续显示上一份指数快照。
+                    result = _get_cached(cache_key, ttl=30 if _is_trading_hours() else 300)
                     if result is None:
                         result = _build_market_sentiment()
                         _set_cache(cache_key, result)
@@ -38998,7 +39746,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/refresh_posts':
             try:
                 merged, new_count = _fetch_jiuyan_posts()
-                threading.Thread(target=_send_feishu_webhook, daemon=True).start()
+                # 舆情刷新仅更新页面数据；旧版舆情 webhook 推送已按新策略停用。
                 self._respond_json({'items': merged, 'total': len(merged), 'new_count': new_count}, cors_headers)
             except Exception as e:
                 self._respond_json({'error': str(e)}, cors_headers)
@@ -39417,7 +40165,11 @@ def main():
         # 市场结构/连板联动由前端在首屏完成后按 20日 → 30日 → 联动顺序预热。
         # 不在服务启动时与首屏高频任务并发，避免用户刚切页时排队等待同一把构建锁。
         threading.Thread(target=_sentiment_bg_refresh, daemon=True),
-        threading.Thread(target=_rtw_loop, daemon=True),
+        # 旧版实时增量/收盘推送已取消；只保留“完整细分题材晋级快照”。
+        threading.Thread(target=_feishu_promotion_loop, daemon=True),
+        # 盯盘「涨停板数量 TOP10」：盘中检查，出现新涨停成员时才发送完整卡片。
+        threading.Thread(target=_feishu_top10_loop, daemon=True),
+        threading.Thread(target=_auction_report_loop, daemon=True),
         threading.Thread(target=_zt_auto_startup, daemon=True),
         threading.Thread(target=_zt_after_close_loop, daemon=True),
         threading.Thread(target=_kpl_first_zt_time_prefetch, daemon=True),
