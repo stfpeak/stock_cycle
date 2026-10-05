@@ -26,6 +26,7 @@ import requests
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from stock_linkage_finder import StockLinkageFinder
+from attention_board import build_attention_days, build_attention_mk
 
 # 全局finder
 print("正在初始化股票联动查找器 V5 ...")
@@ -110,9 +111,78 @@ _kpl_day_files = []             # 所有日JSON文件名（不含路径），排
 _KPL_SEARCH_CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'kpl_search_cache')
 _KPL_SEARCH_CACHE_TTL = 1800  # 30分钟
 _INDUSTRY_CHAIN_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'industry_chain_data.json')
+_KPH_INDUSTRY_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'concept_stock', 'kph_industry_stock.json')
+_kph_industry_reverse = {}
+_kph_industry_as_of = ''
+try:
+    with open(_KPH_INDUSTRY_DB_PATH, 'r', encoding='utf-8') as _kph_industry_file:
+        _kph_industry_db = json.load(_kph_industry_file)
+    _kph_industry_reverse = _kph_industry_db.get('reverse', {}) or {}
+    _kph_industry_as_of = str(_kph_industry_db.get('as_of') or '')
+    print('加载KPH行业概念库: %s 个股票代码（快照 %s）' % (len(_kph_industry_reverse), _kph_industry_as_of or '未知'))
+except FileNotFoundError:
+    print('KPH行业概念库尚未构建: %s' % _KPH_INDUSTRY_DB_PATH)
+except Exception as _kph_industry_load_error:
+    print('加载KPH行业概念库失败: %s' % _kph_industry_load_error)
+
+
+def _get_kph_industry_concepts(stock_code):
+    """本地反向索引查询开盘红行业归属与接口概念标签。"""
+    code = str(stock_code or '').strip().upper()
+    code = code.replace('.SH', '').replace('.SZ', '').replace('.BJ', '')
+    for prefix in ('SH', 'SZ', 'BJ'):
+        if code.startswith(prefix):
+            code = code[len(prefix):]
+            break
+    code = code.zfill(6)
+    row = _kph_industry_reverse.get(code) or {}
+    if not isinstance(row, dict):
+        return []
+    concepts = list(row.get('concepts', []) or []) + list(row.get('tags', []) or [])
+    return sorted({str(item).strip() for item in concepts if str(item).strip()})
+
+
+_DC_CONCEPT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'concept_stock', 'dc_concept_stock.json')
+_dc_concept_reverse = {}
+_dc_concept_updated_at = ''
+try:
+    with open(_DC_CONCEPT_DB_PATH, 'r', encoding='utf-8') as _dc_concept_file:
+        _dc_concept_db = json.load(_dc_concept_file)
+    _dc_concept_reverse = _dc_concept_db.get('reverse', {}) or {}
+    _dc_concept_updated_at = str(_dc_concept_db.get('updated_at') or '')
+    print('加载东财概念库: %s 个股票代码（更新 %s）' % (len(_dc_concept_reverse), _dc_concept_updated_at or '未知'))
+except FileNotFoundError:
+    print('东财概念库尚未构建: %s' % _DC_CONCEPT_DB_PATH)
+except Exception as _dc_concept_load_error:
+    print('加载东财概念库失败: %s' % _dc_concept_load_error)
+
+
+def _get_dc_concepts(stock_code):
+    """本地查询东财概念，不在弹框请求时访问外部接口。"""
+    code = str(stock_code or '').strip().upper()
+    code = code.replace('.SH', '').replace('.SZ', '').replace('.BJ', '')
+    for prefix in ('SH', 'SZ', 'BJ'):
+        if code.startswith(prefix):
+            code = code[len(prefix):]
+            break
+    code = code.zfill(6)
+    row = _dc_concept_reverse.get(code) or {}
+    concepts = row.get('concepts', []) if isinstance(row, dict) else []
+    return sorted({str(item).strip() for item in concepts if str(item).strip()})
+
 _SENTIMENT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'sentiment')
 _POSTS_FILE = os.path.join(_SENTIMENT_DIR, 'posts.json')
 STALE_THRESHOLD = 30 * 60  # 30分钟阈值，超过则自动从韭研公社抓取
+_CLS_TELEGRAPH_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'cls_telegraph')
+_cls_telegraph_lock = threading.Lock()
+_cls_telegraph_sync_lock = threading.Lock()
+_cls_telegraph_refresh_lock = threading.Lock()
+_cls_telegraph_refreshing_dates = set()
+_cls_telegraph_refresh_last_attempt = {}
+_cls_telegraph_sync_state = {
+    'active': False, 'total': 0, 'completed': 0, 'current_date': '',
+    'errors': [], 'started_at': '', 'finished_at': '',
+}
 _FEISHU_WEBHOOK_URL = 'https://open.feishu.cn/open-apis/bot/v2/hook/2883efe9-1af7-4afa-815a-c33168bba440'
 _FEISHU_NOTIFY_LIMIT = 60   # 历史配置保留；舆情 webhook 推送已停用
 _FEISHU_TOP_K = 20          # 历史配置保留
@@ -205,6 +275,344 @@ def _fetch_jiuyan_posts(existing_items=None, existing_urls=None):
 def _send_feishu_webhook():
     """旧版舆情 webhook 已停用（保留空函数兼容旧调用）。"""
     return False
+
+
+def _cls_telegraph_date_bounds():
+    """财联社电报日期范围：北京时间今天往前两个自然月。"""
+    today = _bj_now().date()
+    month_index = today.year * 12 + today.month - 1 - 2
+    year, month = divmod(month_index, 12)
+    month += 1
+    import calendar
+    earliest = today.replace(year=year, month=month, day=min(today.day, calendar.monthrange(year, month)[1]))
+    return earliest, today
+
+
+def _cls_normalize_telegraph_times(payload):
+    """把接口/旧缓存中的主机本地时间统一迁移为北京时间。"""
+    if not isinstance(payload, dict) or payload.get('time_zone') == 'Asia/Shanghai':
+        return payload
+    beijing = timezone(timedelta(hours=8))
+    for section in (payload.get('sections') or {}).values():
+        for item in (section or {}).get('items') or []:
+            if not isinstance(item, dict):
+                continue
+            stamp = item.get('ctime') or item.get('timestamp')
+            parsed = None
+            if isinstance(stamp, (int, float)) or (isinstance(stamp, str) and stamp.isdigit()):
+                try:
+                    parsed = datetime.fromtimestamp(float(stamp), timezone.utc)
+                except (ValueError, OverflowError, OSError):
+                    parsed = None
+            if parsed is None:
+                raw = str(item.get('time') or '').strip()
+                if not raw:
+                    continue
+                try:
+                    parsed = datetime.fromisoformat(raw)
+                except ValueError:
+                    continue
+                # levistock 返回的无时区字符串是由主机 localtime 格式化的。
+                if parsed.tzinfo is None:
+                    parsed = parsed.astimezone()
+            item['time'] = parsed.astimezone(beijing).strftime('%Y-%m-%d %H:%M:%S')
+    payload['time_zone'] = 'Asia/Shanghai'
+    return payload
+
+
+def _load_cls_telegraph_for_date(date_text, force=False, only_category=None):
+    """读取/缓存指定日期三类财联社电报；单类失败不影响其他类别。"""
+    categories = [('important', '重要消息'), ('company', '公司公告'), ('all', '全部电报')]
+    date_obj = datetime.strptime(date_text, '%Y-%m-%d').date()
+    cache_path = os.path.join(_CLS_TELEGRAPH_DIR, date_obj.strftime('%Y%m%d') + '.json')
+    cached = None
+    with _cls_telegraph_lock:
+        if os.path.isfile(cache_path):
+            try:
+                with open(cache_path, 'r', encoding='utf-8') as f:
+                    candidate = json.load(f)
+                if candidate.get('date') == date_text:
+                    cached = candidate
+            except (OSError, ValueError, TypeError):
+                pass
+    _cls_normalize_telegraph_times(cached)
+    requested = [only_category] if only_category else ['important', 'company']
+    if cached and not force and all(
+            k in cached.get('sections', {}) and not cached['sections'][k].get('error')
+            for k in requested):
+        cached['cached'] = True
+        return cached
+
+    results = dict((key, value) for key, value in (cached or {}).get('sections', {}).items())
+    needs_fetch = [category for category in requested
+                   if force or category not in results or results[category].get('error')]
+    fetched_any = False
+    if needs_fetch:
+        def fetch_category(category):
+            import levistock as lk
+            if category == 'all':
+                # levistock 的全量分类要连续翻页；其内部单页 read timeout 为 10 秒，
+                # 历史日多页时容易整类失败。沿用 levistock 的签名/解析逻辑，放宽单页超时，
+                # 并在后续页失败时保留已经取得的消息，避免整日数据被一次超时清空。
+                api = getattr(lk.news_telegraph_cls, '__globals__', {})
+                required = ('_BASE_PARAMS', '_CATEGORY_MAP', '_make_sign', '_TELEGRAPH_URL', '_HEADERS', '_parse_items', '_format')
+                if all(name in api for name in required):
+                    day_start = datetime.strptime(date_text, '%Y-%m-%d').timestamp()
+                    day_end = (datetime.strptime(date_text, '%Y-%m-%d') + timedelta(days=1)).timestamp() - 1
+                    category_value = api['_CATEGORY_MAP'].get('all', '')
+                    cursor = str(int(day_end))
+                    raw_items = []
+                    warning = ''
+                    for page_number in range(50):
+                        page = None
+                        last_error = None
+                        for attempt in range(3):
+                            params = dict(api['_BASE_PARAMS'], refresh_type='1', last_time=cursor, rn='20')
+                            if category_value:
+                                params['category'] = category_value
+                            params['sign'] = api['_make_sign'](params)
+                            try:
+                                response = requests.get(api['_TELEGRAPH_URL'], headers=api['_HEADERS'], params=params, timeout=(5, 25))
+                                response.raise_for_status()
+                                page = response.json()
+                                break
+                            except Exception as exc:
+                                last_error = exc
+                                if attempt < 2:
+                                    time.sleep(0.6 * (attempt + 1))
+                        if page is None:
+                            if raw_items:
+                                warning = '后续分页暂时获取失败，已保留已获取的部分电报：' + str(last_error)[:140]
+                                break
+                            raise last_error
+                        roll_data = ((page.get('data') or {}).get('roll_data') or [])
+                        if not roll_data:
+                            break
+                        page_items, out_of_range = api['_parse_items'](roll_data, day_start, day_end)
+                        raw_items.extend(page_items)
+                        cursor = str(roll_data[-1].get('sort_score', ''))
+                        if out_of_range or len(roll_data) < 20:
+                            break
+                    else:
+                        warning = '达到单日分页保护上限，后续可能尚有未加载电报'
+                    return api['_format'](raw_items), warning
+            last_error = None
+            for attempt in range(3):
+                try:
+                    records = lk.news_telegraph_cls(date=date_text, category=category)
+                    return (records if isinstance(records, list) else []), ''
+                except Exception as exc:
+                    last_error = exc
+                    if attempt < 2:
+                        time.sleep(0.8 * (attempt + 1))
+            raise last_error
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = {pool.submit(fetch_category, category): category for category in needs_fetch}
+            for future in as_completed(futures):
+                category = futures[future]
+                try:
+                    records, warning = future.result()
+                    results[category] = {'items': records, 'error': warning}
+                    fetched_any = True
+                except Exception as exc:
+                    results[category] = {'items': [], 'error': str(exc)}
+        payload = {
+            'date': date_text,
+            'time_zone': 'Asia/Shanghai',
+            'cached': not fetched_any,
+            'fetched_at': (_bj_now().strftime('%Y-%m-%d %H:%M:%S') if fetched_any
+                           else (cached or {}).get('fetched_at', '')),
+            'sections': {category: {**results.get(category, {'items': [], 'error': '获取失败'}), 'label': label}
+                         for category, label in categories}
+        }
+        _cls_normalize_telegraph_times(payload)
+        # 只在至少一类成功时落盘，避免短暂网络故障覆盖此前有效缓存。
+        if any(not payload['sections'][category]['error'] for category, _ in categories):
+            os.makedirs(_CLS_TELEGRAPH_DIR, exist_ok=True)
+            temp_path = cache_path + '.%s.tmp' % threading.get_ident()
+            with _cls_telegraph_lock:
+                # 分类请求并发返回时合并缓存，避免后完成的单类请求覆盖先完成的数据。
+                try:
+                    with open(cache_path, 'r', encoding='utf-8') as f:
+                        disk_cache = json.load(f)
+                    if disk_cache.get('date') == date_text:
+                        _cls_normalize_telegraph_times(disk_cache)
+                        for category, _ in categories:
+                            old_section = (disk_cache.get('sections') or {}).get(category)
+                            new_section = payload['sections'][category]
+                            if old_section and new_section.get('error') and old_section.get('items'):
+                                payload['sections'][category] = old_section
+                except (OSError, ValueError, TypeError):
+                    pass
+                with open(temp_path, 'w', encoding='utf-8') as f:
+                    json.dump(payload, f, ensure_ascii=False)
+                os.replace(temp_path, cache_path)
+        return payload
+
+
+def _cls_telegraph_cache_dates():
+    """返回本地已缓存的财联社电报日期。"""
+    if not os.path.isdir(_CLS_TELEGRAPH_DIR):
+        return []
+    dates = []
+    for name in os.listdir(_CLS_TELEGRAPH_DIR):
+        if not re.fullmatch(r'\d{8}\.json', name):
+            continue
+        try:
+            dates.append(datetime.strptime(name[:8], '%Y%m%d').strftime('%Y-%m-%d'))
+        except ValueError:
+            continue
+    return sorted(set(dates), reverse=True)
+
+
+def _cls_read_telegraph_cache(date_text):
+    """只读本地日期缓存，不等待上游请求。"""
+    try:
+        cache_path = os.path.join(_CLS_TELEGRAPH_DIR, datetime.strptime(date_text, '%Y-%m-%d').strftime('%Y%m%d') + '.json')
+        with _cls_telegraph_lock, open(cache_path, 'r', encoding='utf-8') as f:
+            payload = json.load(f)
+        if payload.get('date') != date_text:
+            return None
+        if payload.get('time_zone') != 'Asia/Shanghai':
+            _cls_normalize_telegraph_times(payload)
+            temp_path = cache_path + '.%s.tmp' % threading.get_ident()
+            with _cls_telegraph_lock:
+                with open(temp_path, 'w', encoding='utf-8') as f:
+                    json.dump(payload, f, ensure_ascii=False)
+                os.replace(temp_path, cache_path)
+        return payload
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _cls_queue_telegraph_refresh(date_text, force=False, category=None):
+    """后台刷新指定分类；日期切换只补重要/公司，全部电报必须显式展开才请求。"""
+    refresh_key = date_text + ':' + (category or 'primary')
+    with _cls_telegraph_refresh_lock:
+        if refresh_key in _cls_telegraph_refreshing_dates:
+            return True
+        last_attempt = _cls_telegraph_refresh_last_attempt.get(refresh_key, 0)
+        if not force and time.time() - last_attempt < 20:
+            return False
+        _cls_telegraph_refreshing_dates.add(refresh_key)
+        _cls_telegraph_refresh_last_attempt[refresh_key] = time.time()
+
+    def refresh():
+        try:
+            if category:
+                _load_cls_telegraph_for_date(date_text, force=force, only_category=category)
+            else:
+                for key in ('important', 'company'):
+                    _load_cls_telegraph_for_date(date_text, force=force, only_category=key)
+        except Exception as exc:
+            print('[财联社电报] 后台刷新失败 %s: %s' % (date_text, str(exc)[:180]))
+        finally:
+            with _cls_telegraph_refresh_lock:
+                _cls_telegraph_refreshing_dates.discard(refresh_key)
+
+    threading.Thread(target=refresh, daemon=True, name='cls-telegraph-' + date_text).start()
+    return True
+
+
+def _cls_telegraph_local_search(start_text, end_text, keyword, categories=None):
+    """只在本地缓存中检索，避免关键词搜索再次请求上游接口。"""
+    categories = categories or ('important', 'company', 'all')
+    hits_by_key = {}
+    category_priority = {'important': 0, 'company': 1, 'all': 2}
+    terms = list(dict.fromkeys(term.strip() for term in str(keyword or '').split('|') if term.strip()))
+    if not terms:
+        terms = [str(keyword or '').strip()]
+    cached_dates = _cls_telegraph_cache_dates()
+    for date_text in cached_dates:
+        if date_text < start_text or date_text > end_text:
+            continue
+        path = os.path.join(_CLS_TELEGRAPH_DIR, date_text.replace('-', '') + '.json')
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+        except (OSError, ValueError, TypeError):
+            continue
+        _cls_normalize_telegraph_times(payload)
+        for category in categories:
+            section = (payload.get('sections') or {}).get(category) or {}
+            for item in section.get('items') or []:
+                haystack = '%s\n%s' % (item.get('title', ''), item.get('content', ''))
+                matched_keywords = [term for term in terms if term.casefold() in haystack.casefold()]
+                if matched_keywords:
+                    hit = {'date': date_text, 'category': category, 'matched_keywords': matched_keywords, **item}
+                    signature = (date_text, item.get('time', ''), item.get('title', ''), item.get('content', ''))
+                    previous = hits_by_key.get(signature)
+                    if previous is not None:
+                        hit['matched_keywords'] = list(dict.fromkeys((previous.get('matched_keywords') or []) + matched_keywords))
+                    if previous is None or category_priority.get(category, 9) < category_priority.get(previous.get('category'), 9):
+                        hits_by_key[signature] = hit
+                    elif previous is not None:
+                        previous['matched_keywords'] = hit['matched_keywords']
+    hits = list(hits_by_key.values())
+    hits.sort(key=lambda item: (item.get('date', ''), item.get('time', '')), reverse=True)
+    return {'items': hits, 'cached_dates': len([d for d in cached_dates if start_text <= d <= end_text])}
+
+
+def _cls_telegraph_backfill_loop():
+    """后台补齐近两个月本地电报；已完整缓存的日期跳过，后续重启仅补缺失日期。"""
+    with _cls_telegraph_sync_lock:
+        if _cls_telegraph_sync_state.get('active'):
+            return
+        _cls_telegraph_sync_state.update({
+            'active': True, 'completed': 0, 'total': 0, 'current_date': '',
+            'errors': [], 'started_at': _bj_now().strftime('%Y-%m-%d %H:%M:%S'),
+            'finished_at': '',
+        })
+    try:
+        earliest, latest = _cls_telegraph_date_bounds()
+        dates = []
+        day = latest
+        while day >= earliest:
+            date_text = day.strftime('%Y-%m-%d')
+            cache_path = os.path.join(_CLS_TELEGRAPH_DIR, day.strftime('%Y%m%d') + '.json')
+            is_complete = False
+            try:
+                with open(cache_path, 'r', encoding='utf-8') as f:
+                    cached = json.load(f)
+                sections = cached.get('sections') or {}
+                _cls_normalize_telegraph_times(cached)
+                is_complete = all(
+                    category in sections and not sections[category].get('error')
+                    for category in ('important', 'company')
+                )
+            except (OSError, ValueError, TypeError):
+                pass
+            if not is_complete:
+                dates.append(date_text)
+            day -= timedelta(days=1)
+        with _cls_telegraph_sync_lock:
+            _cls_telegraph_sync_state['total'] = len(dates)
+        for date_text in dates:
+            with _cls_telegraph_sync_lock:
+                _cls_telegraph_sync_state['current_date'] = date_text
+            try:
+                payload = _load_cls_telegraph_for_date(date_text, only_category='important')
+                payload = _load_cls_telegraph_for_date(date_text, only_category='company')
+                failed = [key for key, section in (payload.get('sections') or {}).items()
+                          if section.get('error')]
+                if failed:
+                    with _cls_telegraph_sync_lock:
+                        _cls_telegraph_sync_state['errors'].append(
+                            {'date': date_text, 'categories': failed})
+            except Exception as exc:
+                with _cls_telegraph_sync_lock:
+                    _cls_telegraph_sync_state['errors'].append(
+                        {'date': date_text, 'error': str(exc)[:240]})
+            finally:
+                with _cls_telegraph_sync_lock:
+                    _cls_telegraph_sync_state['completed'] += 1
+            time.sleep(0.2)
+    finally:
+        with _cls_telegraph_sync_lock:
+            _cls_telegraph_sync_state['active'] = False
+            _cls_telegraph_sync_state['current_date'] = ''
+            _cls_telegraph_sync_state['finished_at'] = _bj_now().strftime('%Y-%m-%d %H:%M:%S')
 
 # ===== 实时盯盘 · 飞书推送（新细分题材 / 题材新增股票）=====
 _RTW_ENABLED = False         # 旧版盘中新题材/新增股票/收盘推送永久关闭
@@ -324,7 +732,9 @@ def _feishu_color(text, color):
 
 def _feishu_publish_auction_report(report):
     """推送完整竞价快照：初版/复核版各一份，和磁盘报告严格同源。"""
-    if not report or not report.get('available'):
+    if (not report or not report.get('available')
+            or not _auction_snapshot_is_complete(report.get('market_snapshot'), report.get('date'))):
+        print('[竞价报告] 拒绝推送：缺少完整的当日全市场竞价快照')
         return False
     stage = '9:29:20 复核版' if report.get('stage') == 'verified' else '9:25 初版'
     blocks = []
@@ -342,7 +752,7 @@ def _feishu_publish_auction_report(report):
         if breadth.get('sample'):
             avg = breadth.get('avg_open_pct')
             avg_text = '%+.2f%%' % float(avg) if avg is not None else '--'
-            lines.append('%s 红开 %s/%s，强势 %s，均开 %s' % (_feishu_color('近20日涨停股竞价', 'grey'),
+            lines.append('%s 红开 %s/%s，强势 %s，均开 %s' % (_feishu_color('近15日涨停股竞价', 'grey'),
                 breadth.get('positive', 0), breadth.get('sample', 0), breadth.get('strong', 0), avg_text))
         matches = group.get('sector_matches') or []
         if matches:
@@ -3680,6 +4090,19 @@ def _get_sector_ranking(refresh=False):
     return []
 
 
+def _theme_wind_ranked_sector_rows(rows=None, top_n=10):
+    """题材风向精选板块卡片的唯一排序/过滤规则，竞价报告直接复用。"""
+    ranked = list(rows if rows is not None else (_get_sector_ranking() or []))
+    ranked.sort(key=lambda row: row.get('stock_count', 0) or 0, reverse=True)
+    ranked = [row for row in ranked
+              if not _tws_is_generic_tag(row.get('plate_name') or row.get('name') or '')]
+    try:
+        limit = max(0, int(top_n))
+    except (TypeError, ValueError):
+        limit = 10
+    return ranked[:limit]
+
+
 # 涨停池 60s 内存缓存（失败也缓存 [] 防空转）
 _zt_pool_cache = {'data': None, 'ts': 0}
 
@@ -3711,12 +4134,262 @@ _zt_timeline_pool_cache = {'data': None, 'ts': 0}
 # 竞价数据只在集合竞价窗口可取，不能用盘中行情回填。因此每个交易日单独落盘，
 # 页面回看时只读取快照，既保证历史不漂移，也不把网络请求压到盯盘首屏。
 _AUCTION_REPORT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'auction_reports')
+# 竞价报告是筛选结论；全市场快照则是可回放的原始底稿。二者分目录保存，
+# 避免以后修改报告算法时失去当时的真实竞价截面。
+_AUCTION_MARKET_SNAPSHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'auction_market_snapshots')
+_AUCTION_MIN_MARKET_STOCKS = 3000
 _auction_report_lock = threading.RLock()
 _auction_report_cache = {}
+_auction_market_snapshot_cache = {}
 
 
 def _auction_report_path(day_ymd):
     return os.path.join(_AUCTION_REPORT_DIR, '%s.json' % (day_ymd or ''))
+
+
+def _auction_market_snapshot_path(day_ymd):
+    """9:25 后的全市场竞价截面；一天一份且只写首次有效结果。"""
+    return os.path.join(_AUCTION_MARKET_SNAPSHOT_DIR, '%s.json' % (day_ymd or ''))
+
+
+def _auction_snapshot_is_complete(snapshot, day_ymd=None):
+    snapshot = snapshot or {}
+    day = str(snapshot.get('date') or '').replace('-', '')
+    expected = str(day_ymd or '').replace('-', '')
+    stocks = snapshot.get('stocks') or []
+    try:
+        count = int(snapshot.get('stock_count') or len(stocks))
+    except (TypeError, ValueError):
+        count = 0
+    # 原始快照必须具备全量 stocks 数组；报告为避免重复存储，只保留 path/count 摘要。
+    # 两者都要求日期与数量达标，摘要还必须包含有效路径，不能把空报告当成完整快照。
+    has_raw_rows = ('stocks' in snapshot and isinstance(stocks, list)
+                    and len(stocks) >= _AUCTION_MIN_MARKET_STOCKS)
+    is_snapshot_reference = ('stocks' not in snapshot and bool(snapshot.get('path')))
+    return bool(snapshot.get('available') and count >= _AUCTION_MIN_MARKET_STOCKS
+                and (has_raw_rows or is_snapshot_reference)
+                and (not expected or day == expected))
+
+
+def _auction_snapshot_number(value):
+    """行情接口会以 '-', None 或字符串表示空值，落盘前统一为数值/None。"""
+    try:
+        if value in (None, '', '-', '--'):
+            return None
+        return round(float(value), 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def _auction_fetch_all_market_rows():
+    """使用 levistock 同款东方财富全市场接口，逐页重试并并发拉取，避免任一分页断连丢整批。"""
+    import importlib
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    import levistock as lk
+    stock_em = importlib.import_module(lk.stocks_all_em.__module__)
+    base_url = stock_em._BASE_URL
+    headers = dict(stock_em._HEADERS or {})
+    common = {
+        'pz': 200, 'po': 1, 'np': 1,
+        'ut': 'bd1d9ddb04089700cf9c27f6f7426281',
+        'fltt': 2, 'invt': 2, 'fid': 'f3',
+        'fs': 'm:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048',
+        'fields': 'f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f14,f15,f16,f17,f18,f20,f21,f23',
+    }
+    local = threading.local()
+
+    def request_page(page):
+        params = dict(common, pn=int(page))
+        last_error = None
+        for attempt in range(1, 3):
+            try:
+                session = getattr(local, 'session', None)
+                if session is None:
+                    session = requests.Session()
+                    session.headers.update(headers)
+                    local.session = session
+                response = session.get(base_url, params=params, timeout=(3, 6))
+                response.raise_for_status()
+                payload = response.json()
+                if payload.get('rc') != 0:
+                    raise RuntimeError('东方财富行情接口 rc=%s' % payload.get('rc'))
+                body = payload.get('data') or {}
+                return body
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(0.35)
+        raise RuntimeError('第%s页请求失败: %s' % (page, last_error))
+
+    first = request_page(1)
+    try:
+        total = int(first.get('total') or 0)
+    except (TypeError, ValueError):
+        total = 0
+    if total <= 0:
+        raise RuntimeError('东方财富行情接口未返回全市场股票总数')
+    page_size = 200
+    page_count = (total + page_size - 1) // page_size
+    raw = list(first.get('diff') or [])
+    if page_count > 1:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futures = {pool.submit(request_page, page): page for page in range(2, page_count + 1)}
+            for future in as_completed(futures):
+                page = futures[future]
+                body = future.result()
+                raw.extend(body.get('diff') or [])
+    if len(raw) < min(total, 3000):
+        raise RuntimeError('全市场分页结果不完整：接口总数 %s，实际返回 %s' % (total, len(raw)))
+
+    rows = []
+    seen = set()
+    for item in raw:
+        code = str(item.get('f12') or '').strip()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        rows.append({
+            'stock_code': code, 'stock_name': str(item.get('f14') or ''),
+            'price': item.get('f2', '-'), 'change_pct': item.get('f3', '-'),
+            'change_amt': item.get('f4', '-'), 'volume': item.get('f5', '-'),
+            'amount': item.get('f6', '-'), 'high': item.get('f15', '-'),
+            'low': item.get('f16', '-'), 'open': item.get('f17', '-'),
+            'pre_close': item.get('f18', '-'),
+        })
+    return rows
+
+
+def _auction_load_market_snapshot(day_ymd=None):
+    """读取本地竞价全市场原始快照，供后续报告回溯/重算使用。"""
+    day = (day_ymd or '').replace('-', '')
+    if not day:
+        day = _bj_now().strftime('%Y%m%d')
+    if day in _auction_market_snapshot_cache:
+        return copy.deepcopy(_auction_market_snapshot_cache[day])
+    path = _auction_market_snapshot_path(day)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            snapshot = json.load(f)
+        if _auction_snapshot_is_complete(snapshot, day):
+            _auction_market_snapshot_cache[day] = snapshot
+            return copy.deepcopy(snapshot)
+    except Exception as exc:
+        print('[竞价全市场快照] 读取失败 %s: %s' % (day, exc))
+    return None
+
+
+def _auction_capture_market_snapshot():
+    """采集集合竞价结束后的全市场实时涨跌幅底稿。
+
+    使用 levistock 的东方财富全市场接口，不依赖竞价报告的候选股筛选；
+    这样即使当前报告漏掉某个题材，之后仍能按照 9:25 当时的完整市场截面回溯重算。
+    """
+    now_bj = _bj_now()
+    day = now_bj.strftime('%Y%m%d')
+    try:
+        rows = None
+        last_error = None
+        # 东方财富在集合竞价切换点偶发 RemoteDisconnected。原库串行分页且没有重试，
+        # 任意一页断连都会丢弃整批；改为 levistock 同接口并行分页、逐页重试。
+        for attempt in range(1, 4):
+            try:
+                rows = _auction_fetch_all_market_rows() or []
+                if rows:
+                    break
+                last_error = RuntimeError('接口返回空列表')
+            except Exception as exc:
+                last_error = exc
+                print('[竞价全市场快照] levistock 请求失败（第 %s/3 次）: %s' % (attempt, exc))
+            if attempt < 3:
+                time.sleep(attempt)
+        if not rows:
+            raise last_error or RuntimeError('接口返回空列表')
+    except Exception as exc:
+        print('[竞价全市场快照] levistock 全市场行情获取失败: %s' % exc)
+        return {
+            'schema_version': 1, 'date': now_bj.strftime('%Y-%m-%d'),
+            'captured_at': now_bj.strftime('%Y-%m-%d %H:%M:%S'),
+            'available': False, 'source': 'levistock.stocks_all_em(filter_st=False)',
+            'message': '全市场实时行情获取失败: %s' % exc,
+        }
+
+    stocks = []
+    for row in rows:
+        code = str((row or {}).get('stock_code') or '').strip().zfill(6)
+        if len(code) != 6 or not code.isdigit():
+            continue
+        name = str(row.get('stock_name') or '').strip()
+        # change_pct 是竞价结束时的实时涨跌幅；价格和开盘/昨收一并保留，
+        # 便于将来校验接口数值或按开盘涨幅重算。
+        stocks.append({
+            'code': code,
+            'name': name,
+            'change_pct': _auction_snapshot_number(row.get('change_pct')),
+            'price': _auction_snapshot_number(row.get('price')),
+            'open': _auction_snapshot_number(row.get('open')),
+            'prev_close': _auction_snapshot_number(row.get('pre_close')),
+            'change_amt': _auction_snapshot_number(row.get('change_amt')),
+            'amount': _auction_snapshot_number(row.get('amount')),
+            'volume': _auction_snapshot_number(row.get('volume')),
+            'high': _auction_snapshot_number(row.get('high')),
+            'low': _auction_snapshot_number(row.get('low')),
+        })
+    stocks.sort(key=lambda item: item['code'])
+    captured_at = _bj_now()
+    return {
+        'schema_version': 1,
+        'snapshot_type': 'auction_all_market_realtime_change',
+        'date': now_bj.strftime('%Y-%m-%d'),
+        'captured_at': captured_at.strftime('%Y-%m-%d %H:%M:%S'),
+        'available': len(stocks) >= _AUCTION_MIN_MARKET_STOCKS,
+        'source': 'levistock.stocks_all_em(filter_st=False)',
+        'field_note': 'change_pct 为竞价结束后实时涨跌幅；price/open/prev_close 等字段用于后续复核与回溯重算。',
+        'stock_count': len(stocks),
+        'stocks': stocks,
+        'message': ('9:25 后全市场竞价原始快照' if len(stocks) >= _AUCTION_MIN_MARKET_STOCKS
+                    else '全市场行情不足 %s 只（实际 %s），未保存不完整快照' % (_AUCTION_MIN_MARKET_STOCKS, len(stocks))),
+    }
+
+
+def _auction_save_market_snapshot(snapshot):
+    """原子保存全市场竞价快照；已有有效文件绝不覆盖，保护历史真实口径。"""
+    day = str((snapshot or {}).get('date') or '').replace('-', '')
+    if not day or not _auction_snapshot_is_complete(snapshot, day):
+        return False
+    existing = _auction_load_market_snapshot(day)
+    if existing:
+        return True
+    try:
+        os.makedirs(_AUCTION_MARKET_SNAPSHOT_DIR, exist_ok=True)
+        path = _auction_market_snapshot_path(day)
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(snapshot, f, ensure_ascii=False, separators=(',', ':'))
+        os.replace(tmp, path)
+        # 缓存与调用方彻底隔离，避免调用方之后修改 dict 时污染“已保存”视图。
+        _auction_market_snapshot_cache[day] = copy.deepcopy(snapshot)
+        print('[竞价全市场快照] %s 已保存 %s 只股票' % (day, snapshot.get('stock_count', 0)))
+        return True
+    except Exception as exc:
+        print('[竞价全市场快照] 保存失败 %s: %s' % (day, exc))
+        return False
+
+
+def _auction_market_snapshot_ref(snapshot, day_ymd):
+    """将底稿引用写入报告，但不把数千只股票重复嵌入报告文件。"""
+    snap = snapshot or _auction_load_market_snapshot(day_ymd) or {}
+    return {
+        'available': bool(snap.get('available')),
+        'date': str(snap.get('date') or day_ymd or '').replace('-', ''),
+        'path': os.path.relpath(_auction_market_snapshot_path(day_ymd), os.path.dirname(os.path.abspath(__file__))),
+        'captured_at': snap.get('captured_at') or '',
+        'stock_count': int(snap.get('stock_count') or 0),
+        'source': snap.get('source') or 'levistock.stocks_all_em(filter_st=False)',
+        'message': snap.get('message') or '',
+    }
 
 
 def _auction_prev_trade_day(day_ymd):
@@ -3736,7 +4409,14 @@ def _auction_quote_item(code, quote, prev_lianban=0, tags=None):
     quote = quote or {}
     prev_close = float(quote.get('prev_close') or 0)
     open_px = float(quote.get('open') or 0)
-    open_pct = ((open_px - prev_close) / prev_close * 100.0) if prev_close > 0 and open_px > 0 else None
+    # 原始全市场快照的 change_pct 是采样时点的权威涨幅；只有旧格式缺少该字段时，
+    # 才根据集合竞价开盘价/昨收计算，避免字段来源混用导致涨幅错位。
+    try:
+        open_pct = float(quote.get('change_pct')) if quote.get('change_pct') not in (None, '', '-') else None
+    except (TypeError, ValueError):
+        open_pct = None
+    if open_pct is None:
+        open_pct = ((open_px - prev_close) / prev_close * 100.0) if prev_close > 0 and open_px > 0 else None
     limit_pct = float(quote.get('limit_pct') or _limit_pct_for(code, quote.get('name', '')))
     # 用价格判断而非“当前涨幅”，确保 9:25 的一字板在尚未连续成交时也能识别。
     is_yizi = bool(open_pct is not None and open_pct >= limit_pct - 0.12)
@@ -3751,14 +4431,20 @@ def _auction_quote_item(code, quote, prev_lianban=0, tags=None):
     }
 
 
-def _auction_sector_top5():
-    """盘红精选板块竞价 Top5。字段兼容 levistock 不同版本。"""
+def _auction_sector_top5(date_fmt=None):
+    """指定交易日的精选板块 Top5，排序和过滤与题材风向卡片完全共用。"""
     try:
-        rows = _get_sector_ranking(refresh=True) or []
+        target = str(date_fmt or _bj_now().strftime('%Y-%m-%d'))[:10]
+        if target == _bj_now().strftime('%Y-%m-%d'):
+            # 与精选板块卡片共享缓存，不另外刷新出一份时点不同、顺序不同的排行。
+            rows = _get_sector_ranking() or []
+        else:
+            import levistock as lk
+            rows = lk.sector_ranking_kph(date=target, zs_type=lk.SECTOR_SELECTED) or []
     except Exception:
         rows = []
     out = []
-    for row in rows:
+    for row in _theme_wind_ranked_sector_rows(rows, top_n=5):
         name = str(row.get('plate_name') or row.get('name') or row.get('sector_name') or '').strip()
         if not name or _tws_is_generic_tag(name):
             continue
@@ -3769,21 +4455,28 @@ def _auction_sector_top5():
             pct = 0.0
         out.append({'name': name, 'change_pct': round(pct, 2),
                     'stock_count': int(row.get('stock_count') or row.get('count') or 0)})
-    return sorted(out, key=lambda x: (-x['change_pct'], -x['stock_count'], x['name']))[:5]
+    return out
 
 
-def _auction_build_report(stage='initial'):
-    """构建并持久化单日竞价报告。
+def _auction_build_report(stage='initial', market_snapshot=None, day_ymd=None):
+    """只用当日全市场竞价快照重建报告，再关联昨日梯队和近15日题材索引。
 
-    事实来源：levistock 东财竞价异动（候选池）+ 批量开盘行情（开盘价/昨收），
-    题材归因和近 20 日涨停成员来自本地 KPL 索引。这样一字、连板和群众基础
-    分别有可核验来源，而不是根据盘中涨停池倒推集合竞价。
+    缺少有效全市场快照时拒绝生成“完整报告”，不能退回竞价异动候选池冒充全市场。
     """
     now_bj = _bj_now()
-    today = now_bj.strftime('%Y%m%d')
+    today = str(day_ymd or now_bj.strftime('%Y%m%d')).replace('-', '')
+    if len(today) != 8 or not today.isdigit():
+        return {'date': '', 'available': False, 'message': '交易日期格式应为 YYYYMMDD'}
     prev = _auction_prev_trade_day(today)
     if not prev:
         return {'date': today, 'available': False, 'message': '缺少前一交易日天梯数据'}
+    market_snapshot = market_snapshot or _auction_load_market_snapshot(today)
+    if not _auction_snapshot_is_complete(market_snapshot, today):
+        return {
+            'date': '%s-%s-%s' % (today[:4], today[4:6], today[6:]),
+            'available': False, 'stage': stage,
+            'message': '缺少当日全市场竞价原始快照，暂不生成不完整报告；采集成功后自动重试。',
+        }
     _kpl_ensure_loaded()
     prev_fmt = '%s-%s-%s' % (prev[:4], prev[4:6], prev[6:])
     today_fmt = '%s-%s-%s' % (today[:4], today[4:6], today[6:])
@@ -3799,40 +4492,59 @@ def _auction_build_report(stage='initial'):
             ladder[code] = {'name': r.get('stock_name') or code, 'lianban': lb,
                             'tags': _auction_stock_tags(code, prev_fmt)}
 
-    # levistock 的竞价上涨列表是高开候选池。补上昨日连板及近20日涨停成员，
-    # 避免“并未触发异动事件但确实一字”的核心股被遗漏。
-    event_codes = set()
-    try:
-        import levistock as lk
-        for row in (lk.stock_changes_em(change_type='8209', filter_st=False) or []):
-            code = str(row.get('stock_code') or '').zfill(6)
-            if len(code) == 6:
-                event_codes.add(code)
-    except Exception as exc:
-        print('[竞价报告] levistock 竞价异动获取失败: %s' % exc)
-    members = _kpl_tag_member_index(prev_fmt, window=20)
-    # 先仅查询竞价异动股和昨日连板，识别需要观察的细分题材；随后才批量查询
-    # 这些题材的近20日涨停成员。不能把全市场20日涨停股都塞进首轮行情请求。
-    seed_codes = sorted(event_codes | set(ladder))
-    quotes = _spot_quotes_for_codes(seed_codes)
-    item_by_code = {}
-    for code in seed_codes:
-        info = ladder.get(code, {})
-        tags = info.get('tags') or _auction_stock_tags(code, prev_fmt)
-        item_by_code[code] = _auction_quote_item(code, quotes.get(code), info.get('lianban', 0), tags)
+    # 近15日涨停题材成员 -> 股票标签反向索引。
+    members = _kpl_tag_member_index(prev_fmt, window=15)
+    tags_by_code = {}
+    for tag, bucket in members.items():
+        for code in (bucket or {}):
+            code = str(code or '').zfill(6)
+            if len(code) == 6 and code.isdigit():
+                tags_by_code.setdefault(code, []).append(tag)
 
-    observed_tags = {tag for item in item_by_code.values() for tag in item['tags']
-                     if item['is_yizi'] or item['near_limit'] or item['prev_lianban'] >= 2}
-    breadth_codes = sorted({code for tag in observed_tags for code in (members.get(tag) or {}) if code not in item_by_code})
-    breadth_quotes = _spot_quotes_for_codes(breadth_codes)
-    for code in breadth_codes:
-        item_by_code[code] = _auction_quote_item(code, breadth_quotes.get(code), 0, _auction_stock_tags(code, prev_fmt))
+    # 快照本身覆盖全市场：不再通过候选股实时行情接口补数据，所有涨幅、开盘价、昨收
+    # 都来自同一采样文件，避免一部分股票取快照、一部分股票取稍后行情造成口径漂移。
+    quotes = {}
+    for row in market_snapshot.get('stocks') or []:
+        code = str((row or {}).get('code') or '').zfill(6)
+        if len(code) != 6 or not code.isdigit():
+            continue
+        quotes[code] = {
+            'name': row.get('name') or code,
+            'price': row.get('price'), 'open': row.get('open'),
+            'prev_close': row.get('prev_close'), 'change_pct': row.get('change_pct'),
+            'limit_pct': _limit_pct_for(code, row.get('name') or ''),
+        }
+
+    item_by_code = {}
+    for code, quote in quotes.items():
+        info = ladder.get(code, {})
+        # 先用近15日标签；强势竞价股再并入其近期涨停理由标签，不能仅因简称相似硬归题材。
+        tags = list(dict.fromkeys((info.get('tags') or []) + tags_by_code.get(code, [])))
+        provisional = _auction_quote_item(code, quote, info.get('lianban', 0), tags)
+        if provisional['is_yizi'] or provisional['near_limit'] or info.get('lianban', 0) >= 2:
+            tags = list(dict.fromkeys(tags + _auction_stock_tags(code, prev_fmt)))
+            provisional = _auction_quote_item(code, quote, info.get('lianban', 0), tags)
+        if provisional['is_yizi'] or provisional['near_limit'] or info.get('lianban', 0) >= 2 or code in tags_by_code:
+            item_by_code[code] = provisional
+
+    # 昨日梯队有时不在实时全市场接口返回集合中，仍保留梯队事实，但不伪造竞价涨幅。
+    for code, info in ladder.items():
+        if code not in item_by_code:
+            item_by_code[code] = _auction_quote_item(code, quotes.get(code), info.get('lianban', 0), info.get('tags'))
 
     # 题材聚合：所有一字/接近一字以及昨日连板都进入。没有有效细分题材的股不造题材。
     groups = {}
+    unclassified = {'one_word': [], 'near_limit': [], 'ladder': []}
     for item in item_by_code.values():
         if not (item['is_yizi'] or item['near_limit'] or item['prev_lianban'] >= 2):
             continue
+        if not item['tags']:
+            if item['is_yizi']:
+                unclassified['one_word'].append(item)
+            elif item['near_limit']:
+                unclassified['near_limit'].append(item)
+            if item['prev_lianban'] >= 2:
+                unclassified['ladder'].append(item)
         for tag in item['tags']:
             g = groups.setdefault(tag, {'theme': tag, 'one_word': [], 'near_limit': [],
                                        'ladder': [], 'weak_ladder': [], 'breadth': {}})
@@ -3845,23 +4557,45 @@ def _auction_build_report(stage='initial'):
                 if item['open_pct'] is not None and item['open_pct'] < 0:
                     g['weak_ladder'].append(item)
 
-    # “群众基础”：近20日曾涨停的同题材股票在本次竞价的开盘表现。
+    # “群众基础”：近15日曾涨停的同题材股票在本次竞价的开盘表现。
     for tag, group in groups.items():
         codes = list((members.get(tag) or {}).keys())
         rows = [item_by_code[c] for c in codes if c in item_by_code and item_by_code[c]['open_pct'] is not None]
         positive = sum(1 for x in rows if x['open_pct'] > 0)
         strong = sum(1 for x in rows if x['near_limit'] or x['is_yizi'])
         avg = round(sum(x['open_pct'] for x in rows) / len(rows), 2) if rows else None
-        group['breadth'] = {'sample': len(rows), 'positive': positive, 'strong': strong, 'avg_open_pct': avg}
+        breadth_stocks = [{
+            'code': x['code'], 'name': x['name'], 'open_pct': x['open_pct'],
+            'is_yizi': x['is_yizi'], 'near_limit': x['near_limit'],
+        } for x in rows]
+        breadth_stocks.sort(key=lambda x: (
+            -(float(x['open_pct']) if x.get('open_pct') is not None else -999), x['name']))
+        group['breadth'] = {
+            'sample': len(rows), 'positive': positive, 'strong': strong,
+            'avg_open_pct': avg, 'stocks': breadth_stocks,
+        }
         for key in ('one_word', 'near_limit', 'ladder', 'weak_ladder'):
             group[key] = sorted({x['code']: x for x in group[key]}.values(),
                                 key=lambda x: (-(x['prev_lianban'] or 0), -(x['open_pct'] or -999), x['name']))
 
-    sectors = _auction_sector_top5()
+    sectors = _auction_sector_top5(today_fmt)
+    if not sectors and today != now_bj.strftime('%Y%m%d'):
+        # 离线回溯时若 levistock 历史排行不可用，才兼容旧报告保存的板块样本；
+        # 仍通过题材风向同一过滤/排序函数，不能重新按涨幅另排一套。
+        old_report = _auction_load_report(today)
+        sectors = _theme_wind_ranked_sector_rows(old_report.get('sector_top5') or [], top_n=5)
+        sectors = [{
+            'name': str(row.get('name') or row.get('plate_name') or '').strip(),
+            'change_pct': round(float(row.get('change_pct', row.get('pct_chg', row.get('change', 0))) or 0), 2),
+            'stock_count': int(row.get('stock_count') or row.get('count') or 0),
+        } for row in sectors if str(row.get('name') or row.get('plate_name') or '').strip()]
+    def normalized_topic_name(value):
+        return re.sub(r'(概念|板块|行业)$', '', str(value or '').strip())
     for group in groups.values():
         theme = group['theme']
-        # 盘红的板块名和细分题材不能强行等同，仅做包含关系交叉提示。
-        group['sector_matches'] = [s for s in sectors if theme in s['name'] or s['name'].replace('概念', '') in theme]
+        # 只做规范化后的完整名称相等提示；不以子串命中冒充板块成分股交叉验证。
+        group['sector_matches'] = [s for s in sectors
+                                   if normalized_topic_name(theme) == normalized_topic_name(s.get('name'))]
         b = group['breadth']
         score = len(group['one_word']) * 4 + len(group['near_limit']) * 2 + b.get('strong', 0) + (1 if group['sector_matches'] else 0) - len(group['weak_ladder']) * 2
         group['score'] = score
@@ -3871,15 +4605,153 @@ def _auction_build_report(stage='initial'):
     report = {
         'date': today_fmt, 'available': True, 'stage': stage,
         'generated_at': now_bj.strftime('%Y-%m-%d %H:%M:%S'),
-        'source': 'levistock 东财竞价异动 + 实时开盘行情 + KPL细分题材/近20日涨停索引',
-        'one_word_count': sum(len(g['one_word']) for g in result_groups),
-        'groups': result_groups, 'sector_top5': sectors,
+        'source': 'levistock.stocks_all_em 全市场竞价原始快照 + 昨日连板梯队 + KPL细分题材/近15日涨停索引',
+        'market_snapshot': _auction_market_snapshot_ref(market_snapshot, today),
+        'sector_match_method': 'normalized_exact_name',
+        # 同一股票可能挂多个细分题材，报告头部按证券代码去重，避免重复计数。
+        'one_word_count': len({x['code'] for g in result_groups for x in g['one_word']} | {x['code'] for x in unclassified['one_word']}),
+        'groups': result_groups, 'sector_top5': sectors, 'unclassified': unclassified,
         'message': '9:29:20 复核版' if stage == 'verified' else '9:25 初版，9:29:20 自动复核',
     }
+    return _auction_add_dimensions(report)
+
+
+def _auction_add_dimensions(report):
+    """竞价报告分两部分：昨日梯队；精选板块Top5（内展开近15日细分题材股票）。"""
+    if not isinstance(report, dict) or not report.get('available'):
+        return report
+    groups = report.get('groups') or []
+
+    def merge_stock(target, item, theme):
+        code = str((item or {}).get('code') or '').zfill(6)
+        if len(code) != 6 or not code.isdigit():
+            return
+        if code not in target:
+            target[code] = copy.deepcopy(item)
+            target[code]['themes'] = []
+        if theme and theme not in target[code]['themes']:
+            target[code]['themes'].append(theme)
+
+    ladder = {}
+    yizi_watch = {}
+    near_watch = {}
+    for group in groups:
+        theme = str(group.get('theme') or '').strip()
+        for item in group.get('ladder') or []:
+            merge_stock(ladder, item, theme)
+        for item in group.get('one_word') or []:
+            merge_stock(yizi_watch, item, theme)
+        for item in group.get('near_limit') or []:
+            merge_stock(near_watch, item, theme)
+
+    unclassified = report.get('unclassified') or {}
+    for key, target in (('ladder', ladder), ('one_word', yizi_watch), ('near_limit', near_watch)):
+        for item in unclassified.get(key) or []:
+            merge_stock(target, item, '未归类')
+
+    def stock_sort(item):
+        return (-int(item.get('prev_lianban') or 0),
+                -(float(item.get('open_pct')) if item.get('open_pct') is not None else -999),
+                str(item.get('name') or ''))
+
+    ladder_rows = sorted(ladder.values(), key=stock_sort)
+    ladder_codes = set(ladder)
+    yizi_rows = sorted((x for code, x in yizi_watch.items() if code not in ladder_codes), key=stock_sort)
+    near_rows = sorted((x for code, x in near_watch.items() if code not in ladder_codes and code not in yizi_watch), key=stock_sort)
+
+    top5 = []
+    sector_source = _theme_wind_ranked_sector_rows(report.get('sector_top5') or [], top_n=5)
+    for sector in sector_source:
+        sector_name = str(sector.get('name') or '').strip()
+        matches = []
+        if sector_name:
+            for group in groups:
+                if any(str(m.get('name') or '') == sector_name for m in (group.get('sector_matches') or [])):
+                    breadth = group.get('breadth') or {}
+                    matches.append({
+                        'theme': group.get('theme') or '',
+                        'one_word': copy.deepcopy(group.get('one_word') or []),
+                        'ladder': copy.deepcopy(group.get('ladder') or []),
+                        'breadth': {k: breadth.get(k) for k in ('sample', 'positive', 'strong', 'avg_open_pct')},
+                    })
+        top5.append({
+            **copy.deepcopy(sector), 'topic_matches': matches,
+            'match_basis': ('细分题材名称规范化后的精确匹配' if report.get('sector_match_method')
+                            else '旧报告已保存的题材关联，原匹配口径未记录'),
+            'constituent_verified': False,
+        })
+
+    snapshot = report.get('market_snapshot') or {}
+    report['complete'] = _auction_snapshot_is_complete(snapshot, report.get('date'))
+    breadth_rows = []
+    if report['complete']:
+        for group in groups:
+            breadth = group.get('breadth') or {}
+            if int(breadth.get('sample') or 0) <= 0:
+                continue
+            breadth_rows.append({
+                'theme': group.get('theme') or '',
+                'sample': int(breadth.get('sample') or 0),
+                'positive': int(breadth.get('positive') or 0),
+                'strong': int(breadth.get('strong') or 0),
+                'avg_open_pct': breadth.get('avg_open_pct'),
+                'stocks': copy.deepcopy(breadth.get('stocks') or []),
+                'stock_detail_available': bool(breadth.get('stocks')),
+            })
+    breadth_rows.sort(key=lambda x: (
+        -(float(x.get('avg_open_pct')) if x.get('avg_open_pct') is not None else -999),
+        -x['positive'], -x['sample'], x['theme']))
+
+    notes = []
+    if not snapshot.get('available'):
+        notes.append('缺少全市场竞价原始快照：当前内容只能作为旧报告重组，不能视为完整报告。')
+        if snapshot.get('message'):
+            notes.append(str(snapshot.get('message')))
+    if top5 and all(not item.get('constituent_verified') for item in top5):
+        notes.append('Top5 题材关联不是板块成分股代码交叉核验；历史报告的题材关联口径未记录。')
+    if top5 and not report.get('complete'):
+        notes.append('本报告缺少全市场竞价快照；旧版已保存的Top5无法补证为当日精选板块卡片的完整同屏截面。')
+    if groups and not report.get('complete'):
+        notes.append('缺少原始竞价快照，近15日细分题材个股涨幅不展示，避免把盘后数据冒充竞价涨幅。')
+    if breadth_rows and not any(item.get('stock_detail_available') for item in breadth_rows):
+        notes.append('本日已存文件只有近20日题材统计值，没有逐只成员竞价涨幅；使用原始全市场快照重建后可生成近15日逐股明细。')
+
+    report['dimensions'] = {
+        'version': 2,
+        'yesterday_ladder': {
+            'stocks': ladder_rows, 'count': len(ladder_rows),
+            'first_board_watch': yizi_rows, 'near_limit_watch': near_rows,
+            'unclassified': copy.deepcopy(unclassified),
+        },
+        'sector_top5': top5,
+        'recent15_topics': breadth_rows,
+        'data_notes': notes,
+    }
+    report['one_word_count'] = len(yizi_watch)
+    report['near_limit_count'] = len(near_watch)
+    return report
+
+
+def _auction_rebuild_report_from_snapshot(day_ymd, stage='verified', persist=True):
+    """用指定日期已保存的全市场原始快照重建报告；快照缺失时明确失败，不做盘后伪回填。"""
+    day = str(day_ymd or '').replace('-', '')
+    snapshot = _auction_load_market_snapshot(day)
+    if not snapshot:
+        return {
+            'date': day, 'available': False,
+            'message': '找不到 data/auction_market_snapshots/%s.json，不能还原该日竞价报告。' % day,
+        }
+    report = _auction_build_report(stage=stage, market_snapshot=snapshot, day_ymd=day)
+    if report.get('available') and persist:
+        _auction_save_report(report)
     return report
 
 
 def _auction_save_report(report):
+    if not (report or {}).get('available') or not _auction_snapshot_is_complete(
+            (report or {}).get('market_snapshot'), (report or {}).get('date')):
+        print('[竞价报告] 拒绝保存：缺少完整的当日全市场竞价快照')
+        return False
     day = (report or {}).get('date', '').replace('-', '')
     if not day:
         return
@@ -3894,6 +4766,7 @@ def _auction_save_report(report):
     os.replace(tmp, path)
     if report.get('stage') != 'initial':
         _auction_report_cache[day] = report
+    return True
 
 
 def _auction_load_report(day_ymd=None):
@@ -3903,10 +4776,16 @@ def _auction_load_report(day_ymd=None):
     if day in _auction_report_cache:
         return _auction_report_cache[day]
     path = _auction_report_path(day)
+    # 9:25 初版独立留档；9:29:20 复核版尚未生成时，页面仍应显示初版。
+    if not os.path.exists(path):
+        initial_path = path.replace('.json', '.initial.json')
+        if os.path.exists(initial_path):
+            path = initial_path
     if os.path.exists(path):
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 report = json.load(f)
+            report = _auction_add_dimensions(report)
             _auction_report_cache[day] = report
             return report
         except Exception:
@@ -3916,8 +4795,19 @@ def _auction_load_report(day_ymd=None):
 
 
 def _auction_report_loop():
-    """常驻调度：9:25 初版落盘，9:29:20 用更稳定的竞价结果覆盖为最终版。"""
+    """常驻调度：全市场原始快照成功落盘后才生成 9:25/9:29:20 报告。"""
     fired = set()
+    last_snapshot_attempt = {}
+
+    def capture_snapshot(day, force=False):
+        now_ts = time.time()
+        if not force and now_ts - last_snapshot_attempt.get(day, 0) < 20:
+            return _auction_load_market_snapshot(day)
+        last_snapshot_attempt[day] = now_ts
+        captured = _auction_capture_market_snapshot()
+        _auction_save_market_snapshot(captured)
+        return _auction_load_market_snapshot(day)
+
     while True:
         try:
             now = _bj_now()
@@ -3926,28 +4816,51 @@ def _auction_report_loop():
             if day in _trading_days:
                 # 严格限制在集合竞价时点附近：错过时宁可留空，也绝不能用 9:30 后行情
                 # 冒充 9:25/9:29 快照，破坏以后复盘的时间真实性。
-                initial_start = 9 * 3600 + 25 * 60
+                # 给行情源在竞价结束瞬间完成切换留几秒缓冲；之后窗口内持续重试。
+                initial_start = 9 * 3600 + 25 * 60 + 5
                 verify_start = 9 * 3600 + 29 * 60 + 20
                 if initial_start <= sec < verify_start and (day, 'initial') not in fired:
                     with _auction_report_lock:
-                        if not _auction_load_report(day).get('available'):
-                            report = _auction_build_report('initial')
-                            _auction_save_report(report)
-                            _feishu_publish_auction_report(report)
-                            print('[竞价报告] %s 9:25 初版已保存' % day)
-                    fired.add((day, 'initial'))
+                        market_snapshot = _auction_load_market_snapshot(day)
+                        if not market_snapshot or not market_snapshot.get('available'):
+                            market_snapshot = capture_snapshot(day)
+                        existing = _auction_load_report(day)
+                        existing_snapshot = existing.get('market_snapshot') or {}
+                        if (existing.get('available') and existing.get('stage') == 'initial'
+                                and existing_snapshot.get('available')):
+                            print('[竞价报告] %s 9:25 初版已存在且引用有效快照，跳过重复生成' % day)
+                            fired.add((day, 'initial'))
+                        elif market_snapshot and market_snapshot.get('available'):
+                            report = _auction_build_report('initial', market_snapshot)
+                            if report.get('available'):
+                                _auction_save_report(report)
+                                _feishu_publish_auction_report(report)
+                                print('[竞价报告] %s 初版已从全市场快照生成并保存' % day)
+                                fired.add((day, 'initial'))
+                        else:
+                            print('[竞价报告] %s 全市场快照暂不可用，将在 9:25 窗口内重试' % day)
                 if verify_start <= sec < 9 * 3600 + 30 * 60 + 30 and (day, 'verified') not in fired:
                     with _auction_report_lock:
-                        # 进程若在复核窗口内重启，默认日度文件已是复核版时不重复推送。
                         existing = _auction_load_report(day)
-                        if existing.get('available') and existing.get('stage') == 'verified':
-                            print('[竞价报告] %s 9:29:20 复核版已存在，跳过重复推送' % day)
+                        existing_snapshot = existing.get('market_snapshot') or {}
+                        if (existing.get('available') and existing.get('stage') == 'verified'
+                                and existing_snapshot.get('available')):
+                            print('[竞价报告] %s 9:29:20 复核版已存在且引用有效快照，跳过重复推送' % day)
+                            fired.add((day, 'verified'))
                         else:
-                            report = _auction_build_report('verified')
-                            _auction_save_report(report)
-                            _feishu_publish_auction_report(report)
-                            print('[竞价报告] %s 9:29:20 复核版已保存' % day)
-                    fired.add((day, 'verified'))
+                            market_snapshot = _auction_load_market_snapshot(day)
+                            if not market_snapshot or not market_snapshot.get('available'):
+                                # 初版窗口若接口断连，复核窗口继续抢救采集一次；成功后原子落盘。
+                                market_snapshot = capture_snapshot(day, force=True)
+                            if market_snapshot and market_snapshot.get('available'):
+                                report = _auction_build_report('verified', market_snapshot)
+                                if report.get('available'):
+                                    _auction_save_report(report)
+                                    _feishu_publish_auction_report(report)
+                                    print('[竞价报告] %s 复核版已从全市场快照生成并保存' % day)
+                                    fired.add((day, 'verified'))
+                            else:
+                                print('[竞价报告] %s 全市场快照仍不可用，复核报告不落盘；窗口内继续重试' % day)
             # 只保留当前进程所需的去重标记；历史报告全部留在磁盘。
             if len(fired) > 8:
                 fired = {x for x in fired if x[0] >= day}
@@ -4541,6 +5454,57 @@ def _tws_mab_tags(s):
     return out
 
 
+def _tws_telegraph_search_terms(code, stock_name, date_fmt='', current_stock=None):
+    """时间轴股票电报检索词：股票名 + 历史 KPL 板块/拆分标签与简介，最新记录优先。"""
+    terms = []
+    seen = set()
+    anchor = (date_fmt or '').replace('-', '')
+    noise = {'其他', '重启', '首板', '首版', '晋级', '未分类'}
+
+    def add(value):
+        value = str(value or '').strip()
+        if not value:
+            return
+        # 状态/板数不是题材关键词；泛概念复用题材风向的统一过滤表。
+        value = _re.sub(r'^\s*\d+\s*(?:连)?板\s*$', '', value).strip()
+        if (not value or value in noise or _tws_is_generic_tag(value)
+                or _re.fullmatch(r'\d+\s*(?:连)?板', value)):
+            return
+        key = value.casefold()
+        if key not in seen:
+            seen.add(key)
+            terms.append(value)
+
+    add(stock_name)
+    current_stock = current_stock or {}
+    for plate in (current_stock.get('plate_name') or '').split(','):
+        for value in _split_reason_tag(plate, plate):
+            add(value)
+    for value in _split_reason_tag(current_stock.get('reason_tag') or '', current_stock.get('reason_brief') or ''):
+        add(value)
+    if current_stock.get('reason_brief'):
+        for value in _split_reason_tag(current_stock['reason_brief'], current_stock['reason_brief']):
+            add(value)
+    records = sorted(_kpl_rows_by_stock.get(str(code or ''), []) or [],
+                     key=lambda row: str(row.get('date') or ''), reverse=True)
+    for row in records:
+        row_date = str(row.get('date') or '').replace('-', '')
+        if anchor and row_date and row_date > anchor:
+            continue
+        for plate in (row.get('plate_name') or '').split(','):
+            for value in _split_reason_tag(plate, plate):
+                add(value)
+        reason_tag = row.get('reason_tag') or ''
+        reason_brief = row.get('reason_brief') or ''
+        for value in _split_reason_tag(reason_tag, reason_brief):
+            add(value)
+        # 简介本身也可能是 A+B / A(B) 的已整理标签；单独解析，避免被 tag 覆盖。
+        if reason_brief:
+            for value in _split_reason_tag(reason_brief, reason_brief):
+                add(value)
+    return terms
+
+
 def _kpl_strong_flags(codes):
     """给定今日涨停代码集返回行情强弱标记 {code: {'open_pct','is_yizi'}}（spot 实时 30s 缓存）。
     - open_pct = (开盘-昨收)/昨收*100（无行情/开盘/昨收缺失 → None）
@@ -4678,11 +5642,8 @@ def _strong_arb_build(date_fmt, promo_today_col):
 def _build_theme_wind_strength(top_n=10):
     """题材风向 Section 0：精选板块强度 Top10 + 每板块细分题材横向树（涨停股/补涨池/特别关注）。"""
     _kpl_ensure_loaded()
-    rows = _get_sector_ranking() or []
-    rows.sort(key=lambda x: x.get('stock_count', 0) or 0, reverse=True)
-    # 并购重组/股权转让等事件型板块不作一级板块渲染（先过滤再截断 top_n，让真实板块补位）
-    rows = [r for r in rows if not _tws_is_generic_tag(r.get('plate_name') or r.get('name') or '')]
-    rows = rows[:top_n]
+    # 与竞价报告共享同一精选板块顺序/过滤规则，避免两个区域各自排序产生差异。
+    rows = _theme_wind_ranked_sector_rows(_get_sector_ranking() or [], top_n=top_n)
 
     # 题材风向的日期必须以涨停数据为准，不能用 K 线库最大日期（云端可能只更新到更早日期）。
     latest_zt_fmt = _get_latest_zt_data_date() or ''
@@ -4950,6 +5911,7 @@ def _build_theme_wind_strength(top_n=10):
                 'minute': minute, 'first_time': ft, 'lianban': s['lianban'],
                 'theme': theme, 'plate': s.get('plate_name', ''), 'type': typ,
                 'mab': _tws_mab_tags(s),
+                'search_terms': _tws_telegraph_search_terms(s['code'], s['name'], date_fmt, s),
             })
         # 同分钟按连板数降序（高连板在前）+ 名称稳定排序
         timeline.sort(key=lambda x: (999999 if x['minute'] is None else x['minute'], -x['lianban'], x['name']))
@@ -7480,6 +8442,322 @@ def _review_load_daily_change_pct(codes, window_dates, allow_live=True):
                 except (TypeError, ValueError):
                     pass
     return out
+
+
+# Attention 看板只使用截至所选日期的涨停/行情；历史快照不受以后交易日影响。
+_ATTENTION_SNAPSHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'attention_snapshots')
+_attention_snapshot_lock = threading.Lock()
+_ATTENTION_SNAPSHOT_VERSION = 8
+
+
+def _attention_read_snapshot(date):
+    path = os.path.join(_ATTENTION_SNAPSHOT_DIR, date.replace('-', '') + '.json')
+    try:
+        with open(path, 'r', encoding='utf-8') as fh:
+            saved = json.load(fh)
+        if saved.get('version') == _ATTENTION_SNAPSHOT_VERSION and saved.get('date') == date:
+            return saved
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
+def _attention_write_snapshot(saved):
+    os.makedirs(_ATTENTION_SNAPSHOT_DIR, exist_ok=True)
+    path = os.path.join(_ATTENTION_SNAPSHOT_DIR, saved['date'].replace('-', '') + '.json')
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as fh:
+        json.dump(saved, fh, ensure_ascii=False, separators=(',', ':'))
+    os.replace(tmp, path)
+
+
+def _attention_window_dates():
+    now = _bj_now()
+    today = now.strftime('%Y%m%d')
+    latest_file = (_get_latest_zt_data_date() or '').replace('-', '')
+    if _is_trading_hours() and today in _trading_days:
+        anchor = today
+    else:
+        anchor = min(today, latest_file) if latest_file else today
+    dates = [d for d in _trading_days if d <= anchor]
+    return [f'{d[:4]}-{d[4:6]}-{d[6:]}' for d in dates[-15:]]
+
+
+def _attention_normalized_rows(dates):
+    """KPL 涨停池 + 创/科历史日线大涨股；今日盘中大涨股补全市场实时行情。"""
+    if not dates:
+        return {}, {}, False
+    all_ymd = [d.replace('-', '') for d in dates]
+    # 额外加载前一个月以便真实连板数可跨窗口起点计算；分析窗口仍限15日。
+    prior = [d for d in _trading_days if d < all_ymd[0]][-15:]
+    _kpl_ensure_loaded(prior[0] if prior else all_ymd[0], all_ymd[-1])
+    today = _bj_now().strftime('%Y-%m-%d')
+    live_today = bool(_is_trading_hours() and dates[-1] == today)
+    raw_by_date = {}
+    source_by_date = {}
+    for date in dates:
+        rows = _kpl_rows_by_date.get(date) or []
+        source = 'KPL本地涨停记录'
+        if date == today and live_today:
+            fresh = _rtw_live_rows(today.replace('-', ''), date)
+            if fresh:
+                rows = fresh
+                source = 'akshare盘中涨停池'
+            elif rows:
+                source = 'KPL本地兜底（盘中实时池暂不可用）'
+            else:
+                source = '盘中涨停池暂不可用'
+        raw_by_date[date] = rows
+        source_by_date[date] = source
+    out = {}
+    for date, rows in raw_by_date.items():
+        normalized = []
+        for row in rows:
+            code = str(row.get('stock_code') or '').zfill(6)
+            if not code.isdigit() or len(code) != 6:
+                continue
+            tags = _traj_valid_tags(row.get('reason_tag') or '', row.get('reason_brief') or '')
+            if not tags:
+                continue
+            normalized.append({
+                'code': code, 'name': row.get('stock_name') or code,
+                'tags': tags, 'level': max(1, _kpl_true_lianban(row, date)),
+                'first_time': row.get('first_time'), 'change_pct': row.get('change_pct'),
+                'board': _kpl_board_of_code(code),
+            })
+        out[date] = normalized
+
+    # 历史大涨股以本地日线为准：只纳入创业板/科创板当日涨幅严格大于10%的股票。
+    # 同日已在涨停池中的股票保留涨停事件，避免重复或把涨停误标成“大涨”。
+    db = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
+    try:
+        conn = sqlite3.connect(db)
+        date_ph = ','.join('?' * len(dates))
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT stock_code, trade_date, change_pct FROM kline_daily "
+            "WHERE trade_date IN (%s) AND change_pct > 10 "
+            "AND (stock_code LIKE '300%%' OR stock_code LIKE '301%%' "
+            "OR stock_code LIKE '688%%' OR stock_code LIKE '689%%')" % date_ph,
+            dates,
+        )
+        historical_gainers = cur.fetchall()
+        conn.close()
+    except Exception as exc:
+        print('[Attention大涨股] 日线读取失败: %s' % exc)
+        historical_gainers = []
+
+    gainers_by_date = {}
+    for code, trade_date, pct in historical_gainers:
+        code = str(code).zfill(6)
+        gainers_by_date.setdefault(trade_date, {})[code] = pct
+
+    # 建立逐日 AL/AR 关键词集合，只读取该日及以前的记录，避免历史快照引用未来分类。
+    recognized_attention_themes_by_date = {}
+    accumulated_theme_events = {}
+    for event_date in dates:
+        for row in out.get(event_date, []):
+            for tag in row.get('tags') or []:
+                state = accumulated_theme_events.setdefault(tag, {'levels': [], 'firsts': []})
+                level = int(row.get('level') or 1)
+                state['levels'].append(level)
+                if level == 1:
+                    state['firsts'].append((row['code'], event_date))
+        recognized = set()
+        for tag, state in accumulated_theme_events.items():
+            firsts = state['firsts']
+            has_rotation = (len({code for code, _ in firsts}) >= 2 and
+                            len({event_date for _, event_date in firsts}) >= 2)
+            if any(level >= 2 for level in state['levels']) or has_rotation:
+                recognized.add(tag)
+        recognized_attention_themes_by_date[event_date] = recognized
+
+    # 交易日盘中通过既有 levistock 全市场行情抓取（内部东方财富全市场接口）补最新涨幅，
+    # 45秒缓存；KPL涨停股仍由上面的 akshare 实时涨停池提供涨停时间和连板信息。
+    if live_today:
+        live_rows = _get_cached('attention_live_market_rows', ttl=45)
+        if live_rows is None:
+            try:
+                live_rows = _auction_fetch_all_market_rows() or []
+            except Exception as exc:
+                print('[Attention大涨股] 盘中全市场行情获取失败: %s' % exc)
+                live_rows = []
+            _set_cache('attention_live_market_rows', live_rows)
+        live_map = {}
+        live_quote_codes = set()
+        for row in live_rows:
+            code = str((row or {}).get('stock_code') or '').strip().zfill(6)
+            if len(code) != 6 or not code.isdigit():
+                continue
+            try:
+                pct = float(row.get('change_pct'))
+            except (TypeError, ValueError):
+                continue
+            live_quote_codes.add(code)
+            if code.startswith(('300', '301', '688', '689')) and pct > 10:
+                live_map[code] = (str(row.get('stock_name') or code), pct)
+        # 已在实时全市场快照中的个股完全以现价判断，避免保留日线里的盘中旧大涨；
+        # 仅对实时快照缺失的股票使用本地日线兜底。
+        historical_today = gainers_by_date.get(today, {})
+        gainers_by_date[today] = {
+            code: pct for code, pct in historical_today.items() if code not in live_quote_codes
+        }
+        gainers_by_date[today].update({code: pct for code, (_name, pct) in live_map.items()})
+    else:
+        live_map = {}
+
+    limit_codes_by_date = {
+        date: {row['code'] for row in out.get(date, [])}
+        for date in dates
+    }
+    all_gainer_codes = sorted({code for values in gainers_by_date.values() for code in values})
+    gain_stock_names = {}
+    if all_gainer_codes:
+        try:
+            conn = sqlite3.connect(db)
+            for start in range(0, len(all_gainer_codes), 800):
+                batch = all_gainer_codes[start:start + 800]
+                placeholders = ','.join('?' * len(batch))
+                gain_stock_names.update({str(code).zfill(6): str(name or '').strip()
+                    for code, name in conn.execute(
+                        'SELECT stock_code, stock_name FROM stocks WHERE stock_code IN (%s)' % placeholders,
+                        batch).fetchall() if name})
+            conn.close()
+        except Exception as exc:
+            print('[Attention大涨股] 股票名称读取失败: %s' % exc)
+    theme_cache = {}
+    for date, code_pct in gainers_by_date.items():
+        date_rows = out.setdefault(date, [])
+        existing = limit_codes_by_date.setdefault(date, set())
+        added_gainers = 0
+        for code, pct in code_pct.items():
+            if code in existing:
+                continue
+            name = live_map.get(code, (None, None))[0] if date == today and code in live_map else None
+            if not name:
+                name = (gain_stock_names.get(code) or (_kpl_stock_index.get(code, {}) or {}).get('stock_name') or
+                        (_kph_industry_reverse.get(code, {}) or {}).get('name') or
+                        getattr(finder, 'stock_name_map', {}).get(code) or code)
+            if code not in theme_cache:
+                theme_cache[code] = _attention_stock_theme_tags(code)
+            candidates = theme_cache[code]
+            matched = [tag for tag in candidates if tag in recognized_attention_themes_by_date.get(date, set())]
+            # 先挂到已有 AL/AR 关键词；完全没有名称匹配时才作为 AN 新题材观察。
+            tags = matched or candidates
+            if not tags:
+                continue
+            date_rows.append({
+                'code': code, 'name': name, 'tags': tags, 'level': 0,
+                'first_time': None, 'change_pct': pct, 'event_type': 'big_gain',
+                'board': _kpl_board_of_code(code),
+            })
+            existing.add(code)
+            added_gainers += 1
+        if added_gainers:
+            source_by_date[date] = (source_by_date.get(date, '') +
+                                    (' · 创/科大涨实时行情' if date == today and live_today else ' · 创/科大涨本地日线')).strip(' ·')
+    for date in dates:
+        out.setdefault(date, [])
+    return out, source_by_date, live_today
+
+
+def _attention_stock_theme_tags(code):
+    """仅按开盘红/KPH本地概念库找创/科大涨股的可用细分题材词。"""
+    tags = []
+    for concept in _get_kph_industry_concepts(code):
+        tags.extend(_traj_valid_tags(concept))
+    return list(dict.fromkeys(tag for tag in tags if tag))
+
+
+def _attention_compute_snapshot(date, all_dates, rows_by_date, pct_by_date, price_by_code, source):
+    index = all_dates.index(date)
+    window = all_dates[max(0, index - 14):index + 1]
+    cumulative = {}
+    first_base = {}
+    for day in window:
+        for row in rows_by_date.get(day, []):
+            code = row['code']
+            if code not in first_base:
+                price = (price_by_code.get(code) or {}).get(day) or {}
+                try:
+                    base = float(price.get('prev_close') or 0)
+                except (TypeError, ValueError):
+                    base = 0
+                if base > 0:
+                    first_base[code] = base
+        cumulative[day] = {}
+        for code, base in first_base.items():
+            price = (price_by_code.get(code) or {}).get(day) or {}
+            try:
+                close = float(price.get('close') or 0)
+            except (TypeError, ValueError):
+                close = 0
+            if close > 0:
+                cumulative[day][code] = round((close / base - 1) * 100, 2)
+    board = build_attention_days(window, rows_by_date, pct_by_date, cumulative)[0]
+    return {
+        'version': _ATTENTION_SNAPSHOT_VERSION, 'date': date,
+        'generated_at': _bj_now().isoformat(), 'source': source,
+        'status': 'provisional' if date == _bj_now().strftime('%Y-%m-%d') and _is_trading_hours() else 'final',
+        'board': board,
+    }
+
+
+def _build_attention_archive(date_param=None, force=False):
+    visible_dates = _attention_window_dates()
+    if not visible_dates:
+        return {'dates': [], 'days': [], 'latest_date': None}
+    if date_param and date_param not in visible_dates:
+        return {'error': '日期不在最近15个交易日内', 'dates': visible_dates[::-1]}
+    all_ymd = [d for d in _trading_days if d <= visible_dates[-1].replace('-', '')]
+    all_ymd = all_ymd[-29:]
+    all_dates = [f'{d[:4]}-{d[4:6]}-{d[6:]}' for d in all_ymd]
+    today = _bj_now().strftime('%Y-%m-%d')
+    live = bool(_is_trading_hours() and visible_dates[-1] == today)
+    wanted = [date_param] if date_param else visible_dates[::-1]
+    saved = {}
+    missing = []
+    with _attention_snapshot_lock:
+        for date in wanted:
+            snapshot = None if force and date == today else _attention_read_snapshot(date)
+            if snapshot and snapshot.get('status') == 'final':
+                saved[date] = snapshot
+            else:
+                missing.append(date)
+        if missing:
+            rows_by_date, sources, _ = _attention_normalized_rows(all_dates)
+            codes = {r['code'] for d in all_dates for r in rows_by_date.get(d, [])}
+            # 只读本地历史行情。今日涨停股的实时涨跌幅来自同一涨停池。
+            pct = _review_load_daily_change_pct(codes, all_dates, allow_live=False)
+            for date in all_dates:
+                for row in rows_by_date.get(date, []):
+                    if row.get('change_pct') is not None and row['code'] not in pct.get(date, {}):
+                        pct.setdefault(date, {})[row['code']] = row['change_pct']
+            prices = _review_load_daily_price_rows(codes, all_dates)
+            for date in missing:
+                if not rows_by_date.get(date) and date == today:
+                    prior_snapshot = _attention_read_snapshot(date)
+                    if prior_snapshot and prior_snapshot.get('status') == 'provisional':
+                        saved[date] = prior_snapshot
+                        continue
+                snapshot = _attention_compute_snapshot(date, all_dates, rows_by_date, pct, prices, sources.get(date, ''))
+                saved[date] = snapshot
+                # 盘中实时池断开且当天为空时，不把空数据写成正式日快照。
+                if not (date == today and not rows_by_date.get(date)):
+                    _attention_write_snapshot(snapshot)
+    if date_param:
+        return saved[date_param]
+    days = []
+    for i, date in enumerate(wanted):
+        snapshot = saved[date]
+        board = snapshot['board']
+        days.append({
+            'date': date, 'status': snapshot['status'], 'source': snapshot['source'],
+            'counts': {category: len(board.get(category) or []) for category in ('al', 'an', 'ar')},
+            'board': board if i < 3 else None,
+        })
+    return {'dates': wanted, 'days': days, 'latest_date': wanted[0],
+            'generated_at': _bj_now().isoformat(), 'window_days': 15}
 
 
 def _review_build_market_leader(resolved_ymd):
@@ -13214,7 +14492,34 @@ td.lt-trajectory-cell {
 /* 竞价报告：只呈现已落盘的 9:25/9:29 快照，避免首屏触发竞价联网请求。 */
 .auction-report { margin: 6px 0 8px; padding: 8px 10px; border: 1px solid rgba(34,211,238,.42); border-radius: 10px; background: linear-gradient(135deg, rgba(8,47,73,.42), rgba(15,52,96,.22)); }
 .auction-head { display:flex; align-items:center; gap:7px; flex-wrap:wrap; font-size:.84em; font-weight:800; color:#d8f6ff; }
+.auction-dimensions { display:grid; gap:8px; margin-top:8px; }
+.auction-dimension { min-width:0; border:1px solid rgba(125,211,252,.18); border-radius:8px; padding:7px 8px; background:rgba(7,18,34,.26); }
+.auction-dimension-title { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:5px; color:#e0f2fe; font-size:.75em; font-weight:800; }
+.auction-dimension-title .auction-dim-index { color:#67e8f9; }
+.auction-dimension-note { color:#fcd34d; font-size:.66em; font-weight:500; line-height:1.5; }
+.auction-dimension-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:5px; }
+.auction-dim-row { min-width:0; border-radius:6px; background:rgba(30,41,59,.34); padding:5px 7px; color:#cbd5e1; font-size:.69em; line-height:1.55; }
+.auction-dim-row strong { color:#f8fafc; }
+.auction-dim-badge { display:inline-block; border-radius:4px; padding:0 4px; margin-right:4px; background:rgba(34,211,238,.12); color:#a5f3fc; font-size:.9em; font-weight:800; }
+.auction-dim-stock { display:inline-flex; flex-wrap:wrap; align-items:baseline; gap:0 4px; margin:1px 5px 1px 0; white-space:nowrap; }
+.auction-dim-stock em { color:#fbbf24; font-style:normal; font-weight:700; }
+.auction-dim-stock .auction-dim-tags { color:#7dd3fc; }
+.auction-dim-stock .auction-dim-pos { color:#fb7185; font-weight:800; }
+.auction-dim-stock .auction-dim-neg { color:#86efac; font-weight:800; }
+.auction-sector-row { border-left:2px solid rgba(192,132,252,.55); }
+.auction-sector-name { color:#ddd6fe; font-weight:800; }
+.auction-sector-themes { margin-top:3px; color:#a5f3fc; }
+.auction-breadth-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(225px,1fr)); gap:5px; }
+.auction-breadth-card { min-width:0; border:1px solid rgba(96,165,250,.15); border-radius:6px; padding:5px 7px; background:rgba(30,58,138,.12); font-size:.67em; }
+.auction-breadth-card summary { cursor:pointer; color:#c4b5fd; margin-top:3px; }
+.auction-breadth-stocks { max-height:170px; overflow:auto; margin-top:4px; line-height:1.8; }
+.auction-recent15-expand { margin-top:7px; border:1px solid rgba(96,165,250,.2); border-radius:7px; padding:6px 8px; background:rgba(30,58,138,.08); }
+.auction-recent15-expand > summary { cursor:pointer; color:#c4b5fd; font-size:.7em; font-weight:700; }
+.auction-recent15-expand[open] > summary { margin-bottom:6px; color:#ddd6fe; }
+.auction-recent15-expand .auction-breadth-stocks { max-height:220px; }
 .auction-stage { font-size:.68em; color:#a5f3fc; border:1px solid rgba(103,232,249,.45); border-radius:5px; padding:1px 5px; background:rgba(6,182,212,.12); }
+.auction-integrity { font-size:.64em; border-radius:5px; padding:1px 5px; font-weight:700; color:#bbf7d0; background:rgba(22,101,52,.18); border:1px solid rgba(74,222,128,.25); }
+.auction-integrity.incomplete { color:#fde68a; background:rgba(120,53,15,.18); border-color:rgba(251,191,36,.28); }
 .auction-meta { margin-left:auto; color:#7da4b2; font-size:.68em; font-weight:500; }
 .auction-empty { color:#8ba5b1; font-size:.76em; padding:3px 0; }
 .auction-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:7px; margin-top:7px; }
@@ -14166,73 +15471,80 @@ td.lt-trajectory-cell {
 
 .tabs.simple .tab[data-tab="industrychain"] { display:inline-block !important; order:7; }
 .tabs.simple .tab[data-tab="sentiment"] { display:inline-block !important; order:8; }
-/* ===== 舆情监控 - 毛玻璃设计 ===== */
-.emt-container { padding:6px 0; }
-.emt-controls { background:rgba(22,33,62,0.45); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px); border-radius:16px; padding:18px 22px; margin:12px 0; border:1px solid rgba(255,255,255,0.06); box-shadow:0 8px 32px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.05); }
-.emt-controls .emt-input-row { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:10px; }
-.emt-controls .emt-input-item { flex:1; min-width:200px; position:relative; }
-.emt-controls .emt-input-item label { display:block; margin-bottom:5px; background:linear-gradient(90deg,#00d4ff,#4fc3f7); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; font-size:0.8em; font-weight:600; letter-spacing:0.5px; }
-.emt-controls .emt-input-item input[type="text"] { width:100%; padding:10px 14px; border:1.5px solid rgba(15,52,96,0.5); border-radius:10px; background:rgba(26,26,46,0.5); backdrop-filter:blur(8px); color:#eee; font-size:14px; box-sizing:border-box; outline:none; transition:all 0.25s; }
-.emt-controls .emt-input-item input[type="text"]:focus { border-color:rgba(0,212,255,0.6); box-shadow:0 0 20px rgba(0,212,255,0.08), inset 0 0 20px rgba(0,212,255,0.03); }
-.emt-controls .emt-filter-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-.emt-controls .emt-date-group { display:flex; align-items:center; gap:6px; flex-wrap:wrap; background:rgba(26,26,46,0.3); padding:4px 10px; border-radius:10px; }
-.emt-controls .emt-date-group label { color:#8899aa; font-size:0.78em; font-weight:500; }
-.emt-controls .emt-date-group input[type="date"] { width:130px; padding:6px 10px; border:1.5px solid rgba(15,52,96,0.4); border-radius:8px; background:rgba(26,26,46,0.4); backdrop-filter:blur(4px); color:#ddd; font-size:12px; font-family:inherit; box-sizing:border-box; outline:none; min-height:32px; transition:border-color 0.2s; }
-.emt-controls .emt-date-group input[type="date"]:focus { border-color:rgba(0,212,255,0.5); }
-.emt-controls .emt-date-group input[type="date"]::-webkit-calendar-picker-indicator { filter:invert(0.6); cursor:pointer; }
-.emt-controls .emt-date-group input[type="date"]::-webkit-datetime-edit { color:#ddd; }
-.emt-controls .emt-btn { cursor:pointer; padding:8px 18px; border-radius:10px; border:1.5px solid rgba(0,212,255,0.3); background:rgba(0,212,255,0.06); backdrop-filter:blur(8px); color:#00d4ff; font-size:13px; font-weight:600; transition:all 0.25s; white-space:nowrap; letter-spacing:0.3px; }
-.emt-controls .emt-btn:hover { background:rgba(0,212,255,0.15); border-color:#00d4ff; box-shadow:0 0 20px rgba(0,212,255,0.12); transform:translateY(-1px); }
-.emt-controls .emt-btn-clear { cursor:pointer; padding:8px 14px; border-radius:10px; border:1.5px solid rgba(255,255,255,0.08); background:rgba(255,255,255,0.03); backdrop-filter:blur(8px); color:#8899aa; font-size:13px; transition:all 0.25s; white-space:nowrap; }
-.emt-controls .emt-btn-clear:hover { background:rgba(255,255,255,0.06); border-color:rgba(255,255,255,0.12); color:#c0d0e0; }
-.emt-btn-refresh:disabled { opacity:0.4; cursor:not-allowed; filter:grayscale(0.5); }
-.emt-refresh-group { display:flex; align-items:center; gap:8px; margin-left:auto; flex-wrap:nowrap; }
-.emt-refresh-divider { display:inline-block; width:1px; height:26px; background:linear-gradient(180deg,transparent,rgba(255,255,255,0.12),transparent); margin:0 4px; flex-shrink:0; }
-.emt-refresh-label { font-size:0.78em; color:#8899aa; white-space:nowrap; letter-spacing:0.5px; }
-.emt-auto-status { display:inline-block; width:8px; height:8px; border-radius:50%; background:#4caf50; flex-shrink:0; box-shadow:0 0 8px rgba(76,175,80,0.5); animation:emtPulseGreen 1.8s ease-in-out infinite; }
-@keyframes emtPulseGreen { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
-.emt-refresh-select { padding:5px 10px; border:1.5px solid rgba(0,212,255,0.2); border-radius:8px; background:rgba(26,26,46,0.45); backdrop-filter:blur(4px); color:#d0d8e0; font-size:12px; font-family:inherit; outline:none; cursor:pointer; min-height:32px; transition:all 0.2s; }
-.emt-refresh-select:hover { border-color:rgba(0,212,255,0.4); background:rgba(26,26,46,0.6); }
-.emt-refresh-select:focus { border-color:rgba(0,212,255,0.5); }
-.emt-refresh-cd { font-size:0.85em; color:#4fc3f7; font-weight:700; min-width:65px; text-align:center; font-variant-numeric:tabular-nums; letter-spacing:0.3px; background:rgba(79,195,247,0.08); padding:3px 10px; border-radius:6px; border:1px solid rgba(79,195,247,0.1); }
-.emt-post-new-badge { display:inline-block; font-size:0.6em; font-weight:700; color:#fff; background:linear-gradient(135deg,#ff1744,#d50000); padding:2px 7px; border-radius:4px; margin-left:5px; vertical-align:middle; animation:emtNewPulse 1.5s ease-in-out infinite; box-shadow:0 0 10px rgba(255,23,68,0.3); }
-@keyframes emtNewPulse { 0%,100% { box-shadow:0 0 4px rgba(255,23,68,0.4); } 50% { box-shadow:0 0 16px rgba(255,23,68,0.6),0 0 30px rgba(255,23,68,0.2); } }
-/* 韭研帖子 - 毛玻璃卡片 */
-.emt-posts-section { margin-top:20px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.04); position:relative; }
-.emt-posts-section::before { content:''; position:absolute; top:-1px; left:20%; right:20%; height:1px; background:linear-gradient(90deg,transparent,rgba(0,212,255,0.2),transparent); }
-.emt-posts-header { font-size:1em; font-weight:700; background:linear-gradient(90deg,#e0e8f0,#b0c8e0); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; margin-bottom:14px; display:flex; align-items:center; gap:8px; letter-spacing:0.3px; }
-.emt-posts-header .emt-posts-count { font-size:0.74em; color:#667788; font-weight:400; -webkit-text-fill-color:#667788; }
-.emt-posts-date { font-size:0.82em; color:rgba(255,193,7,0.85); font-weight:600; margin:16px 0 8px 0; padding:5px 12px; border-radius:8px; background:rgba(255,193,7,0.04); border-left:3px solid rgba(255,193,7,0.3); letter-spacing:0.5px; }
-.emt-post-item { display:flex; align-items:center; gap:10px; padding:10px 14px; margin:4px 0; border-radius:12px; background:rgba(13,27,42,0.45); border:1px solid rgba(255,255,255,0.04); transition:all 0.25s; box-shadow:0 2px 8px rgba(0,0,0,0.12); }
-.emt-post-item:hover { background:rgba(13,27,42,0.55); border-color:rgba(0,212,255,0.12); box-shadow:0 4px 16px rgba(0,0,0,0.2),0 0 20px rgba(0,212,255,0.03); transform:translateY(-1px); }
-.emt-post-time { font-size:0.8em; color:#e0e8f0; font-weight:700; white-space:nowrap; flex-shrink:0; min-width:60px; text-align:right; font-variant-numeric:tabular-nums; display:flex; align-items:center; align-self:stretch; }
-.emt-post-body { flex:1; min-width:0; }
-.emt-post-title { font-size:0.96em; color:#b0c8e0; text-decoration:none; line-height:1.5; transition:color 0.2s; }
-.emt-post-title:hover { color:#4fc3f7; text-decoration:none; text-shadow:0 0 12px rgba(79,195,247,0.15); }
-.emt-post-stocks { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
-.emt-post-stock { display:inline-block; padding:2px 9px; border-radius:6px; font-size:0.68em; font-weight:500; background:rgba(33,150,243,0.06); backdrop-filter:blur(4px); color:#42a5f5; border:1px solid rgba(33,150,243,0.1); transition:all 0.2s; cursor:pointer; }
-.emt-post-stock:hover { background:rgba(33,150,243,0.15); border-color:rgba(33,150,243,0.3); box-shadow:0 0 12px rgba(33,150,243,0.08); color:#64b5f6; transform:translateY(-1px); }
-.emt-posts-empty { text-align:center; padding:30px; color:#555; font-size:0.82em; }
-/* 帖子关键词/个股分析 */
-.emt-analysis-collapsible { margin:8px 0; }
-.emt-analysis-header { display:flex; align-items:center; gap:8px; padding:12px 16px; background:rgba(22,33,62,0.45); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px); border-radius:12px; border:1px solid rgba(255,255,255,0.06); cursor:pointer; user-select:none; transition:all 0.2s; }
-.emt-analysis-header:hover { background:rgba(22,33,62,0.6); }
-.emt-analysis-header .cat-name { flex:1; font-size:0.82em; font-weight:600; color:#d0d8e8; }
-.emt-analysis-header .cat-arrow { font-size:0.7em; color:#8899aa; transition:transform 0.2s; }
-.emt-analysis-header.collapsed .cat-arrow { transform:rotate(-90deg); }
-.emt-analysis-body { background:rgba(22,33,62,0.3); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); border:1px solid rgba(255,255,255,0.04); border-top:none; border-radius:0 0 12px 12px; padding:12px 14px; }
-.emt-analysis-body.collapsed { display:none; }
-.emt-analysis-chips { display:flex; flex-wrap:wrap; gap:5px; }
-.emt-analysis-chip { display:inline-flex; align-items:center; gap:5px; background:#0f3460; border:1px solid #1a3a6a; border-radius:14px; padding:3px 10px; font-size:0.76em; transition:all 0.15s; }
-.emt-analysis-chip .chip-name { color:#e0e8f0; font-weight:500; }
-.emt-analysis-chip .chip-count { color:#ff6b6b; font-weight:600; font-size:0.92em; }
-.emt-analysis-empty { text-align:center; padding:16px; color:#555; font-size:0.78em; }
-/* 个股频度K线走势 */
-.emt-stock-kline-toggle { padding:8px 12px; margin-top:8px; font-size:0.82em; color:#4fc3f7; cursor:pointer; display:flex; align-items:center; gap:6px; border-top:1px solid rgba(15,52,96,0.3); user-select:none; }
-.emt-stock-kline-toggle:hover { background:rgba(79,195,247,0.05); }
-.emt-stock-kline-wrap { overflow:hidden; transition:max-height .3s ease; }
-.emt-stock-kline-wrap .concept-kline-grid { padding:6px 8px; }
-@media (max-width:768px) { .emt-controls { padding:14px 16px; } .emt-controls .emt-input-item { min-width:100%; } .emt-controls .emt-filter-row { flex-direction:column; align-items:stretch; } .emt-controls .emt-date-group { width:100%; justify-content:flex-start; } .emt-controls .emt-date-group input[type="date"] { flex:1; min-width:0; } .emt-refresh-group { margin-left:0; margin-top:6px; } }
+/* ===== 财联社电报 ===== */
+.cls-news { --cls-line:rgba(147,205,226,.16); padding:12px 0 30px; color:#e4f1f6; }
+.cls-hero { display:flex; justify-content:space-between; align-items:flex-end; gap:18px; padding:18px 22px; margin-bottom:14px; border:1px solid rgba(136,213,232,.22); border-radius:18px; background:radial-gradient(ellipse at 8% 0%,rgba(63,174,197,.2),transparent 48%),linear-gradient(120deg,rgba(12,39,58,.68),rgba(17,31,51,.54)); box-shadow:0 16px 46px rgba(0,8,19,.18),inset 0 1px rgba(255,255,255,.06); backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px); }
+.cls-hero-title { color:#f0fbff; font-size:20px; font-weight:750; letter-spacing:.02em; }
+.cls-hero-sub { margin-top:5px; color:#9ab7c8; font-size:12px; }
+.cls-sync-pill { flex:0 0 auto; display:inline-flex; align-items:center; gap:7px; padding:7px 11px; border:1px solid rgba(119,218,216,.24); border-radius:999px; color:#a9e7dc; background:rgba(44,143,135,.11); font-size:11px; }
+.cls-sync-dot { width:7px; height:7px; border-radius:50%; background:#72dec4; box-shadow:0 0 12px rgba(114,222,196,.6); }
+.cls-toolbar { display:grid; gap:13px; padding:16px; margin:0 0 16px; border:1px solid rgba(118,183,205,.21); border-radius:16px; background:linear-gradient(135deg,rgba(17,42,62,.62),rgba(15,29,48,.5)); box-shadow:0 12px 36px rgba(0,8,19,.16),inset 0 1px rgba(255,255,255,.045); backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px); }
+.cls-control-row { display:flex; align-items:center; flex-wrap:wrap; gap:9px; }
+.cls-control-label { min-width:70px; color:#a6bfce; font-size:12px; font-weight:650; }
+.cls-range-presets { display:flex; gap:6px; padding:3px; border:1px solid rgba(129,180,200,.12); border-radius:10px; background:rgba(5,18,31,.3); }
+.cls-range-btn,.cls-toolbar button { border:1px solid transparent; border-radius:8px; color:#a9c1cd; background:transparent; padding:7px 11px; cursor:pointer; transition:all .18s ease; }
+.cls-range-btn:hover,.cls-range-btn.active { color:#d7fbff; border-color:rgba(86,204,214,.32); background:rgba(61,169,183,.16); }
+.cls-toolbar input[type=date],.cls-toolbar input[type=search] { min-height:36px; color:#e8f7fc; background:rgba(6,22,37,.55); border:1px solid rgba(132,184,203,.24); border-radius:9px; padding:7px 10px; font:inherit; outline:none; }
+.cls-toolbar input:focus { border-color:rgba(83,211,220,.68); box-shadow:0 0 0 3px rgba(60,187,198,.11); }
+.cls-toolbar input[type=search] { flex:1 1 230px; min-width:160px; }
+.cls-toolbar button.cls-search-btn { border-color:rgba(81,208,217,.34); color:#d5fbff; background:linear-gradient(135deg,rgba(43,158,173,.29),rgba(57,124,165,.22)); padding:8px 15px; }
+.cls-toolbar button:hover { background-color:rgba(31,132,154,.28); }
+.cls-toolbar button:disabled { opacity:.55; cursor:wait; }
+.cls-range-date { display:flex; align-items:center; gap:7px; color:#7994a4; font-size:12px; }
+.cls-range-date input { width:142px; }
+.cls-date-strip { display:flex; align-items:center; gap:7px; overflow-x:auto; padding:4px 1px 8px; scrollbar-width:thin; scrollbar-color:rgba(97,191,204,.35) transparent; }
+.cls-date-chip { flex:0 0 auto; min-width:70px; padding:8px 10px; text-align:center; border:1px solid rgba(130,180,198,.16); border-radius:11px; color:#9fb8c6; background:rgba(7,23,38,.32); cursor:pointer; transition:all .18s ease; }
+.cls-date-chip small { display:block; margin-top:3px; font-size:10px; opacity:.72; }
+.cls-date-chip.active { border-color:rgba(93,218,222,.55); color:#e7feff; background:linear-gradient(135deg,rgba(39,158,174,.28),rgba(53,118,157,.21)); box-shadow:0 0 18px rgba(57,194,204,.11); }
+.cls-topic-picker-label { color:#9cb9c7; font-size:11px; font-weight:700; letter-spacing:.03em; margin:0 1px -5px; }
+.cls-topic-picker-tools { display:flex; align-items:center; justify-content:flex-end; gap:7px; margin-bottom:-6px; }
+.cls-topic-picker-tools button { padding:5px 10px; border:1px solid rgba(128,181,201,.2); border-radius:8px; color:#b9d4df; background:rgba(20,47,65,.38); font-size:11px; cursor:pointer; }
+.cls-topic-picker-tools button:hover { color:#e3f5ff; border-color:rgba(117,170,255,.48); background:rgba(54,96,151,.24); }
+.cls-topic-picker { display:flex; flex-wrap:wrap; gap:6px; padding:10px; border:1px solid rgba(129,180,200,.14); border-radius:12px; background:rgba(5,18,31,.22); }
+.cls-topic-chip { border:1px solid rgba(128,181,201,.17); border-radius:999px; padding:5px 10px; color:#9eb9c6; background:rgba(20,47,65,.38); font-size:11px; line-height:1.25; cursor:pointer; transition:all .16s ease; }
+.cls-topic-chip:hover { border-color:rgba(89,201,212,.52); color:#d9f8fa; background:rgba(44,125,143,.24); }
+.cls-topic-chip.active { border-color:rgba(91,218,220,.58); color:#e3ffff; background:linear-gradient(135deg,rgba(37,160,167,.31),rgba(46,112,153,.27)); box-shadow:0 0 12px rgba(57,194,204,.1); }
+.cls-meta { color:#85a2b3; font-size:11px; margin-left:auto; }
+.cls-section { margin:14px 0 18px; border:1px solid rgba(128,178,198,.2); border-radius:15px; overflow:hidden; background:linear-gradient(135deg,rgba(17,42,61,.55),rgba(11,25,42,.47)); box-shadow:0 10px 28px rgba(0,8,18,.13),inset 0 1px rgba(255,255,255,.04); backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); }
+.cls-section-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 15px; background:rgba(64,108,142,.12); border-bottom:1px solid var(--cls-line); }
+.cls-section-title { font-size:14px; font-weight:750; color:#d6eaf4; }
+.cls-section-count { color:#8faabb; font-size:11px; white-space:nowrap; }
+.cls-section[data-category=important] .cls-section-head { border-left:3px solid #f0787e; background:linear-gradient(90deg,rgba(168,48,58,.15),rgba(168,48,58,.04)); }
+.cls-section[data-category=important] .cls-section-title { color:#ffabb0; }
+.cls-section[data-category=company] .cls-section-head { border-left:3px solid #49c3d0; background:linear-gradient(90deg,rgba(38,132,157,.16),rgba(38,132,157,.04)); }
+.cls-section[data-category=company] .cls-section-title { color:#91e4e8; }
+.cls-timeline-section { overflow:visible; }
+.cls-timeline-section .cls-items { padding:10px; }
+.cls-timeline-meta { display:flex; justify-content:flex-end; gap:10px; padding:5px 2px 0; color:#8faabb; font-size:11px; }
+.cls-timeline-empty { padding:14px; border:1px solid rgba(128,178,198,.14); border-radius:10px; color:#91aab7; background:rgba(5,18,31,.2); font-size:12px; }
+.cls-all-details > summary { list-style:none; cursor:pointer; user-select:none; }
+.cls-all-details > summary::-webkit-details-marker { display:none; }
+.cls-all-details > summary:after { content:'＋'; color:#82cbd5; font-size:13px; margin-left:8px; }
+.cls-all-details[open] > summary:after { content:'－'; }
+.cls-all-details[open] > summary { border-bottom:1px solid var(--cls-line); }
+.cls-all-details .cls-section-count { margin-left:auto; }
+.cls-items { padding:4px 16px 11px; }
+.cls-item { padding:14px 5px; border-bottom:1px solid rgba(139,185,201,.13); }
+.cls-item:last-child { border-bottom:0; }
+.cls-item-top { display:flex; align-items:baseline; gap:10px; margin-bottom:5px; }
+.cls-time { flex:0 0 auto; color:#82cbd5; font-size:11px; font-variant-numeric:tabular-nums; }
+.cls-item-title { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; color:#75aaff; font-weight:700; line-height:1.55; min-width:0; flex:1; }
+.cls-item-title-text { min-width:0; }
+.cls-item-badges { flex:0 0 auto; display:inline-flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:4px; }
+.cls-keyword-match { display:inline-flex; align-items:center; padding:2px 7px; border:1px solid rgba(89,214,201,.3); border-radius:999px; color:#a5f2dc; background:rgba(47,155,135,.15); font-size:10px; font-weight:650; line-height:1.35; white-space:nowrap; }
+.cls-item-content { color:#c3d4dc; font-size:13px; line-height:1.82; white-space:pre-wrap; overflow-wrap:anywhere; }
+.cls-search-results-head { padding:11px 14px; border:1px solid rgba(88,203,210,.18); border-radius:12px; color:#bfeaf0; background:rgba(40,130,144,.1); font-size:12px; }
+.cls-search-date-head { margin:15px 0 7px; color:#91dbe1; font-size:13px; font-weight:750; }
+.cls-search-hit { position:relative; padding-left:12px; }
+.cls-search-hit:before { content:""; position:absolute; left:0; top:16px; bottom:16px; width:2px; border-radius:2px; background:linear-gradient(#58cbd2,rgba(88,203,210,.08)); }
+.cls-search-marquee { border:1px solid rgba(88,203,210,.42); border-radius:10px; animation:cls-search-border-pulse 2.8s ease-in-out infinite; }
+@keyframes cls-search-border-pulse { 0%,100% { border-color:rgba(88,203,210,.3); box-shadow:0 0 0 0 rgba(88,203,210,0); } 50% { border-color:rgba(88,203,210,.78); box-shadow:0 0 0 1px rgba(88,203,210,.12); } }
+@media(prefers-reduced-motion:reduce) { .cls-search-marquee { animation:none; border-color:rgba(88,203,210,.62); } }
+.cls-search-category { display:inline-block; padding:2px 6px; margin-left:6px; border-radius:5px; color:#a8cfda; background:rgba(114,166,187,.11); font-size:10px; font-weight:500; vertical-align:1px; }
+.cls-empty,.cls-error { padding:18px 6px; color:#8599aa; font-size:13px; }
+.cls-error { color:#ff9b9f; }
+.cls-stale-note { padding:7px 14px; color:#e8c991; background:rgba(146,111,45,.1); border-bottom:1px solid rgba(190,157,91,.16); font-size:11px; }
+@media(max-width:680px) { .cls-hero { align-items:flex-start; flex-direction:column; padding:15px; } .cls-hero-title { font-size:18px; } .cls-toolbar { padding:12px; } .cls-control-row { align-items:stretch; } .cls-control-label { width:100%; } .cls-range-presets { width:100%; justify-content:space-between; } .cls-range-btn { flex:1; } .cls-range-date { flex:1 1 100%; } .cls-range-date input { flex:1; width:auto; min-width:0; } .cls-meta { width:100%; margin-left:0; } .cls-item-top { display:block; } .cls-time { display:block; margin-bottom:4px; } .cls-item-title { align-items:flex-start; } .cls-item-badges { justify-content:flex-start; } .cls-items { padding-left:12px; padding-right:12px; } }
 @media (max-width:768px) { .ic-wrapper { flex-direction:column; } .ic-sidebar { width:100%; max-height:180px; } }
 
 /* ===== 题材赛马 (KPL Race) ===== */
@@ -14672,13 +15984,16 @@ td.lt-trajectory-cell {
 #tab-ladderlinkage .ms-linkage-history-date small { color:#89b9cc; font-size:.72em; white-space:nowrap; }
 #tab-ladderlinkage .ms-linkage-history-state { flex:0 0 auto; padding:2px 8px; border:1px solid rgba(244,213,138,.35); border-radius:999px; color:#f4d58a; background:rgba(244,213,138,.08); font-size:.7em; font-weight:800; }
 #tab-ladderlinkage .ms-linkage-history-body { min-height:calc(var(--linkage-ladder-rows, 5) * 52px + 18px); height:auto; overflow:visible; padding:1px 2px 3px; }
-#tab-ladderlinkage .ms-linkage-history-slider { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:9px; margin-top:8px; padding:7px 10px 6px; border:1px solid rgba(102,187,216,.2); border-radius:10px; background:rgba(12,25,40,.62); color:#8faec0; font-size:.72em; }
-#tab-ladderlinkage .ms-linkage-history-slider input { width:100%; min-width:0; margin:0; accent-color:#f4d58a; cursor:pointer; }
-#tab-ladderlinkage .ms-linkage-history-slider span { white-space:nowrap; }
-#tab-ladderlinkage .ms-linkage-history-slider span:first-child { color:#f4d58a; font-weight:800; }
-#tab-ladderlinkage .ms-linkage-history-slider span:last-child { text-align:right; }
-#tab-ladderlinkage .ms-linkage-history-ticks { display:grid; grid-template-columns:repeat(var(--linkage-history-count, 15), minmax(34px, 1fr)); gap:2px; margin:3px 10px 0; overflow-x:auto; }
-#tab-ladderlinkage .ms-linkage-history-tick { position:relative; min-width:34px; padding:4px 1px 1px; border:0; background:transparent; color:#708b9c; font:inherit; font-size:.68em; line-height:1.2; white-space:nowrap; cursor:pointer; text-align:center; }
+#tab-ladderlinkage .ms-linkage-history-slider { margin-top:8px; padding:8px 12px 7px; border:1px solid rgba(102,187,216,.2); border-radius:10px; background:rgba(12,25,40,.62); color:#8faec0; font-size:.72em; }
+/* 滑块圆点和日期刻度共用同一条横向基线；不再用两套 grid 各自计算宽度。 */
+#tab-ladderlinkage .ms-linkage-history-rail { position:relative; min-width:0; }
+#tab-ladderlinkage .ms-linkage-history-slider input { display:block; width:100%; min-width:0; height:14px; margin:0; padding:0; appearance:none; -webkit-appearance:none; background:transparent; cursor:pointer; }
+#tab-ladderlinkage .ms-linkage-history-slider input::-webkit-slider-runnable-track { height:3px; border-radius:999px; background:linear-gradient(90deg,#f4d58a,rgba(102,187,216,.7)); }
+#tab-ladderlinkage .ms-linkage-history-slider input::-webkit-slider-thumb { width:14px; height:14px; margin-top:-5.5px; border:2px solid #fff4c9; border-radius:50%; appearance:none; -webkit-appearance:none; background:#f4d58a; box-shadow:0 0 0 3px rgba(244,213,138,.2),0 0 9px rgba(244,213,138,.45); }
+#tab-ladderlinkage .ms-linkage-history-slider input::-moz-range-track { height:3px; border-radius:999px; background:linear-gradient(90deg,#f4d58a,rgba(102,187,216,.7)); }
+#tab-ladderlinkage .ms-linkage-history-slider input::-moz-range-thumb { width:10px; height:10px; border:2px solid #fff4c9; border-radius:50%; background:#f4d58a; box-shadow:0 0 0 3px rgba(244,213,138,.2),0 0 9px rgba(244,213,138,.45); }
+#tab-ladderlinkage .ms-linkage-history-ticks { position:relative; height:29px; margin:4px 0 0; overflow:visible; }
+#tab-ladderlinkage .ms-linkage-history-tick { position:absolute; top:0; left:var(--linkage-history-pos, 0%); transform:translateX(-50%); min-width:34px; padding:4px 1px 1px; border:0; background:transparent; color:#708b9c; font:inherit; font-size:.68em; line-height:1.2; white-space:nowrap; cursor:pointer; text-align:center; }
 #tab-ladderlinkage .ms-linkage-history-tick::before { content:''; display:block; width:1px; height:5px; margin:0 auto 2px; background:rgba(137,185,204,.48); }
 #tab-ladderlinkage .ms-linkage-history-tick:hover { color:#dbeefa; }
 #tab-ladderlinkage .ms-linkage-history-tick.active { color:#f4d58a; font-weight:800; }
@@ -14686,7 +16001,7 @@ td.lt-trajectory-cell {
 @media (max-width: 680px) {
   #tab-ladderlinkage .ms-linkage-history-date small { display:none; }
   #tab-ladderlinkage .ms-linkage-history-body { min-height:calc(var(--linkage-ladder-rows, 5) * 58px + 18px); }
-  #tab-ladderlinkage .ms-linkage-history-ticks { justify-content:start; }
+  #tab-ladderlinkage .ms-linkage-history-tick { font-size:.64em; }
 }
 /* 连板联动下方题材卡片：提高明度与层次，仅作用于本页，不改变市场结构原有配色 */
 #tab-ladderlinkage .ms-linkage-card .ms-tp-card { background:rgba(15,52,96,.25); border-color:#1e3a5f; box-shadow:0 2px 10px rgba(0,0,0,.12); }
@@ -14722,6 +16037,136 @@ td.lt-trajectory-cell {
 #tab-ladderlinkage .ms-linkage-card .ms-tp-recent10-title { color:#ffe18b; }
 #tab-ladderlinkage .ms-linkage-card .ms-tp-recent10-date { color:#91e8f2; }
 #tab-ladderlinkage .ms-linkage-card .ms-tp-recent10-text { color:#d4e8ef; }
+/* Attention: 同一天的题材共用一条连板强度轴，日期折叠但不丢失明细。 */
+.attn-layout { display:grid; grid-template-columns:148px minmax(0,1fr); gap:12px; align-items:start; }
+.attn-sidebar { position:sticky; top:10px; max-height:calc(100vh - 20px); overflow-y:auto; padding:8px; border:1px solid rgba(111,193,215,.27); border-radius:11px; background:rgba(10,32,53,.74); scrollbar-color:#638da5 transparent; }
+.attn-sidebar-title { color:#d7edf4; font-size:.76em; font-weight:800; padding:3px 5px 8px; }
+.attn-side-day { padding:5px 3px; border-top:1px solid rgba(142,196,214,.12); }
+.attn-side-date { display:block; width:100%; border:0; padding:2px 3px 4px; color:#f0d59b; background:transparent; font:inherit; font-size:.73em; font-weight:800; text-align:left; cursor:pointer; }
+.attn-side-kinds { display:flex; gap:3px; }
+.attn-side-kinds button { flex:1; border:1px solid rgba(121,188,214,.2); border-radius:5px; padding:2px 3px; color:#a9ceda; background:rgba(44,91,123,.24); font:inherit; font-size:.63em; cursor:pointer; }
+.attn-side-kinds button:hover,.attn-side-date:hover { color:#fff; background-color:rgba(81,154,185,.25); }
+.attn-side-kinds small { opacity:.75; }
+.attn-board { display:grid; gap:10px; min-width:0; }
+.attn-day { border:1px solid rgba(111,193,215,.32); border-radius:12px; background:rgba(13,38,65,.54); overflow:hidden; }
+.attn-day[open] { background:rgba(16,47,76,.68); box-shadow:0 6px 20px rgba(0,0,0,.12); }
+.attn-day-head { cursor:pointer; display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:10px 13px; color:#e4f4fa; list-style:none; background:linear-gradient(90deg,rgba(39,112,151,.34),rgba(23,61,96,.17)); }
+.attn-day-head::-webkit-details-marker { display:none; }
+.attn-day-head::before { content:'▸'; color:#f6d68e; transition:transform .16s; }
+.attn-day[open]>.attn-day-head::before { transform:rotate(90deg); }
+.attn-day-date { font-weight:800; letter-spacing:.02em; }
+.attn-day-count { font-size:.75em; color:#bad4e0; border:1px solid rgba(150,207,224,.27); border-radius:99px; padding:2px 7px; }
+.attn-day-source { font-size:.71em; color:#94b8c8; margin-left:auto; }
+.attn-day-content { padding:10px; display:grid; gap:13px; }
+.attn-category { min-width:0; }
+.attn-category-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:7px; margin:0 0 5px; padding-left:6px; border-left:3px solid #f2c773; color:#e8f4f7; scroll-margin-top:10px; }
+.attn-category[data-kind="AN"] .attn-category-head { border-color:#75d5b1; }
+.attn-category[data-kind="AR"] .attn-category-head { border-color:#9cbdf2; }
+.attn-category-head b { font-size:.95em; }
+.attn-category-head small { color:#a8c6d1; font-size:.73em; }
+.attn-keywords { display:flex; flex-wrap:wrap; gap:4px; flex:1 1 100%; padding:1px 0 3px; }
+.attn-keyword { border:1px solid rgba(124,199,218,.3); border-radius:99px; padding:2px 7px; color:#bce3ec; background:rgba(36,99,129,.26); font:inherit; font-size:.7em; cursor:pointer; }
+.attn-keyword:hover { color:#fff4d2; border-color:rgba(245,210,136,.65); background:rgba(123,100,46,.3); }
+.attn-empty { color:#87a4b2; font-size:.78em; padding:7px 9px; border:1px dashed rgba(157,197,210,.24); border-radius:7px; }
+.attn-axis-scroll { overflow-x:auto; border:1px solid rgba(121,188,214,.23); border-radius:9px; scrollbar-color:#638da5 transparent; }
+.attn-axis { min-width:1040px; width:100%; border-collapse:collapse; table-layout:fixed; font-size:.76em; }
+.attn-axis th,.attn-axis td { border-bottom:1px solid rgba(142,196,214,.15); border-right:1px solid rgba(142,196,214,.12); padding:6px; vertical-align:top; }
+.attn-axis tr:last-child td { border-bottom:0; }
+.attn-axis th { background:rgba(51,106,144,.29); color:#d2e9f1; text-align:center; white-space:nowrap; }
+.attn-axis th:nth-child(7) { background:rgba(139,115,65,.2); box-shadow:inset 0 0 0 1px rgba(236,198,112,.2); }
+.attn-axis th:first-child,.attn-axis td:first-child { width:150px; position:sticky; left:0; z-index:1; background:#183b5b; }
+.attn-axis td:first-child { background:#173650; }
+.attn-topic { border:0; background:transparent; color:#f7dc9f; font:inherit; font-weight:800; cursor:pointer; text-align:left; overflow-wrap:anywhere; }
+.attn-topic:hover { color:#fff3d6; text-decoration:underline; }
+.attn-topic-sub { display:block; margin-top:3px; color:#96b9ca; font-size:.86em; }
+.attn-guidance { display:block; margin-top:6px; padding:5px 7px; border-left:2px solid rgba(226,190,112,.55); border-radius:0 5px 5px 0; color:#c5d5d9; background:rgba(175,151,96,.09); font-size:.76em; line-height:1.45; }
+.attn-methods { display:block; margin-top:5px; color:#a9c5d0; font-size:.72em; line-height:1.5; }
+.attn-methods-label { color:#e0c78d; font-weight:700; margin-right:4px; }
+.attn-method { display:inline-block; margin:1px 3px 1px 0; padding:1px 5px; border:1px solid rgba(135,183,198,.24); border-radius:999px; color:#c4d9df; background:rgba(64,113,133,.14); white-space:nowrap; }
+.attn-topic-row { scroll-margin-top:14px; transition:background-color .25s, box-shadow .25s; }
+.attn-jump-highlight { animation:attn-jump-glow 1.4s ease-out; }
+@keyframes attn-jump-glow { 0%,45% { background-color:rgba(104,177,202,.3); box-shadow:inset 0 0 0 1px rgba(164,229,241,.55); } 100% { background-color:transparent; box-shadow:none; } }
+.attn-stock { display:inline-flex; align-items:center; flex-wrap:wrap; gap:3px 5px; max-width:100%; margin:2px 4px 2px 0; padding:4px 6px; border:1px solid rgba(113,201,222,.43); border-left:3px solid #f3cc7d; border-radius:7px; color:#e7f8fb; background:rgba(38,98,137,.64); font:inherit; cursor:pointer; text-align:left; }
+.attn-stock.first { border-color:rgba(239,199,112,.62); border-left-color:#eac56f; box-shadow:0 0 5px rgba(239,199,112,.13), inset 0 0 0 1px rgba(239,199,112,.06); }
+.attn-stock.big-gain { border-color:rgba(255,156,117,.66); border-left-color:#ff936f; background:rgba(145,74,58,.35); }
+.attn-stock.broken { color:#a9bdc8; border-style:dashed; border-color:rgba(146,187,205,.22); border-left-style:solid; border-left-color:#788d9d; background:rgba(58,82,101,.2); opacity:.76; }
+.attn-stock.broken.first { opacity:.72; }
+.attn-stock.broken b { color:#c5d2d9; }
+.attn-stock.broken small { color:#91aab7; }
+.attn-stock:hover { filter:brightness(1.22); }
+.attn-stock b { color:#fff1ce; white-space:nowrap; }
+.attn-stock small { color:#99dce8; white-space:nowrap; font-size:.89em; }
+.attn-stock .attn-gap { color:#b4c4cf; }
+.attn-strength { display:inline-block; flex:0 0 auto; margin-left:1px; padding:0 4px; border:1px solid rgba(246,207,116,.72); border-radius:4px; color:#ffe6a3; background:rgba(147,111,39,.3); box-shadow:0 0 5px rgba(246,207,116,.16); font-size:.75em; font-weight:800; line-height:1.45; white-space:nowrap; }
+.attn-marker { display:inline-block; border:1px solid transparent; border-radius:4px; padding:0 3px; font-size:.76em; font-style:normal; font-weight:700; white-space:nowrap; }
+.attn-marker.yizi { color:#ffe49a; border-color:rgba(255,218,128,.4); background:rgba(155,112,30,.23); }
+.attn-marker.straight { color:#9de4f1; border-color:rgba(101,211,233,.38); background:rgba(33,123,149,.22); }
+.attn-marker.previous { color:#d9c1ff; border-color:rgba(192,154,255,.38); background:rgba(111,75,156,.2); }
+.attn-marker.board-main { color:#d8e4ee; border-color:rgba(207,225,238,.35); background:rgba(116,145,164,.18); }
+.attn-marker.board-gem { color:#bce8ff; border-color:rgba(116,204,246,.42); background:rgba(48,129,171,.2); }
+.attn-marker.board-star { color:#d1c4ff; border-color:rgba(176,147,255,.42); background:rgba(107,79,164,.2); }
+.attn-marker.gain { color:#ffc1a8; border-color:rgba(255,162,127,.5); background:rgba(148,65,45,.27); }
+.attn-stock.five-plus { border-color:rgba(255,212,131,.58); background:rgba(107,81,42,.4); }
+.attn-five-plus-level { color:#ffe49a !important; font-weight:800; }
+.attn-stock .attn-pct.up { color:#ff9b93; }
+.attn-stock .attn-pct.down { color:#87ddb0; }
+.attn-cell-active { padding-bottom:2px; }
+.attn-cell-inactive { padding-top:2px; }
+.attn-divider-row td { padding:0 8px !important; border-bottom:0 !important; background:rgba(13,34,50,.16); }
+.attn-inactive-row td { background:rgba(116,147,158,.12); }
+.attn-cell-divider { display:flex; align-items:center; gap:7px; margin:8px 0; color:#8fa8b5; font-size:.7em; white-space:nowrap; }
+.attn-cell-divider:before,.attn-cell-divider:after { content:""; flex:1; border-top:1px dashed rgba(157,194,207,.56); }
+.attn-cell-inactive .attn-stock { border-style:dashed; border-left-style:solid; background:rgba(71,101,124,.22); }
+.attn-topic-detail { margin:2px 0 0; border-top:1px dashed rgba(127,193,209,.3); }
+.attn-topic-detail summary { cursor:pointer; color:#9fd6e4; padding:6px 8px; font-size:.75em; }
+.attn-detail-body { display:flex; flex-wrap:wrap; gap:6px; padding:4px 8px 9px; }
+.attn-detail-stock { padding:5px 7px; border:1px solid rgba(113,189,209,.24); border-radius:7px; background:rgba(34,78,109,.31); color:#cbe4ec; font-size:.72em; line-height:1.5; }
+.attn-detail-stock strong { color:#f3dfa9; }
+.attn-detail-stock em { font-style:normal; color:#8bcfdf; }
+.attn-note { font-size:.73em; color:#94b8c8; line-height:1.5; margin-bottom:8px; }
+.attn-methodology { margin-top:8px; padding:12px 14px; border:1px solid rgba(133,184,198,.2); border-radius:9px; background:linear-gradient(135deg,rgba(27,58,77,.42),rgba(23,46,67,.28)); color:#b6cbd3; font-size:.76em; line-height:1.65; }
+.attn-methodology h4 { margin:0 0 7px; color:#f0d28d; font-size:1.05em; }
+.attn-methodology h4 span { margin-right:7px; color:#81c8d2; font:700 .65em/1.4 ui-monospace,monospace; letter-spacing:.12em; }
+.attn-methodology p { margin:4px 0; }
+.attn-methodology b { color:#d7e7e9; }
+.attn-model-equations { display:grid; gap:4px; margin:8px 0; }
+.attn-model-equations code { display:block; padding:5px 8px; border:1px solid rgba(111,182,197,.15); border-radius:5px; color:#d1e2e7; background:rgba(4,20,32,.3); font: .9em/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
+.attn-model-tree { margin:8px 0; padding:7px 10px; border-left:2px solid rgba(112,194,205,.38); color:#b5d0d8; background:rgba(31,75,91,.16); font: .88em/1.65 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
+.attn-model-tree b { display:block; margin-bottom:2px; color:#eddaa5; }
+.attn-methodology .attn-model-footnote { color:#91aeba; font-size:.9em; }
+.attn-mk-panel { border:1px solid rgba(104,190,194,.31); border-radius:9px; background:linear-gradient(115deg,rgba(28,91,98,.2),rgba(20,54,71,.24)); overflow:hidden; }
+.attn-mk-panel summary { display:flex; align-items:center; gap:8px; padding:9px 12px; color:#c8eef0; cursor:pointer; list-style:none; }
+.attn-mk-panel summary::-webkit-details-marker { display:none; }
+.attn-mk-panel summary:before { content:'＋'; color:#7fd0cc; font-weight:800; }
+.attn-mk-panel[open] summary:before { content:'−'; }
+.attn-mk-panel summary b { color:#8be0d3; font-size:1.02em; }
+.attn-mk-panel summary span { font-size:.82em; }
+.attn-mk-panel summary small { margin-left:auto; color:#91bdc4; font-size:.72em; }
+.attn-mk-body { padding:0 10px 10px; }
+.attn-mk-meta { display:flex; flex-wrap:wrap; align-items:center; gap:5px 12px; padding:6px 2px; color:#9ec3cb; font-size:.74em; }
+.attn-mk-filter { margin:2px 0 8px; padding:8px; border:1px solid rgba(104,190,194,.18); border-radius:8px; background:rgba(8,27,40,.24); }
+.attn-mk-filter-head { display:flex; align-items:center; gap:8px; margin-bottom:6px; color:#bdd5d9; font-size:.75em; }
+.attn-mk-filter-head small { color:#88aab3; }
+.attn-mk-filter-clear { margin-left:auto; padding:3px 8px; border:1px solid rgba(124,194,198,.28); border-radius:999px; color:#a9d7d9; background:rgba(34,94,103,.2); cursor:pointer; font:inherit; }
+.attn-mk-filter-clear:hover { border-color:rgba(139,218,208,.62); color:#e0ffff; }
+.attn-mk-keywords { display:flex; flex-wrap:wrap; gap:5px; }
+.attn-mk-keyword-option { padding:3px 8px; border:1px solid rgba(115,170,183,.24); border-radius:999px; color:#a9c4cb; background:rgba(30,68,82,.2); cursor:pointer; font:inherit; font-size:.72em; transition:background .16s,border-color .16s,color .16s; }
+.attn-mk-keyword-option:hover { border-color:rgba(125,211,207,.58); color:#e1f8f5; }
+.attn-mk-keyword-option.is-active { border-color:rgba(126,211,190,.62); color:#d8fff0; background:rgba(38,125,103,.3); box-shadow:inset 0 0 0 1px rgba(126,211,190,.08); }
+.attn-mk-keyword-option:disabled { border-color:rgba(117,139,146,.12); color:#60747b; background:rgba(60,75,81,.1); cursor:not-allowed; opacity:.55; }
+.attn-mk-stock[hidden] { display:none !important; }
+.attn-mk-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:6px; max-height:440px; overflow:auto; padding:2px 3px 6px; }
+.attn-mk-stock { display:block; min-width:0; padding:6px 8px; border:1px solid rgba(102,184,190,.2); border-radius:7px; color:#d6e9e9; background:rgba(21,64,76,.3); text-align:left; cursor:pointer; }
+.attn-mk-stock:hover { border-color:rgba(139,218,208,.55); background:rgba(35,98,104,.38); }
+.attn-mk-stock-head { display:flex; align-items:center; gap:6px; min-width:0; }
+.attn-mk-stock-head b { color:#f0e0b7; white-space:nowrap; }
+.attn-mk-stock-head small { color:#98b5be; font-size:.72em; }
+.attn-mk-stock-head i { color:#acd5dd; font-size:.7em; font-style:normal; }
+.attn-mk-stock-head em { margin-left:auto; color:#8fe0d3; font-size:.7em; font-style:normal; white-space:nowrap; }
+.attn-mk-tags { display:flex; flex-wrap:wrap; gap:3px; margin-top:5px; }
+.attn-mk-keyword { padding:1px 5px; border:1px solid rgba(111,192,195,.21); border-radius:99px; color:#acd2d4; background:rgba(33,100,105,.15); font-size:.66em; font-style:normal; }
+@media (max-width:860px) { .attn-layout { grid-template-columns:116px minmax(0,1fr); gap:7px; } .attn-sidebar { padding:5px; } }
+@media (max-width:680px) { .attn-layout { display:flex; flex-direction:column; } .attn-sidebar { position:static; max-height:180px; width:100%; box-sizing:border-box; display:flex; flex-wrap:wrap; gap:3px; } .attn-sidebar-title { flex-basis:100%; padding:2px 4px; } .attn-side-day { flex:1 0 30%; max-width:32%; box-sizing:border-box; } .attn-day-source { flex-basis:100%; margin-left:0; } .attn-axis { min-width:1040px; } .attn-axis th:first-child,.attn-axis td:first-child { width:122px; } }
 </style>
 </head>
 <body>
@@ -14789,7 +16234,7 @@ td.lt-trajectory-cell {
                 <a class="np-sidebar-item" data-np-section="twLtTrajectorySection" onclick="scrollToNpSection('twLtTrajectorySection')">🌐 涨停标签轨迹</a>
                 <a class="np-sidebar-item" data-np-section="twTopThemeSection" onclick="scrollToNpSection('twTopThemeSection')">🏆 TOP题材风向</a>
                 <a class="np-sidebar-item" data-np-section="twTodayTopicReviewSection" onclick="scrollToNpSection('twTodayTopicReviewSection')">📝 今日题材复盘</a>
-                <a class="np-sidebar-item" data-np-section="twReviewSection" onclick="scrollToNpSection('twReviewSection')">🧭 连板演化复盘</a>
+                <a class="np-sidebar-item" data-np-section="twReviewSection" onclick="scrollToNpSection('twReviewSection')">🧭 注意力/预期机制</a>
                 <div style="border-top:1px solid rgba(255,255,255,0.06);margin:6px 0;"></div>
                 <div class="np-sidebar-hide" onclick="toggleTabSidebar('twSidebar','twSidebarShow')" title="隐藏导航">✖ 隐藏</div>
             </nav>
@@ -15057,7 +16502,20 @@ td.lt-trajectory-cell {
         <div id="industryChainContainer"><div class="loading">加载产业链编辑器...</div></div>
     </div>
     <div class="tab-content" id="tab-sentiment">
-        <div id="sentimentContainer"><div class="loading">加载舆情监控数据...</div></div>
+        <div class="np-wrapper">
+            <button class="np-sidebar-showbtn" id="clsSidebarShow" onclick="toggleTabSidebar('clsSidebar','clsSidebarShow')" style="display:none;" title="显示导航">☰</button>
+            <nav class="np-sidebar" id="clsSidebar">
+                <a class="np-sidebar-item" data-np-section="clsDateNavigation" onclick="scrollToNpSection('clsDateNavigation')">🗓 日期切换</a>
+                <a class="np-sidebar-item" data-np-section="clsKeywordControls" onclick="scrollToNpSection('clsKeywordControls')">🔎 关键词搜索</a>
+                <a class="np-sidebar-item" data-np-section="clsTodayTimelineSection" onclick="scrollToNpSection('clsTodayTimelineSection')">⏱ 今日涨停时间轴</a>
+                <a class="np-sidebar-item" data-np-section="clsImportantSection" onclick="scrollToNpSection('clsImportantSection')">🔴 重要消息</a>
+                <a class="np-sidebar-item" data-np-section="clsCompanySection" onclick="scrollToNpSection('clsCompanySection')">🏢 公司公告</a>
+                <a class="np-sidebar-item" data-np-section="clsAllSection" onclick="scrollToNpSection('clsAllSection')">📰 全部电报</a>
+                <div style="border-top:1px solid rgba(255,255,255,0.06);margin:6px 0;"></div>
+                <div class="np-sidebar-hide" onclick="toggleTabSidebar('clsSidebar','clsSidebarShow')" title="隐藏导航">✖ 隐藏</div>
+            </nav>
+            <div class="np-main-content" id="sentimentContainer"><div class="loading">加载舆情监控数据...</div></div>
+        </div>
     </div>
     <div class="tab-content" id="tab-etf">
         <div id="etfContainer"><div class="loading">加载ETF数据...</div></div>
@@ -15167,38 +16625,6 @@ try { mermaid.initialize({startOnLoad:false,theme:'dark',themeVariables:{backgro
 
 var currentTab = 'themewind';
 var _tabCache = {};
-var _emtRefreshActive = false;
-var _emtRefreshTimer = null;
-var _emtRefreshRemaining = 0;
-var _emtRefreshIntervalMin = 0;
-var _emtPostsCache = null;
-var _EMT_REFRESH_KEY = 'emt_auto_refresh';
-
-function _emtSaveRefreshState() {
-    if (!_emtRefreshActive) { localStorage.removeItem(_EMT_REFRESH_KEY); return; }
-    var data = JSON.stringify({
-        active: true,
-        intervalMin: _emtRefreshIntervalMin,
-        remaining: _emtRefreshRemaining,
-        updatedAt: Date.now()
-    });
-    try { localStorage.setItem(_EMT_REFRESH_KEY, data); } catch(e) {}
-}
-
-// 页面关闭前持久化保存刷新状态
-window.addEventListener('beforeunload', _emtSaveRefreshState);
-
-function _emtLoadRefreshState() {
-    var raw;
-    try { raw = localStorage.getItem(_EMT_REFRESH_KEY); } catch(e) { return null; }
-    if (!raw) return null;
-    var s;
-    try { s = JSON.parse(raw); } catch(e) { return null; }
-    if (!s.active || s.intervalMin <= 0) return null;
-    var elapsed = (Date.now() - (s.updatedAt || 0)) / 1000;
-    var rem = Math.max(0, (s.remaining || 0) - Math.round(elapsed));
-    return { active: true, intervalMin: s.intervalMin, remaining: rem };
-}
 
 function _cachedFetch(url) {
     if (_tabCache[url] !== undefined) {
@@ -15349,7 +16775,6 @@ function switchTab(tab) {
     if (tab === 'industrychain') loadIndustryChain();
     if (tab === 'sentiment') {
         loadSentimentData();
-        // 恢复自动刷新显示由 renderSentimentData 内 _emtRestoreAutoRefreshUI 负责（DOM就绪后）
     }
     if (tab === 'marketstructure') {
         if (!_marketStructureLoaded) loadMarketStructure();
@@ -19882,6 +21307,7 @@ function toggleTabSidebar(sbId, showId) {
 var _rtSbObserver = null;
 var _twSbObserver = null;
 var _msSbObserver = null;
+var _clsSbObserver = null;
 function initTabSidebarScroll(sbId, sectionIds) {
     var sidebar = document.getElementById(sbId);
     if (!sidebar) return;
@@ -19904,6 +21330,7 @@ function initTabSidebarScroll(sbId, sectionIds) {
     if (sbId === 'rtSidebar') { if (_rtSbObserver) _rtSbObserver.disconnect(); _rtSbObserver = obs; }
     else if (sbId === 'twSidebar') { if (_twSbObserver) _twSbObserver.disconnect(); _twSbObserver = obs; }
     else if (sbId === 'msSidebar') { if (_msSbObserver) _msSbObserver.disconnect(); _msSbObserver = obs; }
+    else if (sbId === 'clsSidebar') { if (_clsSbObserver) _clsSbObserver.disconnect(); _clsSbObserver = obs; }
     sections.forEach(function(el) { obs.observe(el); });
 }
 
@@ -20391,22 +21818,19 @@ function _renderCardDetailContent(code, detail, alertInfo, stockName, conceptsJs
     h += '<div style="max-height:210px;overflow-y:auto;">';
     h += renderKplRecords(kplRec, code, stockName);
     h += '</div></div>';
-    // KPL概念（替换同花顺概念）
-    var kplCpts = detail.kpl_concepts || [];
-    if (kplCpts.length > 0) {
-        h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">开盘啦概念</div><div class="np-card-badges" style="margin:0;">';
-        kplCpts.forEach(function(c) { h += '<span class="np-card-badge">' + c + '</span>'; });
-        h += '</div></div>';
-    } else if (conceptsJson) {
+    // 三个概念库与普通股票弹框使用同一顺序。
+    var thsCpts = detail.concepts || [];
+    if (!thsCpts.length && conceptsJson) {
         try {
-            var concepts = JSON.parse(conceptsJson);
-            if (concepts && concepts.length > 0) {
-                h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">同花顺概念</div><div class="np-card-badges" style="margin:0;">';
-                concepts.forEach(function(c) { h += '<span class="np-card-badge">' + highlightText(c, _npFilterKeyword) + '</span>'; });
-                h += '</div></div>';
-            }
+            thsCpts = JSON.parse(conceptsJson) || [];
         } catch(e) {}
     }
+    h += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">同花顺概念标签</div><div class="np-card-badges" style="margin:0;">';
+    if (thsCpts.length) thsCpts.forEach(function(c) { h += '<span class="np-card-badge">' + escapeHtml(c) + '</span>'; });
+    else h += '<span style="color:#888;font-size:0.85em;">暂无同花顺概念</span>';
+    h += '</div></div>';
+    h += _renderDcConcepts(detail, false);
+    h += _renderKphIndustryConcepts(detail, false);
     h += '</div>'; // close ds-card-detail-wrap
     return h;
 }
@@ -20992,7 +22416,7 @@ function loadThemeWind() {
         _cachedFetch(_trajLbUrl('tw')),
         _cachedFetch(_trajPlainUrl('tw')),
         _cachedFetch('/api/top_theme_trajectory?n=20'),
-        fetch('/api/review_summary?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
+        Promise.resolve(null), // Attention 独立加载，不阻塞题材风向首屏。
         fetch('/api/sector_ranking?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
         _loadThemeWindStrength(false),
         _kplLevelEnsureHotRank(),   // 热股 top100 R 标签数据（渲染前就绪，供各 chip 标 R1/R2/R50）
@@ -21000,7 +22424,6 @@ function loadThemeWind() {
         var lbTrajectory = results[0];
         var trajectory = results[1];
         var topTheme = results[2];
-        var reviewData = results[3];
         var sectorData = results[4];
         var twsData = results[5];
         // 题材地图会紧随本页完成后预加载，复用这份同源时间轴数据，避免再发一次重计算请求。
@@ -21066,16 +22489,26 @@ function loadThemeWind() {
         html += '<div id="twTodayTopicReviewBody">' + renderTodayThemeReview(twsData ? twsData.today_theme_review : null) + '</div>';
         html += '</div>';
 
-        // Section 5: 🧭 当前连板题材演化复盘（基准固定为最新交易日，不提供日期切换）
+        // Section 5: 注意力/预期机制（Attention Is All You Need）
         html += '<div class="rt-section lt-trajectory-section" id="twReviewSection">';
-        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ffd700;">\U0001F9ED 当前连板题材演化复盘 <span class="count-badge">最新交易日</span> <span class="rt-refresh-icon" onclick="manualRefreshReview(true)" title="刷新">\u21bb</span><button class="rt-auto-refresh-btn" id="reviewAutoBtn" onclick="toggleReviewAutoRefresh()">\u23f1 自动刷新 1分钟</button></h3>';
-        html += '<div id="twReviewBody">' + (reviewData ? renderReviewSummary(reviewData) : '<div class="lt-trajectory-loading">暂无复盘数据</div>') + '</div>';
+        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ffd700;">注意力/预期机制 <span class="count-badge">Attention Is All You Need · 近15个交易日</span> <span class="rt-refresh-icon" onclick="manualRefreshReview(true)" title="刷新">\u21bb</span><button class="rt-auto-refresh-btn" id="reviewAutoBtn" onclick="toggleReviewAutoRefresh()">\u23f1 自动刷新 1分钟</button></h3>';
+        html += '<section class="attn-methodology"><h4><span>FORMAL MODEL</span> 注意力（Attention） + 预期强度（expectation）</h4>' +
+            '<div class="attn-model-equations"><code>观察窗：W_t = {d_(t−14), …, d_t}</code>' +
+            '<code>题材全集：T_t = Themes(AL_t) ∪ Themes(AN_t) ∪ Themes(AR_t) = {T_1, T_2, …, T_n}</code>' +
+            '<code>跨概念强度：m_t(S_i) = |F(KPH_tags(S_i)) ∩ F(T_t)|；MK_t = {S_i : m_t(S_i) ≥ 2，S_i ∉ S(AL_t ∪ AN_t ∪ AR_t)，且非ST}</code>' +
+            '<code>强度序：R_t(S_i) = (C_i, −L_i, τ_i, −G_i, B_i)，按字典序升序；S_1 ≻ S_2 ≻ S_3 …</code></div>' +
+            '<div class="attn-model-tree"><b>日级观察结构 M_t</b><div>├─ 注意力分层：AL_t（Attention List）／AN_t（Attention New）／AR_t（Attention Rotation）</div>' +
+            '<div>├─ 题材节点：T_j → 成分股票集合 S(T_j) = {S_1, S_2, …}</div><div>└─ 跨题材交集：MK_t → S_i ↔ {T_j}，按 m_t(S_i) 降序</div></div>' +
+            '<p><b>变量：</b>C_i∈{0,1,2} 分别表示连板、首板/大涨观察、断板；L_i 为当日板数；τ_i 为首次封板时间；G_i 为创/科当日涨幅（仅大涨观察项参与）；B_i 为断板交易日数。相同板数按 τ_i 越早越强；断板按 B_i 越小越靠前。</p>' +
+            '<p class="attn-model-footnote">F 为主题族归并函数，同族近义/上下位标签只计1个概念（如地产链/房地产、锂电池/钠电池）；同时过滤 ST、*ST、S*ST。每个日期独立回放近15日状态；MK 使用本地开盘红 KPH 标签快照，展开时显示其数据基准日。历史日期的 MK 是该标签快照与当日关键词集的交叉映射，不代表历史成分股快照。</p></section>';
+        html += '<div id="twReviewBody"><div class="lt-trajectory-loading">AL / AN / AR 看板加载中...</div></div>';
         html += '</div></div>';
 
         container.innerHTML = html;
         _fillTrajDefaultDates('tw');
         updateTrajLbBadge('tw');
         initTabSidebarScroll('twSidebar', ['twWindStrengthSection','twLtTrajectoryLbSection','twLtTrajectorySection','twTopThemeSection','twTodayTopicReviewSection','twReviewSection']);
+        loadAttentionBoard(false);
         updateReviewNavSel();   // 导航渲染在 _reviewSelDate 赋值之前，需手动补选中态
         _twsStartPoll();        // 精选板块强度细分卡片 30s 实时行情轮询
         _themeWindLoaded = true;
@@ -23152,10 +24585,75 @@ function _auctionStock(item) {
     var board = item.prev_lianban >= 2 ? '昨' + item.prev_lianban + '板→今' + item.next_board + '板' : '首板';
     return '<span class="auction-stock" onclick="showEnlargedCardDetail(\\x27' + _auctionEscAttr(item.code) + '\\x27)" title="点击查看K线">' + _kplEsc(item.name) + '</span><em class="auction-board">' + board + '</em><b class="' + cls + '">' + pct + '</b>';
 }
+function _auctionDimensionStock(item, showThemes) {
+    item = item || {};
+    var pct = item.open_pct === null || item.open_pct === undefined ? '--' : (Number(item.open_pct) >= 0 ? '+' : '') + Number(item.open_pct).toFixed(2) + '%';
+    var pctCls = Number(item.open_pct) < 0 ? 'auction-dim-neg' : 'auction-dim-pos';
+    var themes = item.themes || item.tags || [];
+    var themeHtml = '';
+    if (showThemes && themes.length) themeHtml = '<span class="auction-dim-tags">[' + themes.map(function(t) {
+        return '<span class="auction-theme-link" onclick="event.stopPropagation();tmmSearchApply(\\x27' + _auctionEscAttr(t) + '\\x27)">' + _kplEsc(t) + '</span>';
+    }).join('、') + ']</span>';
+    return '<span class="auction-dim-stock"><span class="auction-stock" onclick="showEnlargedCardDetail(\\x27' + _auctionEscAttr(item.code) + '\\x27)" title="点击查看K线">' + _kplEsc(item.name || item.code) + '</span><span class="' + pctCls + '">' + pct + '</span>' + themeHtml + '</span>';
+}
 function _tmmRenderAuctionReport(report) {
     if (!report || !report.available) return '<div class="auction-report"><div class="auction-head">📋 竞价报告</div><div class="auction-empty">' + _kplEsc((report && report.message) || '交易日北京时间 9:25 自动生成并保存，9:29:20 自动复核') + '</div></div>';
-    var stage = report.stage === 'verified' ? '9:29:20 复核版' : '9:25 初版';
-    var h = '<section class="auction-report"><div class="auction-head">📋 竞价报告 <span class="auction-stage">' + stage + '</span><span class="auction-meta">' + _kplEsc(report.date || '') + ' · 一字 ' + Number(report.one_word_count || 0) + ' 只 · 已保存</span></div>';
+    var stage = report.complete === false ? '旧版存档 · 非原始快照生成'
+        : (report.stage === 'verified' ? '9:29:20 复核版' : '9:25 初版');
+    var integrityClass = report.complete === false ? ' incomplete' : '';
+    var integrityText = report.complete === false ? '⚠ 缺原始快照 · 不完整' : '✓ 全市场快照重建';
+    var h = '<section class="auction-report"><div class="auction-head">📋 竞价报告 <span class="auction-stage">' + stage + '</span><span class="auction-integrity' + integrityClass + '">' + integrityText + '</span><span class="auction-meta">' + _kplEsc(report.date || '') + ' · 一字 ' + Number(report.one_word_count || 0) + ' 只（去重）</span></div>';
+    var d = report.dimensions;
+    if (d) {
+        var ladder = d.yesterday_ladder || {};
+        var ladderStocks = ladder.stocks || [];
+        h += '<div class="auction-dimensions">';
+        h += '<section class="auction-dimension"><div class="auction-dimension-title"><span class="auction-dim-index">01</span> 昨日连板梯队 · ' + Number(ladder.count || ladderStocks.length) + ' 只</div>';
+        if (ladderStocks.length) {
+            h += '<div class="auction-dimension-grid">' + ladderStocks.map(function(x) {
+                var state = x.is_yizi ? '竞价一字' : (x.near_limit ? '接近涨停' : (Number(x.open_pct) < 0 ? '竞价低开' : '竞价表现'));
+                var p = Number(x.open_pct);
+                return '<div class="auction-dim-row"><span class="auction-dim-badge">昨' + Number(x.prev_lianban || 0) + '板</span><span class="auction-dim-badge">' + state + '</span>' + _auctionDimensionStock(x, true) + '</div>';
+            }).join('') + '</div>';
+        } else h += '<div class="auction-empty">无昨日2板及以上梯队股。</div>';
+        var firstBoard = ladder.first_board_watch || [], near = ladder.near_limit_watch || [];
+        if (firstBoard.length) h += '<div class="auction-line"><span class="auction-label">其他竞价一字</span>' + firstBoard.map(function(x){ return _auctionDimensionStock(x, true); }).join('、') + '</div>';
+        if (near.length) h += '<div class="auction-line"><span class="auction-label">接近涨停观察</span>' + near.map(function(x){ return _auctionDimensionStock(x, true); }).join('、') + '</div>';
+        h += '</section>';
+
+        var sectors = d.sector_top5 || [];
+        h += '<section class="auction-dimension"><div class="auction-dimension-title"><span class="auction-dim-index">02</span> 精选板块强度 · Top5</div>';
+        if (sectors.length) {
+            h += '<div class="auction-dimension-note">题材交叉为名称关联提示；未保存板块成分股代码截面，因此不标记为成分股确认。</div>';
+            h += '<div class="auction-dimension-grid">' + sectors.map(function(s) {
+                var links = (s.topic_matches || []).map(function(m) {
+                    var bs = (m.ladder || []).length, ys = (m.one_word || []).length, b = m.breadth || {};
+                    var avg = b.avg_open_pct == null ? '--' : (Number(b.avg_open_pct) >= 0 ? '+' : '') + Number(b.avg_open_pct).toFixed(2) + '%';
+                    return '<div class="auction-sector-themes">' + _kplEsc(m.theme) + '：一字 ' + ys + ' · 昨日梯队 ' + bs + ' · 近15日红开 ' + Number(b.positive || 0) + '/' + Number(b.sample || 0) + ' · 均开 ' + avg + '</div>';
+                }).join('');
+                var pct = Number(s.change_pct || 0);
+                return '<div class="auction-dim-row auction-sector-row"><span class="auction-sector-name">' + _kplEsc(s.name) + '</span> <b class="' + (pct >= 0 ? 'auction-dim-pos' : 'auction-dim-neg') + '">' + (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%</b>' + (links || '<div class="auction-sector-themes">已存报告无可确认的题材关联项</div>') + '</div>';
+            }).join('') + '</div>';
+        } else h += '<div class="auction-empty">无板块 Top5 数据。</div>';
+        h += '</section>';
+
+        var recentTopics = d.recent15_topics || [];
+        var recentStockCount = recentTopics.reduce(function(n, topic) { return n + (topic.stocks || []).length; }, 0);
+        h += '<details class="auction-recent15-expand"><summary>展开近15个交易日有涨停记录的细分题材股票 · ' + recentTopics.length + ' 个题材 / ' + recentStockCount + ' 条竞价</summary>';
+        if (recentTopics.length) {
+            h += '<div class="auction-breadth-grid">' + recentTopics.map(function(b) {
+                var avg = b.avg_open_pct == null ? '--' : (Number(b.avg_open_pct) >= 0 ? '+' : '') + Number(b.avg_open_pct).toFixed(2) + '%';
+                var pct = Number(b.sample) ? (Number(b.positive) / Number(b.sample) * 100).toFixed(0) : '0';
+                var stockDetails = b.stock_detail_available
+                    ? '<div class="auction-breadth-stocks">' + (b.stocks || []).map(function(x){ return _auctionDimensionStock(x, false); }).join('、') + '</div>'
+                    : '<div class="auction-empty">无可用竞价涨幅</div>';
+                return '<div class="auction-breadth-card"><strong>' + _kplEsc(b.theme) + '</strong>　近15日样本 ' + Number(b.sample) + ' 只 · 红开 ' + Number(b.positive) + '/' + Number(b.sample) + '（' + pct + '%） · 均开 <b class="' + (Number(b.avg_open_pct) >= 0 ? 'auction-dim-pos' : 'auction-dim-neg') + '">' + avg + '</b>' + stockDetails + '</div>';
+            }).join('') + '</div>';
+        } else h += '<div class="auction-empty">无近15个交易日细分题材涨停样本。</div>';
+        h += '</details>';
+        (d.data_notes || []).forEach(function(note){ h += '<div class="auction-dimension-note">ⓘ ' + _kplEsc(note) + '</div>'; });
+        return h + '</div></section>';
+    }
     var groups = report.groups || [];
     if (!groups.length) return h + '<div class="auction-empty">竞价强势股暂未形成可归类的细分题材；9:29:20 将自动复核。</div></section>';
     h += '<div class="auction-grid">';
@@ -23166,7 +24664,7 @@ function _tmmRenderAuctionReport(report) {
         if ((g.one_word || []).length) h += '<div class="auction-line"><span class="auction-label">一字</span>' + g.one_word.map(_auctionStock).join('、') + '</div>';
         if ((g.near_limit || []).length) h += '<div class="auction-line"><span class="auction-label">接近涨停</span>' + g.near_limit.map(_auctionStock).join('、') + '</div>';
         if ((g.weak_ladder || []).length) h += '<div class="auction-line"><span class="auction-label">连板低开</span>' + g.weak_ladder.map(_auctionStock).join('、') + '</div>';
-        if (b.sample) h += '<div class="auction-line auction-breadth">近20日涨停股竞价：' + b.positive + '/' + b.sample + ' 红开 · 强势 ' + b.strong + ' · 均开 ' + (b.avg_open_pct >= 0 ? '+' : '') + b.avg_open_pct + '%</div>';
+        if (b.sample) h += '<div class="auction-line auction-breadth">近15日涨停股竞价：' + b.positive + '/' + b.sample + ' 红开 · 强势 ' + b.strong + ' · 均开 ' + (b.avg_open_pct >= 0 ? '+' : '') + b.avg_open_pct + '%</div>';
         if ((g.sector_matches || []).length) h += '<div class="auction-line auction-sector">板块Top5交叉：' + g.sector_matches.map(function(s){ return _kplEsc(s.name) + ' ' + (s.change_pct >= 0 ? '+' : '') + s.change_pct + '%'; }).join('、') + '</div>';
         h += '</div>';
     });
@@ -23182,7 +24680,7 @@ var ROW_H = 24;   // 时间轴每行 chip 高度（px），lane 高度 = 该 lan
 // MAB 概念标签渲染：M=板块(金, p=1) / A·B=理由·简述(青, p=0)，去泛概念去重后由后端给出
 // canJump=true 时板块标签→板块树、理由标签→题材卡（跳转）；mapSearch=true 时
 // 盯盘时间轴的全部题材标签（板块 + 细分）均改为驱动下方搜索栏。
-function _twsMabChips(mab, jumpPlate, canJump, mapSearch) {
+function _twsMabChips(mab, jumpPlate, canJump, mapSearch, searchMode) {
     if (!mab || !mab.length) return '';
     var h = '';
     for (var i = 0; i < mab.length; i++) {
@@ -23192,14 +24690,16 @@ function _twsMabChips(mab, jumpPlate, canJump, mapSearch) {
         var cls = 'tws-mab-tag' + (it.p ? ' tws-mab-plate' : '');
         var js = '', attrs = '';
         if (mapSearch) {
-            js = ' onclick="event.stopPropagation();tmmTimelineSearchTheme(this)"';
+            js = searchMode === 'cls' ? ' onclick="event.stopPropagation();_clsSearchTimelineStock(this.parentElement)"'
+                : ' onclick="event.stopPropagation();tmmTimelineSearchTheme(this)"';
             attrs = ' data-tmm-search-theme="' + _kplEsc(t) + '"';
         } else if (canJump) {
             js = ' onclick="event.stopPropagation();_twsJumpToTheme(this)"';
             if (it.p) attrs = ' data-jump-plate="' + _kplEsc(t) + '" data-jump-theme=""';
             else attrs = ' data-jump-plate="' + _kplEsc(jumpPlate || '') + '" data-jump-theme="' + _kplEsc(t) + '"';
         }
-        var hint = mapSearch ? '（点击在下方盯盘搜索）' : (canJump ? '（点击跳转：板块目录 或 KPL涨停深挖）' : '');
+        var hint = searchMode === 'cls' ? '（点击按股票名称与题材标签检索电报）'
+            : (mapSearch ? '（点击在下方盯盘搜索）' : (canJump ? '（点击跳转：板块目录 或 KPL涨停深挖）' : ''));
         h += '<span class="' + cls + '"' + attrs + js + ' title="' + (it.p ? '板块：' : '题材：') + _kplEsc(t) + hint + '">' + _kplEsc(t) + '</span>';
     }
     return h;
@@ -23210,21 +24710,29 @@ function _twsHotBadge(code) {
     var r = window._thsHotCodes && window._thsHotCodes[code];
     return r ? '<span class="tws-hot-badge">R' + r + '</span>' : '';
 }
-function _twsTlChip(it, leftPct, stackTop, mapSearch) {
+function _twsTlChip(it, leftPct, stackTop, mapSearch, searchMode) {
     var tm = it.minute == null || it.minute >= 9999 ? '--:--' : _twsTlFmt(it.minute);
     var cls = 'tws-tl-chip';
     var badge = '';
     if (it.type === 'ladder') { cls += ' tws-tl-ladder'; badge = '<span class="tws-tl-badge">' + it.lianban + '连板</span>'; }
     else if (it.type === 'restart') { cls += ' tws-tl-restart'; badge = '<span class="tws-tl-badge">重启</span>'; }
-    var mabHtml = (it.mab && it.mab.length) ? _twsMabChips(it.mab, it.plate || '', true, mapSearch)
+    var mabHtml = (it.mab && it.mab.length) ? _twsMabChips(it.mab, it.plate || '', true, mapSearch, searchMode)
         : (it.theme ? (mapSearch
-            ? '<span class="tws-tl-theme" data-tmm-search-theme="' + _kplEsc(it.theme) + '" onclick="event.stopPropagation();tmmTimelineSearchTheme(this)" title="点击在下方盯盘搜索">' + _kplEsc(it.theme) + '</span>'
+            ? '<span class="tws-tl-theme" data-tmm-search-theme="' + _kplEsc(it.theme) + '" onclick="event.stopPropagation();' + (searchMode === 'cls' ? '_clsSearchTimelineStock(this.parentElement)' : 'tmmTimelineSearchTheme(this)') + '" title="' + (searchMode === 'cls' ? '按股票名称与题材标签检索电报' : '点击在下方盯盘搜索') + '">' + _kplEsc(it.theme) + '</span>'
             : '<span class="tws-tl-theme" data-jump-plate="' + _kplEsc(it.plate || '') + '" data-jump-theme="' + _kplEsc(it.theme) + '" onclick="event.stopPropagation();_twsJumpToTheme(this)" title="点击跳转：下方板块-题材（含强度） 或 KPL涨停深挖">' + _kplEsc(it.theme) + '</span>') : '');
-    return '<span class="' + cls + '" style="left:' + leftPct.toFixed(2) + '%;top:' + (stackTop * ROW_H) + 'px" data-code="' + it.code + '" data-name="' + (it.name || '').replace(/'/g, '') + '" onclick="_twsSumOpenStock(this)" title="' + tm + ' ' + (it.name || '') + ' ' + (it.theme || '') + '">' + badge + '<b class="tws-tl-tm">' + tm + '</b><span class="tws-tl-name">' + _kplEsc(it.name) + '</span>' + _twsHotBadge(it.code) + mabHtml + '</span>';
+    var clickTerms = searchMode === 'cls' && Array.isArray(it.search_terms) ? it.search_terms.slice()
+        : [it.name || '', it.plate || '', it.theme || ''];
+    if (!(searchMode === 'cls' && Array.isArray(it.search_terms))) {
+        (it.mab || []).forEach(function(tag) { clickTerms.push((tag || {}).t || ''); });
+    }
+    clickTerms = clickTerms.map(function(term) { return String(term || '').trim(); }).filter(function(term, index, all) { return term && all.indexOf(term) === index; });
+    var searchAttrs = searchMode === 'cls' ? ' data-cls-terms="' + encodeURIComponent(clickTerms.join('|')) + '"' : '';
+    var clickAction = searchMode === 'cls' ? '_clsSearchTimelineStock(this)' : '_twsSumOpenStock(this)';
+    return '<span class="' + cls + '" style="left:' + leftPct.toFixed(2) + '%;top:' + (stackTop * ROW_H) + 'px" data-code="' + it.code + '" data-name="' + (it.name || '').replace(/'/g, '') + '"' + searchAttrs + ' onclick="' + clickAction + '" title="' + tm + ' ' + (it.name || '') + ' ' + (it.theme || '') + (searchMode === 'cls' ? '（点击检索相关电报）' : '') + '">' + badge + '<b class="tws-tl-tm">' + tm + '</b><span class="tws-tl-name">' + _kplEsc(it.name) + '</span>' + _twsHotBadge(it.code) + mabHtml + '</span>';
 }
-function _twsRenderTimeline(twsData, boxId) {
+function _twsRenderTimeline(twsData, boxId, searchMode) {
     boxId = boxId || 'twTimelineBox';
-    var mapSearch = boxId === 'tmmTimelineBox';
+    var mapSearch = boxId === 'tmmTimelineBox' || searchMode === 'cls';
     var AXIS_START = 25;   // 轴起点 = 距9:00分钟数（9:25）：A股9:25集合竞价后才产生涨停，9:00~9:25无数据，轴从9:25开始
     var AXIS_LEN = 360 - AXIS_START;   // 轴总长 = 9:25~15:00 = 335 分钟（minute 基准仍为距9:00，展示起点=25）
     var tl = (twsData && twsData.timeline) || [];
@@ -23297,7 +24805,7 @@ function _twsRenderTimeline(twsData, boxId) {
             var leftPct = g.minute >= 9999 ? 98.5 : ((Math.max(g.minute, AXIS_START) - AXIS_START) / AXIS_LEN * 100);
             g.items.sort(function(a, b2) { return (b2.lianban || 0) - (a.lianban || 0) || a.name.localeCompare(b2.name); });
             for (var q = 0; q < g.items.length; q++) {
-                h += _twsTlChip(g.items[q], leftPct, q, mapSearch);
+                h += _twsTlChip(g.items[q], leftPct, q, mapSearch, searchMode);
             }
         }
         h += '</div>';
@@ -23516,10 +25024,13 @@ function _msThemeSearchAttr(themeName) {
     return ' onclick="event.stopPropagation();jumpToKplSearch(\\x27' + String(themeName || '').replace(/'/g, '') + '\\x27)" title="点击跳转题材复盘搜索"';
 }
 
-function _msRenderThemePyramidCard(idx, theme, dates) {
-    var pos = _msThemeDateIdx[idx];
+function _msRenderThemePyramidCard(idx, theme, dates, scope) {
+    var isLinkage = scope === 'linkage';
+    var datePositions = isLinkage ? _msLinkageThemeDateIdx : _msThemeDateIdx;
+    var pos = datePositions[idx];
     if (pos === undefined || pos < 0 || pos >= dates.length) pos = 0;
-    return '<section class="ms-tp-card" id="msThemePyrCard-' + idx + '">' + _msRenderThemePyramidInner(idx, theme, dates, pos) + '</section>';
+    var cardId = (isLinkage ? 'msLinkageThemePyrCard-' : 'msThemePyrCard-') + idx;
+    return '<section class="ms-tp-card" id="' + cardId + '">' + _msRenderThemePyramidInner(idx, theme, dates, pos, scope) + '</section>';
 }
 
 function _msRecent10NameHtml(stock) {
@@ -23714,7 +25225,7 @@ function _msSelectEvolution10(date) {
     if (next) section.replaceWith(next);
 }
 
-function _msRenderThemePyramidInner(idx, theme, dates, pos) {
+function _msRenderThemePyramidInner(idx, theme, dates, pos, scope) {
     var date = dates[pos] || '';
     var stocks = theme.stocks || [];
     var themeKlineKey = _msPrepareThemeKline(theme, dates, pos, 20, 'pyramid');
@@ -23785,7 +25296,8 @@ function _msRenderThemePyramidInner(idx, theme, dates, pos) {
             climaxMarks += '<span class="ms-tp-climax-mark" style="left:' + climaxLeft.toFixed(2) + '%" title="' + _kplEsc(dates[cmi]) + '"></span>';
         }
     }
-    h += '<div class="ms-tp-slider-row"><span>最新</span><div class="ms-tp-slider-track">' + climaxMarks + '<input type="range" min="0" max="' + Math.max(0, dates.length - 1) + '" value="' + sliderPos + '" oninput="_msThemeSlide(' + idx + ',this.value)"></div><span>' + _kplEsc((dates[dates.length - 1] || '').slice(5)) + '</span></div>';
+    var scopeArg = scope === 'linkage' ? ',\\x27linkage\\x27' : '';
+    h += '<div class="ms-tp-slider-row"><span>最新</span><div class="ms-tp-slider-track">' + climaxMarks + '<input type="range" min="0" max="' + Math.max(0, dates.length - 1) + '" value="' + sliderPos + '" oninput="_msThemeSlide(' + idx + ',this.value' + scopeArg + ')"></div><span>' + _kplEsc((dates[dates.length - 1] || '').slice(5)) + '</span></div>';
     h += '<div class="ms-tp-sides-head"><span>当日晋级</span><span>历史断板 / 足迹</span></div>';
     h += '<div class="ms-tp-body"><div class="ms-tp-pyramid">';
     for (var lv = maxLevel; lv >= 0; lv--) {
@@ -23837,15 +25349,23 @@ function _msRenderThemePyramidInner(idx, theme, dates, pos) {
     return h;
 }
 
-function _msThemeSlide(idx, raw) {
-    if (!_msData) return;
-    var pyramids = _msData.theme_pyramids || [];
-    var dates = (_msData.dates || []).slice().sort(function(a, b) { return String(b).localeCompare(String(a)); });
+function _msThemeSlide(idx, raw, scope) {
+    var isLinkage = scope === 'linkage';
+    var data = isLinkage ? _ladderLinkageData : _msData;
+    if (!data) return;
+    var pyramids = data.theme_pyramids || [];
+    var dates = (data.dates || []).slice().sort(function(a, b) { return String(b).localeCompare(String(a)); });
     var theme = pyramids[idx];
     if (!theme || !dates.length) return;
-    _msThemeDateIdx[idx] = Math.max(0, Math.min(dates.length - 1, Number(raw) || 0));
-    var card = document.getElementById('msThemePyrCard-' + idx);
-    if (card) card.innerHTML = _msRenderThemePyramidInner(idx, theme, dates, _msThemeDateIdx[idx]);
+    var datePositions = isLinkage ? _msLinkageThemeDateIdx : _msThemeDateIdx;
+    datePositions[idx] = Math.max(0, Math.min(dates.length - 1, Number(raw) || 0));
+    var card = document.getElementById((isLinkage ? 'msLinkageThemePyrCard-' : 'msThemePyrCard-') + idx);
+    if (!card) return;
+    // 两个页面可后台并行加载，不能让市场结构的全局模式覆盖连板联动卡片的展示口径。
+    var previousMode = _msLinkageMode;
+    _msLinkageMode = isLinkage;
+    card.innerHTML = _msRenderThemePyramidInner(idx, theme, dates, datePositions[idx], scope);
+    _msLinkageMode = previousMode;
 }
 
 function _msSummaryCell(theme, dates, idx) {
@@ -24230,6 +25750,9 @@ function _msRender() {
 var _linkageLadderHistory = [];
 var _linkageLadderIndex = 0;
 var _linkageLadderPending = false;
+var _linkageSelectedDate = ''; // 近15日总控当前选中的交易日，驱动下方全部连板联动卡片
+var _ladderLinkageData = null; // 连板联动独立数据源，不能与市场结构后台预加载共用 _msData
+var _msLinkageThemeDateIdx = {}; // 连板联动卡片独立回放位置，避免与市场结构同序号卡片冲突
 function _linkageLadderRows(history) {
     var maxLevel = 0, hasFirst = false;
     (history || []).forEach(function(snapshot) {
@@ -24246,37 +25769,67 @@ function _renderLinkage15DayLadder() {
         : '<div class="empty">暂无近15个交易日连板天梯数据</div>';
     _linkageLadderIndex = Math.max(0, Math.min(history.length - 1, _linkageLadderIndex));
     var snapshot = history[_linkageLadderIndex] || {};
-    var latestDate = (history[0] || {}).date || '';
-    var oldestDate = (history[history.length - 1] || {}).date || '';
     var rows = _linkageLadderRows(history);
     var h = '<section class="ms-linkage-15day"><div class="ms-sec-head">📈 近15日连板天梯 <span class="ms-date-note">左侧最新 · 向右回看历史</span></div>';
     h += '<div class="ms-linkage-history-head"><div class="ms-linkage-history-date"><b>' + _kplEsc(snapshot.date || '') + '</b><small>第' + (_linkageLadderIndex + 1) + ' / ' + history.length + '个交易日</small></div><span class="ms-linkage-history-state">' + (_linkageLadderIndex === 0 ? '最新' : '历史回看') + '</span></div>';
     h += '<div class="ms-linkage-history-body" style="--linkage-ladder-rows:' + rows + '">' + _twsRenderLadder(snapshot) + '</div>';
-    h += '<div class="ms-linkage-history-slider"><span>' + _kplEsc(latestDate) + '</span><input aria-label="近15日连板天梯日期" type="range" min="0" max="' + (history.length - 1) + '" value="' + _linkageLadderIndex + '" oninput="_linkageSlideLadder(this.value)"><span>' + _kplEsc(oldestDate) + '</span></div>';
-    h += '<div class="ms-linkage-history-ticks" style="--linkage-history-count:' + history.length + '" aria-label="近15个交易日日期刻度">';
+    h += '<div class="ms-linkage-history-slider"><div class="ms-linkage-history-rail"><input aria-label="近15日连板天梯日期" type="range" min="0" max="' + (history.length - 1) + '" value="' + _linkageLadderIndex + '" oninput="_linkageSlideLadder(this.value)">';
+    h += '<div class="ms-linkage-history-ticks" aria-label="近15个交易日日期刻度">';
     for (var ti = 0; ti < history.length; ti++) {
         var tickDate = String((history[ti] || {}).date || '');
         var tickLabel = tickDate.length >= 10 ? tickDate.slice(5) : tickDate;
-        h += '<button type="button" class="ms-linkage-history-tick' + (ti === _linkageLadderIndex ? ' active' : '') + '" onclick="_linkageSlideLadder(' + ti + ')" title="查看 ' + _kplEsc(tickDate) + '">' + _kplEsc(tickLabel) + '</button>';
+        // range 滑块的 14px 圆点中心在两端各内缩 7px；日期刻度使用同一几何基准，确保逐点对齐。
+        var tickRatio = history.length <= 1 ? 0.5 : (ti / (history.length - 1));
+        var tickPos = 'calc(' + (tickRatio * 100).toFixed(4) + '% + ' + ((0.5 - tickRatio) * 14).toFixed(3) + 'px)';
+        h += '<button type="button" class="ms-linkage-history-tick' + (ti === _linkageLadderIndex ? ' active' : '') + '" style="--linkage-history-pos:' + tickPos + '" onclick="_linkageSlideLadder(' + ti + ')" title="查看 ' + _kplEsc(tickDate) + '">' + _kplEsc(tickLabel) + '</button>';
     }
-    h += '</div></section>';
+    h += '</div></div></div></section>';
     return h;
 }
 function _linkageSlideLadder(raw) {
-    _linkageLadderIndex = Number(raw) || 0;
-    var box = document.getElementById('linkage15DayLadder');
-    if (box) box.innerHTML = _renderLinkage15DayLadder();
+    var history = _linkageLadderHistory || [];
+    _linkageLadderIndex = Math.max(0, Math.min(Math.max(0, history.length - 1), Number(raw) || 0));
+    _linkageSelectedDate = String((history[_linkageLadderIndex] || {}).date || '');
+    // 日期控件是连板联动的全局回放入口：上方天梯、下方题材卡片与15日演化必须是同一天，
+    // 不能只替换天梯局部而让卡片继续停在首次加载的最新日期。
+    var container = document.getElementById('ladderLinkageContainer');
+    if (container && _ladderLinkageData) container.innerHTML = _msRenderLadderLinkage(_ladderLinkageData);
 }
 
 function _msRenderLadderLinkage(data) {
     _msData = data;
+    _ladderLinkageData = data;
     _msLinkageMode = true;
     _msRecentEvolutionWindow = 15;
     _linkageLadderPending = !!data.ladder_history_pending;
     var dates = (data.dates || []).slice().sort(function(a, b) { return String(b).localeCompare(String(a)); });
     var pyramids = data.theme_pyramids || [];
     _linkageLadderHistory = data.ladder_history || [];
-    _linkageLadderIndex = 0;
+    var selectedHistoryIndex = -1;
+    for (var hi = 0; hi < _linkageLadderHistory.length; hi++) {
+        if (String((_linkageLadderHistory[hi] || {}).date || '') === String(_linkageSelectedDate || '')) {
+            selectedHistoryIndex = hi;
+            break;
+        }
+    }
+    _linkageLadderIndex = selectedHistoryIndex >= 0 ? selectedHistoryIndex : 0;
+    _linkageSelectedDate = String((_linkageLadderHistory[_linkageLadderIndex] || {}).date || dates[0] || '');
+    var selectedCardIndex = dates.indexOf(_linkageSelectedDate);
+    if (selectedCardIndex < 0) {
+        var selectedDateKey = String(_linkageSelectedDate || '').replace(/[^0-9]/g, '');
+        for (var di = 0; di < dates.length; di++) {
+            if (String(dates[di] || '').replace(/[^0-9]/g, '') === selectedDateKey) {
+                selectedCardIndex = di;
+                break;
+            }
+        }
+    }
+    if (selectedCardIndex < 0) selectedCardIndex = 0;
+    // 历史日期从上方总控切换时，所有下方题材卡片同步落到同一交易日；
+    // 卡片内部滑块仍可在此基础上单独回看。
+    _msLinkageThemeDateIdx = {};
+    for (var pi = 0; pi < pyramids.length; pi++) _msLinkageThemeDateIdx[pi] = selectedCardIndex;
+    _msEvolutionDate = dates[selectedCardIndex] || '';
     var h = '<div class="ms-linkage-page"><div id="linkage15DayLadder">' + _renderLinkage15DayLadder() + '</div><div class="ms-sec-head">🔗 连板联动 <span class="ms-date-note">近100日细分题材标签 · 近15日演化</span></div>';
     if (!pyramids.length) h += '<div class="empty">暂无连板联动数据</div>';
     else {
@@ -24289,7 +25842,7 @@ function _msRenderLadderLinkage(data) {
         for (var i = 0; i < pyramids.length; i++) {
             var pagePyramid = pyramids[i];
             if (!pagePyramid) continue;
-            h += '<section class="ms-linkage-card" id="msLinkagePyrCard-' + i + '">' + _msRenderThemePyramidCard(i, pagePyramid, dates) + '</section>';
+            h += '<section class="ms-linkage-card" id="msLinkagePyrCard-' + i + '">' + _msRenderThemePyramidCard(i, pagePyramid, dates, 'linkage') + '</section>';
         }
         h += '</div>';
         h += _msRenderEvolution10(pyramids, dates);
@@ -25988,6 +27541,356 @@ function renderReviewSummary(data) {
     return h;
 }
 
+var _attentionDayCache = {};
+var _attentionTopicData = {};
+var _attentionTopicSeq = 0;
+var _attentionArchive = null;
+function _attentionEsc(value) { return _kplEsc(String(value == null ? '' : value)); }
+function _attentionTime(value) {
+    var n = Number(value);
+    if (!isFinite(n) || n < 90000 || n > 153000) return '';
+    var s = String(Math.floor(n)).padStart(6, '0');
+    return s.slice(0, 2) + ':' + s.slice(2, 4);
+}
+function _attentionPct(value) {
+    if (value === null || value === undefined || value === '') return '';
+    var n = Number(value);
+    if (!isFinite(n)) return '';
+    return '<small class="attn-pct ' + (n > 0 ? 'up' : (n < 0 ? 'down' : '')) + '">' +
+        (n > 0 ? '+' : '') + n.toFixed(2) + '%</small>';
+}
+function attentionOpenStock(el) {
+    var code = el.getAttribute('data-code') || '';
+    var name = el.getAttribute('data-name') || code;
+    if (!code) return;
+    var row = el.closest('.attn-topic-row');
+    var chips = row ? row.querySelectorAll('.attn-stock') : [];
+    var list = [], index = 0;
+    for (var i = 0; i < chips.length; i++) {
+        var item = {code: chips[i].getAttribute('data-code'), name: chips[i].getAttribute('data-name')};
+        if (item.code === code) index = list.length;
+        list.push(item);
+    }
+    openDsStockFromRhythm(name, code, '', list, index);
+}
+function attentionOpenTopic(el) { jumpToKplSearch(el.getAttribute('data-theme') || ''); }
+function _attentionStockChip(stock) {
+    var broken = stock.status === 'broken';
+    var css = (broken ? 'broken' : (stock.is_big_gain ? 'big-gain' : (stock.level === 1 ? 'first' : ''))) +
+        (Number(stock.display_level || 0) > 5 ? ' five-plus' : '');
+    var level = stock.is_big_gain ? '大涨' :
+        (stock.is_break1 || stock.is_break_n ? (stock.last_event_type === 'big_gain' ? '大涨后' :
+        (Number(stock.last_level || 0) >= 2 ? '曾' + Number(stock.last_level) + '板' : '')) :
+        (broken ? '曾' + (stock.last_level || stock.display_level || 1) + '板' :
+        (stock.level === 1 ? '首板' : stock.level + '板')));
+    var time = _attentionTime(broken ? stock.last_first_time : stock.first_time);
+    var type = stock.seal_type === '一字板' ? '<i class="attn-marker yizi">一字</i>' :
+        (stock.seal_type === '直线板' ? '<i class="attn-marker straight">直线</i>' : '');
+    var priorPeak = Number(stock.prior_peak_level || 0);
+    var previous = (!broken && Number(stock.level || 0) >= 2 && priorPeak > Number(stock.level || 0))
+        ? '<i class="attn-marker previous">曾' + priorPeak + '板（上次多板）</i>' : '';
+    var gap = broken ? '<small class="attn-gap">+' + _attentionEsc(stock.break_days || 0) + '</small>' : '';
+    var board = '<i class="attn-marker board-' + (stock.board === '创' ? 'gem' : (stock.board === '科' ? 'star' : 'main')) + '">' +
+        _attentionEsc(stock.board || '主') + '</i>';
+    var gain = stock.is_big_gain ? '<i class="attn-marker gain">+' + _attentionEsc(Number(stock.change_pct || 0).toFixed(2)) + '%</i>' : '';
+    return '<button type="button" class="attn-stock ' + css + '" data-code="' + _attentionEsc(stock.code) +
+        '" data-name="' + _attentionEsc(stock.name) + '" onclick="attentionOpenStock(this)" title="查看股票K线">' +
+        '<b>' + _attentionEsc(stock.name) + '</b>' + (level ? '<small>' + _attentionEsc(level) + '</small>' : '') + board + gain + gap +
+            previous + type + (time ? '<small>' + time + '</small>' : '') + _attentionPct(stock.change_pct) +
+        (Number(stock.strength_rank || 0) > 0 ? '<i class="attn-strength">S' + _attentionEsc(stock.strength_rank) + '</i>' : '') + '</button>';
+}
+function _attentionHistory(topic) {
+    var id = 'at' + (++_attentionTopicSeq);
+    _attentionTopicData[id] = topic;
+    return '<details class="attn-topic-detail" data-topic-id="' + id + '" ontoggle="attentionToggleTopic(this)"><summary>近15日轨迹 · ' +
+        (topic.stocks || []).length + '只股票</summary><div class="attn-detail-body"></div></details>';
+}
+function attentionToggleTopic(el) {
+    if (!el.open || el.getAttribute('data-loaded') === '1') return;
+    var topic = _attentionTopicData[el.getAttribute('data-topic-id')];
+    if (!topic) return;
+    var h = '';
+    (topic.stocks || []).forEach(function(stock) {
+        h += '<div class="attn-detail-stock"><strong>' + _attentionEsc(stock.name) + '</strong> ' + _attentionEsc(stock.code);
+        var tags = stock.tags || [];
+        if (tags.length) h += '<div>标签：' + tags.map(_attentionEsc).join(' · ') + '</div>';
+        (stock.events || []).forEach(function(ev) {
+            h += '<div><em>' + _attentionEsc(ev.date.slice(5)) + '</em> · ' +
+                (ev.event_type === 'big_gain' ? '大涨' + _attentionPct(ev.change_pct) : _attentionEsc(ev.level) + '板') +
+                (_attentionTime(ev.first_time) ? ' · ' + _attentionTime(ev.first_time) : '') +
+                (ev.event_type === 'big_gain' || !_attentionPct(ev.change_pct) ? '' : ' · ' + _attentionPct(ev.change_pct)) +
+                (ev.cumulative_pct == null ? '' : ' · 累计' + _attentionPct(ev.cumulative_pct)) + '</div>';
+        });
+        if (stock.status === 'broken') h += '<div>距上次事件 +' + _attentionEsc(stock.break_days) + '个交易日' +
+            (_attentionPct(stock.change_pct) ? ' · 当日' + _attentionPct(stock.change_pct) : '') + '</div>';
+        h += '</div>';
+    });
+    var body = el.querySelector('.attn-detail-body');
+    if (body) body.innerHTML = h;
+    el.setAttribute('data-loaded', '1');
+}
+function _attentionMkStock(stock) {
+    var board = stock.board === '创' ? '创' : (stock.board === '科' ? '科' : '主');
+    var concepts = (stock.matched_concepts || []).join('|');
+    var tags = (stock.matched_keywords || []).map(function(keyword) {
+        return '<i class="attn-mk-keyword">' + _attentionEsc(keyword) + '</i>';
+    }).join('');
+    return '<button type="button" class="attn-mk-stock" data-code="' + _attentionEsc(stock.code) +
+        '" data-name="' + _attentionEsc(stock.name) + '" data-mk-concepts="' + _attentionEsc(concepts) + '" onclick="attentionOpenStock(this)" title="查看股票K线">' +
+        '<span class="attn-mk-stock-head"><b>' + _attentionEsc(stock.name) + '</b><small>' + _attentionEsc(stock.code) +
+        '</small><i>' + board + '</i><em>交集 ×' + _attentionEsc(stock.match_count) + '</em></span>' +
+        '<span class="attn-mk-tags">' + tags + '</span></button>';
+}
+function attentionMkApplyFilter(panel) {
+    if (!panel) return;
+    var selected = panel._mkSelectedConcepts || new Set();
+    var shown = 0;
+    var cards = panel.querySelectorAll('.attn-mk-stock');
+    Array.prototype.forEach.call(cards, function(card) {
+        var concepts = (card.getAttribute('data-mk-concepts') || '').split('|').filter(Boolean);
+        var visible = !selected.size || Array.from(selected).every(function(concept) { return concepts.indexOf(concept) >= 0; });
+        card.hidden = !visible;
+        if (visible) shown++;
+    });
+    var count = panel.querySelector('.attn-mk-visible-count');
+    if (count) count.textContent = selected.size ? '筛选结果 ' + shown + ' / ' + cards.length + ' 只' : '显示全部 ' + cards.length + ' 只';
+    var options = panel.querySelectorAll('.attn-mk-keyword-option');
+    Array.prototype.forEach.call(options, function(option) {
+        var concept = option.getAttribute('data-concept') || '';
+        var active = selected.has(concept);
+        var possible = false;
+        if (concept) {
+            var prospective = new Set(selected);
+            prospective.add(concept);
+            possible = Array.prototype.some.call(cards, function(card) {
+                var cardConcepts = (card.getAttribute('data-mk-concepts') || '').split('|').filter(Boolean);
+                return Array.from(prospective).every(function(required) { return cardConcepts.indexOf(required) >= 0; });
+            });
+        }
+        option.disabled = !active && !possible;
+        option.setAttribute('aria-disabled', option.disabled ? 'true' : 'false');
+        option.classList.toggle('is-active', active);
+        option.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+}
+function attentionMkToggleKeyword(button) {
+    var panel = button && button.closest('.attn-mk-panel');
+    var concept = button && button.getAttribute('data-concept');
+    if (!panel || !concept || button.disabled) return;
+    if (!panel._mkSelectedConcepts) panel._mkSelectedConcepts = new Set();
+    if (panel._mkSelectedConcepts.has(concept)) panel._mkSelectedConcepts.delete(concept);
+    else panel._mkSelectedConcepts.add(concept);
+    attentionMkApplyFilter(panel);
+}
+function attentionMkClearFilter(button) {
+    var panel = button && button.closest('.attn-mk-panel');
+    if (!panel) return;
+    panel._mkSelectedConcepts = new Set();
+    attentionMkApplyFilter(panel);
+}
+function attentionToggleMk(el) {
+    if (!el.open || el.getAttribute('data-loaded') === '1' || el.getAttribute('data-loading') === '1') return;
+    var date = el.getAttribute('data-date') || '';
+    var body = el.querySelector('.attn-mk-body');
+    if (!body) return;
+    el.setAttribute('data-loading', '1');
+    body.innerHTML = '<div class="attn-empty">正在匹配开盘红题材标签...</div>';
+    fetch('/api/attention_mk?date=' + encodeURIComponent(date), {cache:'no-store'})
+        .then(function(response) { if (!response.ok) throw Error('HTTP ' + response.status); return response.json(); })
+        .then(function(result) {
+            if (!result || result.error) throw Error((result || {}).error || '交集数据为空');
+            el._mkSelectedConcepts = new Set();
+            var h = '<div class="attn-mk-meta"><span>关键词集合 ' + _attentionEsc(result.keyword_count || 0) + ' 个 · 跨概念命中 ' +
+                _attentionEsc(result.match_count || 0) + ' 只 · ' + _attentionEsc(result.source || '开盘红 KPH') +
+                ' 标签快照 ' + _attentionEsc(result.source_as_of || '未知日期') + '</span><span class="attn-mk-visible-count">显示全部 ' +
+                _attentionEsc(result.match_count || 0) + ' 只</span></div>';
+            h += '<div class="attn-mk-filter"><div class="attn-mk-filter-head"><b>参与匹配的题材关键词</b><small>多选取交集；无交集的关键词自动置灰</small>' +
+                '<button type="button" class="attn-mk-filter-clear" onclick="attentionMkClearFilter(this)">清除筛选</button></div><div class="attn-mk-keywords">' +
+                (result.keywords || []).map(function(keyword) {
+                    var concept = (result.keyword_concepts || {})[keyword] || keyword;
+                    return '<button type="button" class="attn-mk-keyword-option" data-concept="' + _attentionEsc(concept) +
+                        '" aria-pressed="false" onclick="attentionMkToggleKeyword(this)" title="筛选概念族：' + _attentionEsc(concept) + '">' +
+                        _attentionEsc(keyword) + '</button>';
+                }).join('') + '</div></div>';
+            if (!result.matches || !result.matches.length) h += '<div class="attn-empty">暂无同时命中两个及以上独立概念的非ST股票</div>';
+            else h += '<div class="attn-mk-list">' + result.matches.map(_attentionMkStock).join('') + '</div>';
+            body.innerHTML = h;
+            attentionMkApplyFilter(el);
+            el.setAttribute('data-loaded', '1');
+        })
+        .catch(function(error) { body.innerHTML = '<div class="attn-empty">MK 加载失败：' + _attentionEsc(error.message) + '</div>'; })
+        .finally(function() { el.removeAttribute('data-loading'); });
+}
+function attentionJumpTopic(el) {
+    var target = document.getElementById(el.getAttribute('data-target') || '');
+    if (!target) return;
+    target.scrollIntoView({behavior:'smooth', block:'center', inline:'nearest'});
+    target.classList.add('attn-jump-highlight');
+    setTimeout(function() { target.classList.remove('attn-jump-highlight'); }, 1500);
+}
+function attentionNavigate(date, kind) {
+    var days = document.querySelectorAll('#twReviewBody .attn-day');
+    var day = null;
+    for (var i = 0; i < days.length; i++) if (days[i].getAttribute('data-date') === date) { day = days[i]; break; }
+    if (!day) return;
+    if (!day.open) day.open = true;
+    var content = day.querySelector('.attn-day-content');
+    if (content && _attentionDayCache[date] && !content.innerHTML) content.innerHTML = _attentionDayContent(_attentionDayCache[date]);
+    if (content && !content.innerHTML) attentionToggleDay(day);
+    var attempts = 0;
+    (function seek() {
+        var target = kind ? document.getElementById('attn-category-' + date + '-' + kind) : day;
+        if (target) {
+            target.scrollIntoView({behavior:'smooth', block:'start', inline:'nearest'});
+            target.classList.add('attn-jump-highlight');
+            setTimeout(function() { target.classList.remove('attn-jump-highlight'); }, 1500);
+        } else if (++attempts < 60) setTimeout(seek, 100);
+    })();
+}
+function attentionNavigateFromButton(el) {
+    attentionNavigate(el.getAttribute('data-date') || '', el.getAttribute('data-kind') || '');
+}
+function _attentionCategory(kind, topics, date) {
+    var desc = {AL:'已出现2板+，持续留痕', AN:'新题材及未匹配AL/AR的大涨股', AR:'不同股票轮流首板、未出现1进2'};
+    var fullName = {AL:'Attention List', AN:'Attention New', AR:'Attention Rotation'};
+    var h = '<section class="attn-category" id="attn-category-' + _attentionEsc(date) + '-' + kind + '" data-kind="' + kind + '"><div class="attn-category-head"><b>' + kind +
+        '</b><small>' + fullName[kind] + ' · ' + desc[kind] + ' · ' + topics.length + '个题材</small></div>';
+    if (topics.length) {
+        h += '<nav class="attn-keywords" aria-label="' + kind + '题材快速定位">';
+        topics.forEach(function(topic, index) {
+            h += '<button type="button" class="attn-keyword" data-target="attn-theme-' + _attentionEsc(date) + '-' + kind + '-' + index + '" onclick="attentionJumpTopic(this)">' +
+                _attentionEsc(topic.theme) + '</button>';
+        });
+        h += '</nav>';
+    }
+    if (!topics.length) return h + '<div class="attn-empty">无</div></section>';
+    var columns = ['b5plus','b5','b4','b3','b2','b1','break1','breakN'];
+    h += '<div class="attn-axis-scroll"><table class="attn-axis"><thead><tr><th>细分题材</th>';
+    h += '<th>5+板</th><th>5板</th><th>4板</th><th>3板</th><th>2板</th><th>首板 / 大涨</th><th>断板 +1</th><th>断板 +N</th></tr></thead><tbody>';
+    topics.forEach(function(topic) {
+        var activeCells = {}, inactiveCells = {};
+        columns.forEach(function(col) { activeCells[col] = []; inactiveCells[col] = []; });
+        (topic.stocks || []).forEach(function(stock) {
+            var shownLevel = Number(stock.display_level || 0);
+            var col = shownLevel > 5 ? 'b5plus' : (shownLevel >= 2 ? 'b' + shownLevel :
+                (stock.status === 'limit' || stock.status === 'big_gain' ? 'b1' :
+                (stock.is_break1 ? 'break1' : (stock.is_break_n ? 'breakN' : ''))));
+            if (activeCells[col]) {
+                if (stock.status === 'limit' || stock.status === 'big_gain') activeCells[col].push(stock);
+                else if (stock.status === 'broken') inactiveCells[col].push(stock);
+            }
+        });
+        var hasInactive = columns.some(function(col) { return inactiveCells[col].length > 0; });
+        var detailRows = hasInactive ? 3 : 1;
+        h += '<tr class="attn-topic-row" id="attn-theme-' + _attentionEsc(date) + '-' + kind + '-' + topics.indexOf(topic) + '"><td rowspan="' + detailRows + '"><button type="button" class="attn-topic" data-theme="' +
+            _attentionEsc(topic.theme) + '" onclick="attentionOpenTopic(this)">' + _attentionEsc(topic.theme) + '</button>' +
+            '<span class="attn-topic-sub">' + (Number(topic.current_max_level || 0) > 0 ? '当日最高 ' + _attentionEsc(topic.current_max_level) + '板 · ' : '') +
+            _attentionEsc(topic.current_limit_count || 0) + '只涨停' + (Number(topic.current_big_gain_count || 0) ? ' · ' + _attentionEsc(topic.current_big_gain_count) + '只创/科大涨' : '') + '</span>' +
+            '<span class="attn-guidance">' + _attentionEsc(topic.guidance || '') + '</span>' +
+            '<span class="attn-methods"><span class="attn-methods-label">操作手法：</span><span class="attn-method">做高</span><span class="attn-method">做低</span><span class="attn-method">切换</span><span class="attn-method">套利</span><span class="attn-method">谨慎中位</span></span></td>';
+        columns.forEach(function(col) {
+            h += '<td><div class="attn-cell-active">' + activeCells[col].map(_attentionStockChip).join('') + '</div></td>';
+        });
+        h += '</tr>';
+        if (hasInactive) {
+            // 横跨全部板数列的一条分隔线，确保首板至5+板的上下区间始终对齐。
+            h += '<tr class="attn-divider-row"><td colspan="' + columns.length + '"><div class="attn-cell-divider"><span>当日未涨停 · 历史断板 / 足迹</span></div></td></tr>';
+            h += '<tr class="attn-inactive-row">';
+            columns.forEach(function(col) {
+                h += '<td><div class="attn-cell-inactive">' + inactiveCells[col].map(_attentionStockChip).join('') + '</div></td>';
+            });
+            h += '</tr>';
+        }
+        h += '<tr><td colspan="' + (columns.length + 1) + '">' + _attentionHistory(topic) + '</td></tr>';
+    });
+    h += '</tbody></table></div></section>';
+    return h;
+}
+function _attentionDayContent(board) {
+    if (!board) return '<div class="attn-empty">正在载入当日快照...</div>';
+    var h = '<div class="attn-note">同层按首次封板时间排序；创/科日涨幅超过10%的大涨股并入首板列并标注涨幅，次日回落后转入断板轨迹；单板断板保留在 +1 / +N 列，多板断板留在对应板数层。点击股票看K线，点击题材进入题材复盘。</div>';
+    h += _attentionCategory('AL', board.al || [], board.date || '');
+    h += _attentionCategory('AN', board.an || [], board.date || '');
+    h += _attentionCategory('AR', board.ar || [], board.date || '');
+    h += '<details class="attn-mk-panel" id="attn-category-' + _attentionEsc(board.date || '') + '-MK" data-date="' + _attentionEsc(board.date || '') + '" ontoggle="attentionToggleMk(this)">' +
+        '<summary><b>MK</b><span>Multiple Keywords · 跨概念交集</span><small>展开匹配</small></summary>' +
+        '<div class="attn-mk-body"><div class="attn-empty">展开后按本日 AL / AN / AR 关键词集合进行匹配</div></div></details>';
+    return h;
+}
+function renderAttentionBoard(archive, opened) {
+    if (!archive || !archive.days || !archive.days.length) return '<div class="attn-empty">暂无近15个交易日的涨停数据</div>';
+    _attentionTopicData = {};
+    _attentionTopicSeq = 0;
+    var h = '<div class="attn-layout"><nav class="attn-sidebar" aria-label="日期与分类快速导航"><div class="attn-sidebar-title">日期导航</div>';
+    archive.days.forEach(function(day) {
+        var counts = day.counts || {};
+        h += '<div class="attn-side-day"><button type="button" class="attn-side-date" data-date="' + _attentionEsc(day.date) + '" data-kind="" onclick="attentionNavigateFromButton(this)">' +
+            _attentionEsc(day.date) + '</button><div class="attn-side-kinds">';
+        ['AL','AN','AR'].forEach(function(kind) {
+            h += '<button type="button" data-date="' + _attentionEsc(day.date) + '" data-kind="' + kind + '" onclick="attentionNavigateFromButton(this)">' + kind + ' <small>' +
+                Number(counts[kind.toLowerCase()] || 0) + '</small></button>';
+        });
+        h += '</div></div>';
+    });
+    h += '</nav><div class="attn-board">';
+    archive.days.forEach(function(day, index) {
+        var board = day.board || _attentionDayCache[day.date];
+        if (board) _attentionDayCache[day.date] = board;
+        var isOpen = opened && Object.prototype.hasOwnProperty.call(opened, day.date) ? !!opened[day.date] : index < 3;
+        var counts = day.counts || {};
+        h += '<details class="attn-day" data-date="' + _attentionEsc(day.date) + '"' + (isOpen ? ' open' : '') +
+            ' ontoggle="attentionToggleDay(this)"><summary class="attn-day-head"><span class="attn-day-date">' + _attentionEsc(day.date) +
+            '</span><span class="attn-day-count">AL ' + (counts.al || 0) + '</span><span class="attn-day-count">AN ' +
+            (counts.an || 0) + '</span><span class="attn-day-count">AR ' + (counts.ar || 0) +
+            '</span><span class="attn-day-source">' + _attentionEsc(day.source || '') + '</span></summary>' +
+            '<div class="attn-day-content">' + (isOpen ? _attentionDayContent(board) : '') + '</div></details>';
+    });
+    return h + '</div></div>';
+}
+function attentionToggleDay(el) {
+    if (!el.open) return;
+    var date = el.getAttribute('data-date');
+    var content = el.querySelector('.attn-day-content');
+    if (!content) return;
+    if (_attentionDayCache[date]) {
+        if (!content.innerHTML) content.innerHTML = _attentionDayContent(_attentionDayCache[date]);
+        return;
+    }
+    if (el.getAttribute('data-loading') === '1') return;
+    el.setAttribute('data-loading', '1');
+    content.innerHTML = '<div class="attn-empty">载入 ' + _attentionEsc(date) + '...</div>';
+    fetch('/api/attention_board?date=' + encodeURIComponent(date))
+        .then(function(r) { if (!r.ok) throw Error('HTTP ' + r.status); return r.json(); })
+        .then(function(snapshot) {
+            if (!snapshot || !snapshot.board) throw Error((snapshot || {}).error || '快照为空');
+            _attentionDayCache[date] = snapshot.board;
+            if (el.open) content.innerHTML = _attentionDayContent(snapshot.board);
+        })
+        .catch(function(err) { if (el.open) content.innerHTML = '<div class="attn-empty">加载失败：' + _attentionEsc(err.message) + '</div>'; })
+        .finally(function() { el.removeAttribute('data-loading'); });
+}
+function loadAttentionBoard(force) {
+    var body = document.getElementById('twReviewBody');
+    if (!body) return;
+    var prior = body.querySelectorAll('.attn-day');
+    var opened = null;
+    if (prior.length) {
+        opened = {};
+        for (var i = 0; i < prior.length; i++) opened[prior[i].getAttribute('data-date')] = prior[i].open;
+    }
+    if (force) body.innerHTML = '<div class="lt-trajectory-loading">正在更新 AL / AN / AR...</div>';
+    fetch('/api/attention_board' + (force ? '?no_cache=1' : ''))
+        .then(function(r) { if (!r.ok) throw Error('HTTP ' + r.status); return r.json(); })
+        .then(function(data) {
+            if (!document.getElementById('twReviewBody')) return;
+            _attentionArchive = data;
+            if (data && data.days) data.days.forEach(function(day) { if (day.board) _attentionDayCache[day.date] = day.board; });
+            body.innerHTML = renderAttentionBoard(data, opened);
+        })
+        .catch(function(err) { body.innerHTML = '<div class="attn-empty">看板加载失败：' + _attentionEsc(err.message) +
+            ' <button type="button" onclick="loadAttentionBoard(true)">重试</button></div>'; });
+}
+
 function _rteRenderThemeEvolutions(themes) {
     if (!themes || !themes.length) return '<div class="rs-empty">近20个交易日暂无出现 2 板以上股票的细分题材</div>';
     var h = '<div class="rte-list">';
@@ -26422,17 +28325,7 @@ function rsOpenStock(el) {
 }
 
 function manualRefreshReview(force) {
-    var body = document.getElementById('twReviewBody');
-    if (!body) return;
-    body.innerHTML = '<div class="lt-trajectory-loading">\u5237\u65b0\u4e2d...</div>';
-    var url = '/api/review_summary?_t=' + Date.now();
-    if (force) url += '&no_cache=1';
-    fetch(url)
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            body.innerHTML = data ? renderReviewSummary(data) : '<div class="lt-trajectory-loading">\u6682\u65e0\u590d\u76d8\u6570\u636e</div>';
-        })
-        .catch(function() { body.innerHTML = '<div class="lt-trajectory-loading">\u52a0\u8f7d\u5931\u8d25</div>'; });
+    loadAttentionBoard(!!force);
 }
 
 // 复盘自动刷新（复刻 toggleThemeTreeAutoRefresh 模式）
@@ -27181,36 +29074,6 @@ switchTab('kpllevel');
     }
     setTimeout(_startHighFrequencyTabs, 120);
 })();
-// 从 localStorage 恢复舆情自动刷新状态（跨页面持久化）
-(function() {
-    var state = _emtLoadRefreshState();
-    if (state) {
-        _emtRefreshActive = true;
-        _emtRefreshIntervalMin = state.intervalMin;
-        _emtRefreshRemaining = state.remaining;
-        if (_emtRefreshRemaining <= 0) {
-            _emtRefreshRemaining = _emtRefreshIntervalMin * 60;
-            emtRefreshPosts();
-        }
-        _emtRefreshTimer = setInterval(function() {
-            _emtRefreshRemaining--;
-            if (_emtRefreshRemaining <= 0) {
-                _emtRefreshRemaining = _emtRefreshIntervalMin * 60;
-                emtRefreshPosts();
-            }
-            emtUpdateCountdownDisplay();
-            _emtSaveRefreshState();
-        }, 1000);
-    }
-    // 同步间隔到服务端（确保后台守护线程有最新配置）
-    if (state && state.active && state.intervalMin > 0) {
-        fetch('/api/sentiment_bg_config', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({intervalMin: state.intervalMin})
-        }).catch(function(){});
-    }
-})();
 _prefetchAllTabs();
 _loadKplDataEager();
 // 产业链、精准狙击只在用户进入对应页签时加载，避免手机首屏无感知抢占资源。
@@ -27703,20 +29566,55 @@ function deepSearchShowStock(name, ts_code, concept) {
             body.innerHTML = '<div class="empty">数据加载失败</div>';
         });
 }
+function _renderKphIndustryConcepts(data, compact) {
+    var concepts = (data && data.kph_industry_concepts) || [];
+    var date = (data && data.kph_industry_as_of) || '';
+    var title = '开盘红行业 / 概念标签' + (date ? ' · ' + date : '');
+    var html = compact
+        ? '<div class="sq-concepts" style="margin-top:8px;"><div class="sq-concepts-label">' + title + '</div><div>'
+        : '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">' + title + '</div><div class="np-card-badges" style="margin:0;">';
+    if (concepts.length) {
+        concepts.forEach(function(c) {
+            html += '<span class="stock-detail-tag" style="background:#fff3e0;color:#a45100;border-color:#f1c27d;">' + escapeHtml(c) + '</span>';
+        });
+    } else {
+        html += '<span style="color:#888;font-size:0.85em;">暂无开盘红行业标签</span>';
+    }
+    return html + '</div></div>';
+}
+
+function _renderDcConcepts(data, compact) {
+    var concepts = (data && data.dc_concepts) || [];
+    var updated = (data && data.dc_concepts_updated_at) || '';
+    var date = updated ? updated.slice(0, 10) : '';
+    var title = '东财概念标签' + (date ? ' · ' + date : '');
+    var html = compact
+        ? '<div class="sq-concepts" style="margin-top:8px;"><div class="sq-concepts-label">' + title + '</div><div>'
+        : '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">' + title + '</div><div class="np-card-badges" style="margin:0;">';
+    if (concepts.length) {
+        concepts.forEach(function(c) {
+            html += '<span class="stock-detail-tag" style="background:#e8f5e9;color:#24733b;border-color:#a5d6a7;">' + escapeHtml(c) + '</span>';
+        });
+    } else {
+        html += '<span style="color:#888;font-size:0.85em;">暂无东财概念</span>';
+    }
+    return html + '</div></div>';
+}
+
 function renderStockDetail(data, name, code) {
     var body = document.getElementById('dsStockModalBody');
     var html = '';
     var hasConcept = data.concept && data.concept.length > 0;
-    // Row 1: KPL概念标签（替换同花顺）
-    html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">\u5f00\u76d8\u5566\u6982\u5ff5\u6807\u7b7e</div><div>';
-    if (data.kpl_concepts && data.kpl_concepts.length > 0) {
-        data.kpl_concepts.forEach(function(c) {
-            html += '<span class="stock-detail-tag" style="cursor:pointer;" onclick="doKplSearch(\\x27' + c.replace(/'/g, '') + '\\x27)">' + c + '</span>';
-        });
+    // 三套独立标签库：同花顺、东财、开盘红；涨停记录中的KPL字段不混入概念库。
+    html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">同花顺概念标签</div><div class="np-card-badges" style="margin:0;">';
+    if (data.concepts && data.concepts.length) {
+        data.concepts.forEach(function(c) { html += '<span class="stock-detail-tag">' + escapeHtml(c) + '</span>'; });
     } else {
-        html += '<span style="color:#666;font-size:0.85em;">\u6682\u65e0\u6982\u5ff5\u6807\u7b7e</span>';
+        html += '<span style="color:#888;font-size:0.85em;">暂无同花顺概念</span>';
     }
     html += '</div></div>';
+    html += _renderDcConcepts(data, false);
+    html += _renderKphIndustryConcepts(data, false);
     // Row 2: KPL涨停记录（替换涨停理由）
     var kplRec = data.kpl_records || [];
     html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">KPL\u6da8\u505c\u8bb0\u5f55\uff08\u5171' + kplRec.length + '\u6761\uff09</div>';
@@ -31262,7 +33160,7 @@ function kplSearchShowStock(name, code) {
 function renderKplStockDetail(data, name, code) {
     var body = document.getElementById('dsStockModalBody');
     var html = '';
-    // Row 1: 概念标签（同花顺）
+    // Row 1: 同花顺概念库
     html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">\u540c\u82b1\u987a\u6982\u5ff5\u6807\u7b7e</div><div>';
     if (data.ths_concepts && data.ths_concepts.length > 0) {
         data.ths_concepts.forEach(function(c) {
@@ -31272,16 +33170,8 @@ function renderKplStockDetail(data, name, code) {
         html += '<span style="color:#666;font-size:0.85em;">\u6682\u65e0\u6982\u5ff5\u6807\u7b7e</span>';
     }
     html += '</div></div>';
-    // Row 2: KPL概念标签
-    html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">KPL\u6982\u5ff5\u6807\u7b7e</div><div>';
-    if (data.concepts && data.concepts.length > 0) {
-        data.concepts.forEach(function(c) {
-            html += '<span class="stock-detail-tag" style="background:#fff3e0;color:#e65100;cursor:pointer;" onclick="doKplSearch(\\x27' + c.replace(/'/g, '') + '\\x27)">' + c + '</span>';
-        });
-    } else {
-        html += '<span style="color:#666;font-size:0.85em;">\u6682\u65e0KPL\u6982\u5ff5</span>';
-    }
-    html += '</div></div>';
+    html += _renderDcConcepts(data, false);
+    html += _renderKphIndustryConcepts(data, false);
     // Row 3: 历史涨停记录
     var records = data.records || [];
     html += '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">\u5386\u53f2\u6da8\u505c\u8bb0\u5f55\uff08\u5171' + records.length + '\u6761\uff09</div>';
@@ -34662,16 +36552,15 @@ function stockQueryFetch(code) {
 }
 function renderStockQueryPage(data, code, name) {
     var h = '<div class="sq-header"><h2>' + (name || '') + ' ' + _watchStarHtml(code, name, _watchGetCategory(code)) + '</h2><span class="sq-code">' + code + '</span></div>';
-    // KPL概念标签（替换同花顺）
-    h += '<div class="sq-concepts"><div class="sq-concepts-label">\u5f00\u76d8\u5566\u6982\u5ff5\u6807\u7b7e</div><div>';
-    if (data.kpl_concepts && data.kpl_concepts.length > 0) {
-        data.kpl_concepts.forEach(function(c) {
-            h += '<span class="stock-detail-tag" style="background:#2a3f5f;border-color:#4a6f9f;cursor:pointer;" onclick="doKplSearch(\\x27' + c.replace(/'/g, '') + '\\x27)">' + c + '</span>';
-        });
+    h += '<div class="sq-concepts"><div class="sq-concepts-label">同花顺概念标签</div><div>';
+    if (data.concepts && data.concepts.length) {
+        data.concepts.forEach(function(c) { h += '<span class="stock-detail-tag">' + escapeHtml(c) + '</span>'; });
     } else {
-        h += '<span style="color:#666;font-size:0.85em;">暂无概念标签</span>';
+        h += '<span style="color:#888;font-size:0.85em;">暂无同花顺概念</span>';
     }
     h += '</div></div>';
+    h += _renderDcConcepts(data, true);
+    h += _renderKphIndustryConcepts(data, true);
     // KPL涨停记录（替换同花顺涨停理由）
     h += '<div class="sq-section"><div class="sq-section-title">KPL涨停记录</div>';
     h += '<div style="max-height:300px;overflow-y:auto;">';
@@ -36555,6 +38444,485 @@ function emtToggleStockKline() {
     }
 }
 
+// 舆情监控重构：仅按日期查看财联社电报原文。
+var _clsTelegraphByDate = {};
+var _clsSelectedDate = '';
+var _clsTelegraphRequestSeq = 0;
+var _clsRangeStart = '';
+var _clsRangeEnd = '';
+var _clsRangePreset = 7;
+var _clsSearchResults = null;
+var _clsSearchLoading = false;
+var _clsSearchSeq = 0;
+var _clsKeywordQuery = '';
+var _clsTopicNames = [];
+var _clsTopicNamesLoading = false;
+var _clsPendingTopicSelection = null;
+var _clsSelectedTopic = '';
+var _clsSyncStatus = null;
+var _clsSyncTimer = null;
+var _clsDateRefreshTimers = {};
+var _clsAllExpanded = false;
+var _clsAllLoadingDate = '';
+var _clsTodayTimelineData = null;
+var _clsTimelineTimer = null;
+var _clsTimelineLoading = false;
+var _clsTimelineRequestSeq = 0;
+var _clsTimelineSearchActive = false;
+function loadSentimentData() {
+    var container = document.getElementById('sentimentContainer');
+    if (!container) return;
+    _clsLoadTelegraphExtras();
+    _clsFetchTodayTimeline();
+    if (_clsTimelineTimer === null) {
+        _clsTimelineTimer = setInterval(function() {
+            if (currentTab === 'sentiment' && !document.hidden) _clsFetchTodayTimeline();
+        }, 60000);
+    }
+    if (_clsSelectedDate && _clsTelegraphByDate[_clsSelectedDate]) {
+        _clsRenderTelegraph(_clsTelegraphByDate[_clsSelectedDate]);
+        return;
+    }
+    _clsFetchTelegraph(_clsSelectedDate, false);
+}
+function _clsLoadTelegraphExtras() {
+    _clsRefreshTelegraphSync();
+    if (_clsSyncTimer === null) {
+        _clsSyncTimer = setInterval(_clsRefreshTelegraphSync, 12000);
+    }
+    if (_clsTopicNamesLoading || _clsTopicNames.length) return;
+    if (window._ladderLinkageData && Array.isArray(window._ladderLinkageData.theme_pyramids)) {
+        _clsSetTopicNames(window._ladderLinkageData.theme_pyramids);
+        return;
+    }
+    _clsTopicNamesLoading = true;
+    fetch('/api/ladder_linkage?summary=1', {cache:'no-store'}).then(function(r) { return r.json(); }).then(function(data) {
+        if (data && !data.error) _clsSetTopicNames(data.theme_pyramids || []);
+    }).catch(function() {}).finally(function() { _clsTopicNamesLoading = false; });
+}
+function _clsSetTopicNames(pyramids) {
+    var seen = {};
+    _clsTopicNames = (pyramids || []).map(function(item) { return String((item || {}).theme || '').trim(); }).filter(function(name) {
+        if (!name || seen[name]) return false;
+        seen[name] = true;
+        return true;
+    });
+    _clsRenderTopicPicker();
+    if (_clsPendingTopicSelection !== null) {
+        var pendingSelection = _clsPendingTopicSelection;
+        _clsPendingTopicSelection = null;
+        _clsSetAllTopicKeywords(pendingSelection);
+    }
+}
+function _clsRefreshTelegraphSync() {
+    fetch('/api/cls_telegraph_sync', {cache:'no-store'}).then(function(r) { return r.json(); }).then(function(status) {
+        _clsSyncStatus = status || null;
+        var pill = document.getElementById('clsSyncPill');
+        if (!pill || !_clsSyncStatus) return;
+        var cachedCount = (_clsSyncStatus.cached_dates || []).length;
+        var total = Number(_clsSyncStatus.total) || 0;
+        var progress = total ? ' · 回填 ' + (_clsSyncStatus.completed || 0) + '/' + total : '';
+        pill.innerHTML = '<i class="cls-sync-dot"></i>' + (_clsSyncStatus.active ? '本地缓存更新中 ' + cachedCount + ' 日' + progress : '本地已缓存 ' + cachedCount + ' 日');
+    }).catch(function() {});
+}
+function _clsTodayTimelineInner(data) {
+    data = data || {};
+    var timeline = Array.isArray(data.timeline) ? data.timeline : [];
+    var rendered = timeline.length ? _twsRenderTimeline(data, 'clsTimelineBox', 'cls') : '';
+    if (!rendered) {
+        var emptyMessage = data.message || (_clsTimelineLoading ? '正在加载今日涨停时间轴…' : '当前暂无可用的涨停时间轴数据');
+        rendered = '<div class="tws-tl-box"><div class="tws-summary-sec-head">⏱ 今日涨停时间轴（9:25~15:00）</div><div class="cls-timeline-empty">' + escapeHtml(emptyMessage) + '</div></div>';
+    }
+    var status = data.retrying ? '实时数据暂未到达，正在重试'
+        : (data.data_prior ? '最近交易日 ' + (data.date || '')
+            : (data.trading ? '盘中实时' : '最近交易日 ' + (data.date || '')));
+    return '<div class="cls-items">' + rendered + '<div class="cls-timeline-meta"><span>' + escapeHtml(status) + '</span><span>' + timeline.length + ' 只</span></div></div>';
+}
+function _clsRenderTodayTimeline(data) {
+    var section = document.getElementById('clsTodayTimelineSection');
+    if (!section) return;
+    section.innerHTML = _clsTodayTimelineInner(data);
+    initTabSidebarScroll('clsSidebar', ['clsDateNavigation','clsKeywordControls','clsTodayTimelineSection','clsImportantSection','clsCompanySection','clsAllSection']);
+}
+function _clsFetchTodayTimeline() {
+    if (_clsTimelineLoading) return;
+    _clsTimelineLoading = true;
+    var requestSeq = ++_clsTimelineRequestSeq;
+    fetch('/api/today_zt_timeline', {cache:'no-store'}).then(function(response) { return response.json(); }).then(function(data) {
+        if (requestSeq !== _clsTimelineRequestSeq || !data || data.error) return;
+        _clsTodayTimelineData = data;
+        _clsRenderTodayTimeline(data);
+    }).catch(function(error) {
+        if (requestSeq !== _clsTimelineRequestSeq) return;
+        if (!_clsTodayTimelineData) _clsTodayTimelineData = {timeline:[], message:'涨停时间轴加载失败：' + String(error.message || error)};
+        _clsRenderTodayTimeline(_clsTodayTimelineData);
+    }).finally(function() { if (requestSeq === _clsTimelineRequestSeq) _clsTimelineLoading = false; });
+}
+function _clsDateShift(dateText, offset) {
+    var date = new Date((dateText || new Date().toISOString().slice(0, 10)) + 'T12:00:00');
+    date.setDate(date.getDate() + offset);
+    return date.toISOString().slice(0, 10);
+}
+function _clsClampDate(dateText, minDate, maxDate) {
+    if (minDate && dateText < minDate) return minDate;
+    if (maxDate && dateText > maxDate) return maxDate;
+    return dateText;
+}
+function _clsInitRange(data) {
+    var minDate = data.min_date || '';
+    var maxDate = data.max_date || data.date || '';
+    if (!maxDate) return;
+    if (!_clsRangeEnd) _clsRangeEnd = maxDate;
+    _clsRangeEnd = _clsClampDate(_clsRangeEnd, minDate, maxDate);
+    if (!_clsRangeStart) _clsRangeStart = _clsClampDate(_clsDateShift(_clsRangeEnd, -6), minDate, maxDate);
+    _clsRangeStart = _clsClampDate(_clsRangeStart, minDate, _clsRangeEnd);
+}
+function _clsSetRangeDays(days) {
+    _clsRangePreset = Number(days) || 7;
+    var status = _clsSyncStatus || {};
+    var endDate = status.max_date || _clsRangeEnd || _clsSelectedDate;
+    if (!endDate) return;
+    _clsRangeEnd = endDate;
+    _clsRangeStart = _clsClampDate(_clsDateShift(endDate, -_clsRangePreset + 1), status.min_date || '', endDate);
+    _clsSearchResults = null;
+    if (_clsSelectedDate < _clsRangeStart || _clsSelectedDate > _clsRangeEnd) _clsDateChanged(_clsRangeEnd);
+    else _clsRenderTelegraph(_clsTelegraphByDate[_clsSelectedDate] || {date:_clsSelectedDate,sections:{},min_date:status.min_date,max_date:status.max_date});
+}
+function _clsRangeChanged(which, value) {
+    var status = _clsSyncStatus || {};
+    if (which === 'start') _clsRangeStart = _clsClampDate(value, status.min_date || '', _clsRangeEnd || status.max_date || value);
+    else _clsRangeEnd = _clsClampDate(value, _clsRangeStart || status.min_date || value, status.max_date || value);
+    _clsRangePreset = 0;
+    _clsSearchResults = null;
+    if (_clsSelectedDate < _clsRangeStart || _clsSelectedDate > _clsRangeEnd) _clsDateChanged(_clsRangeEnd);
+    else _clsRenderTelegraph(_clsTelegraphByDate[_clsSelectedDate] || {date:_clsSelectedDate,sections:{},min_date:status.min_date,max_date:status.max_date});
+}
+function _clsFetchTelegraph(dateText, force) {
+    var container = document.getElementById('sentimentContainer');
+    if (!container) return;
+    _clsSelectedDate = dateText || '';
+    var requestSeq = ++_clsTelegraphRequestSeq;
+    var order = ['important', 'company', 'all'];
+    var data = dateText ? (_clsTelegraphByDate[dateText] || null) : null;
+    if (data && !force) {
+        _clsRenderTelegraph(data);
+        if (data.refreshing) _clsPollTelegraphCache(dateText, requestSeq, 0, '');
+        return;
+    }
+    if (!data) {
+        data = {date: dateText || '', min_date: '', max_date: '', cached: false, sections: {}};
+        order.forEach(function(key) { data.sections[key] = {label: key === 'important' ? '重要消息' : (key === 'company' ? '公司公告' : '全部电报'), items: [], loading: true}; });
+    }
+    if (force) {
+        data.cached = false;
+        order.forEach(function(key) { data.sections[key] = {label: key === 'important' ? '重要消息' : (key === 'company' ? '公司公告' : '全部电报'), items: [], loading: true}; });
+    } else {
+        order.forEach(function(key) {
+            var section = data.sections[key];
+            if (!section || section.error || (section.loading && force)) {
+                data.sections[key] = {label: key === 'important' ? '重要消息' : (key === 'company' ? '公司公告' : '全部电报'), items: [], loading: true};
+            }
+        });
+    }
+    _clsTelegraphByDate[data.date || dateText || '_today'] = data;
+    _clsRenderTelegraph(data);
+    var url = '/api/cls_telegraph?cache_only=1' + (dateText ? '&date=' + encodeURIComponent(dateText) : '') + (force ? '&refresh=1' : '');
+    fetch(url, {cache:'no-store'}).then(function(response) { return response.json(); }).then(function(result) {
+        if (requestSeq !== _clsTelegraphRequestSeq) return;
+        if (result && result.error) throw new Error(result.error);
+        result.sections = result.sections || {};
+        order.forEach(function(key) {
+            if (!result.sections[key]) result.sections[key] = {label:key === 'important' ? '重要消息' : (key === 'company' ? '公司公告' : '全部电报'), items:[], error:'本地暂无该分类数据'};
+        });
+        _clsSelectedDate = result.date;
+        _clsTelegraphByDate[result.date] = result;
+        _clsRenderTelegraph(result);
+        if (result.refreshing) _clsPollTelegraphCache(result.date, requestSeq, 0, '');
+    }).catch(function(error) {
+        if (requestSeq !== _clsTelegraphRequestSeq) return;
+        var failed = _clsTelegraphByDate[dateText || '_today'] || data;
+        failed.date = dateText || failed.date || '';
+        failed.sections = failed.sections || {};
+        order.forEach(function(key) { failed.sections[key] = failed.sections[key] || {label:key,items:[],error:String(error.message || error)}; });
+        failed.refreshing = false;
+        _clsTelegraphByDate[failed.date || '_today'] = failed;
+        _clsRenderTelegraph(failed);
+    });
+}
+function _clsPollTelegraphCache(dateText, requestSeq, attempt, category) {
+    if (!dateText || attempt >= (category === 'all' ? 120 : 15)) return;
+    var timerKey = dateText + ':' + (category || 'primary');
+    clearTimeout(_clsDateRefreshTimers[timerKey]);
+    _clsDateRefreshTimers[timerKey] = setTimeout(function() {
+        if (requestSeq !== _clsTelegraphRequestSeq || _clsSelectedDate !== dateText) return;
+        var url = '/api/cls_telegraph?cache_only=1&date=' + encodeURIComponent(dateText) + (category ? '&category=' + encodeURIComponent(category) : '');
+        fetch(url, {cache:'no-store'})
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (requestSeq !== _clsTelegraphRequestSeq || !data || data.error) return;
+                _clsTelegraphByDate[dateText] = data;
+                _clsRenderTelegraph(data);
+                if (data.refreshing) _clsPollTelegraphCache(dateText, requestSeq, attempt + 1, category);
+            }).catch(function() {});
+    }, 2500);
+}
+function _clsLoadTelegraphSection(dateText, category, force, requestSeq) {
+    var params = [];
+    if (dateText) params.push('date=' + encodeURIComponent(dateText));
+    params.push('category=' + encodeURIComponent(category));
+    params.push('cache_only=1');
+    if (force) params.push('refresh=1');
+    fetch('/api/cls_telegraph?' + params.join('&')).then(function(response) { return response.json(); }).then(function(result) {
+        if (requestSeq !== _clsTelegraphRequestSeq) return;
+        if (result && result.error) throw new Error(result.error);
+        _clsSelectedDate = result.date;
+        var data = _clsTelegraphByDate[result.date] || result;
+        data.date = result.date; data.min_date = result.min_date; data.max_date = result.max_date;
+        data.cached = data.cached && result.cached;
+        data.sections = data.sections || {};
+        data.sections[category] = (result.sections || {})[category] || {label: category, items: [], error: '接口未返回此分类'};
+        _clsTelegraphByDate[result.date] = data;
+        if (category === 'all') {
+            _clsAllLoadingDate = '';
+            data.refreshing = result.refreshing;
+            if (result.refreshing) _clsPollTelegraphCache(result.date, requestSeq, 0, 'all');
+        }
+        // 首次请求由服务端确定北京时间日期；只启动必要的两个基础分类，不预取全部电报。
+        if (!dateText && category === 'important') {
+            ['company'].forEach(function(key) {
+                data.sections[key] = {label: '公司公告', items: [], loading: true};
+                _clsLoadTelegraphSection(result.date, key, force, requestSeq);
+            });
+        }
+        _clsRenderTelegraph(data);
+    }).catch(function(error) {
+        if (requestSeq !== _clsTelegraphRequestSeq) return;
+        if (category === 'all') _clsAllLoadingDate = '';
+        var selected = _clsSelectedDate || dateText || '_today';
+        var data = _clsTelegraphByDate[selected] || {date: dateText || '', sections: {}};
+        data.sections[category] = {label: category, items: [], error: String(error.message || error)};
+        _clsTelegraphByDate[selected] = data;
+        _clsRenderTelegraph(data);
+    });
+}
+function _clsAllTelegraphToggle(details) {
+    _clsAllExpanded = !!(details && details.open);
+    var dateText = _clsSelectedDate || ((_clsSyncStatus || {}).max_date) || '';
+    if (!_clsAllExpanded || !dateText) return;
+    var data = _clsTelegraphByDate[dateText] || {};
+    var section = ((data.sections || {}).all) || {};
+    if (Array.isArray(section.items) && section.items.length && !section.error) {
+        _clsRenderTelegraph(data);
+        return;
+    }
+    if (_clsAllLoadingDate === dateText) return;
+    _clsAllLoadingDate = dateText;
+    data.sections = data.sections || {};
+    data.sections.all = Object.assign({label:'全部电报',items:[],loading:true}, section, {loading:true});
+    _clsTelegraphByDate[dateText] = data;
+    _clsRenderTelegraph(data);
+    _clsLoadTelegraphSection(dateText, 'all', false, _clsTelegraphRequestSeq);
+}
+function _clsRenderTelegraph(data) {
+    var container = document.getElementById('sentimentContainer');
+    if (!container || !data) return;
+    _clsInitRange(data);
+    var order = ['important', 'company', 'all'];
+    var labels = {important:'重要消息',company:'公司公告',all:'全部电报'};
+    var minDate = data.min_date || (_clsSyncStatus || {}).min_date || '';
+    var maxDate = data.max_date || (_clsSyncStatus || {}).max_date || data.date || '';
+    var selectedDate = _clsSelectedDate || data.date || maxDate;
+    var html = '<div class="cls-news"><div class="cls-hero"><div><div class="cls-hero-title">📰 财联社电报</div><div class="cls-hero-sub">近两个月本地归档 · 按日期回看 · 题材关键词检索</div></div><span class="cls-sync-pill" id="clsSyncPill"><i class="cls-sync-dot"></i>同步状态读取中</span></div><div class="cls-toolbar">';
+    html += '<div class="cls-control-row"><span class="cls-control-label">搜索时间范围</span><div class="cls-range-presets">';
+    [7,15,30,60].forEach(function(days) { html += '<button type="button" class="cls-range-btn' + (_clsRangePreset === days ? ' active' : '') + '" onclick="_clsSetRangeDays(' + days + ')">近' + days + '天</button>'; });
+    html += '</div><label class="cls-range-date">起 <input type="date" value="' + escapeHtml(_clsRangeStart) + '" min="' + escapeHtml(minDate) + '" max="' + escapeHtml(_clsRangeEnd || maxDate) + '" onchange="_clsRangeChanged(\\'start\\',this.value)"></label><label class="cls-range-date">止 <input type="date" value="' + escapeHtml(_clsRangeEnd) + '" min="' + escapeHtml(_clsRangeStart || minDate) + '" max="' + escapeHtml(maxDate) + '" onchange="_clsRangeChanged(\\'end\\',this.value)"></label><button type="button" onclick="_clsFetchTelegraph(_clsSelectedDate,true)">刷新当日</button></div>';
+    html += '<div class="cls-date-strip" id="clsDateNavigation" aria-label="日期切换">';
+    // 日期导航固定以数据最新日为起点；历史回看只改变当前选中日，不截断最新日期入口。
+    var stripDate = maxDate, stripLimit = 60, daysShown = 0;
+    while (stripDate && stripDate >= minDate && daysShown < stripLimit) {
+        var dt = new Date(stripDate + 'T12:00:00');
+        var dayLabel = stripDate.slice(5).replace('-', '/');
+        var weekday = ['日','一','二','三','四','五','六'][dt.getDay()];
+        html += '<button type="button" class="cls-date-chip' + (stripDate === selectedDate ? ' active' : '') + '" onclick="_clsDateChanged(\\'' + stripDate + '\\')">' + escapeHtml(dayLabel) + '<small>周' + weekday + '</small></button>';
+        stripDate = _clsDateShift(stripDate, -1); daysShown++;
+    }
+    html += '</div><div id="clsKeywordControls"><div class="cls-control-row"><span class="cls-control-label">关键词检索</span><input type="search" id="clsKeywordInput" placeholder="输入关键词，多个用 | 分隔；也可在下方选择题材" value="' + escapeHtml(_clsKeywordQuery) + '" oninput="_clsTimelineSearchActive=false;_clsKeywordQuery=this.value;_clsUpdateKeywordPicker()" onkeydown="if(event.key===\\'Enter\\')_clsSearchTelegraph()"><button type="button" class="cls-search-btn" onclick="_clsSearchTelegraph()">搜索本地电报</button><button type="button" onclick="_clsClearTelegraphSearch()">清除</button></div><div class="cls-topic-picker-label">连板联动题材 · 可多选，按任一关键词匹配</div><div class="cls-topic-picker-tools"><button type="button" onclick="_clsSetAllTopicKeywords(true)">全选</button><button type="button" onclick="_clsSetAllTopicKeywords(false)">全取消</button></div><div class="cls-topic-picker" id="clsTopicPicker"></div></div><div class="cls-meta">' + escapeHtml(data.date || selectedDate) + ' · 北京时间 ' + (data.cached ? '本地缓存' : '已加载') + (data.fetched_at ? ' · 更新于 ' + escapeHtml(data.fetched_at) : '') + '</div></div>';
+    html += '<section class="cls-section cls-timeline-section" id="clsTodayTimelineSection">' + _clsTodayTimelineInner(_clsTodayTimelineData) + '</section>';
+    if (_clsSearchResults || _clsSearchLoading) {
+        html += _clsRenderTelegraphSearchResults(labels);
+    } else {
+        for (var i = 0; i < order.length; i++) {
+            var key = order[i], section = (data.sections || {})[key] || {};
+            var items = Array.isArray(section.items) ? section.items : [];
+            if (key === 'all') {
+                html += '<details class="cls-section cls-all-details" id="clsAllSection" data-category="all"' + (_clsAllExpanded ? ' open' : '') + ' ontoggle="_clsAllTelegraphToggle(this)"><summary class="cls-section-head"><span class="cls-section-title">全部电报</span><span class="cls-section-count">' + (items.length ? items.length + ' 条' : (_clsAllExpanded ? (section.loading || data.refreshing ? '加载中…' : '展开加载') : '已折叠 · 点击加载')) + '</span></summary>';
+                if (_clsAllExpanded) {
+                    html += '<div class="cls-items">';
+                    if (section.error && !items.length) html += '<div class="cls-error">' + escapeHtml(section.error) + (data.refreshing ? ' · 后台重试中' : ' · 再次收起并展开可重试') + '</div>';
+                    else if (section.error) html += '<div class="cls-stale-note">部分缓存可用：' + escapeHtml(section.error) + '</div>';
+                    else if (section.loading || data.refreshing) html += '<div class="cls-empty">正在按需加载全部电报…</div>';
+                    else if (!items.length) html += '<div class="cls-empty">该日期暂无电报</div>';
+                    for (var aj = 0; aj < items.length; aj++) html += _clsRenderTelegraphItem(items[aj]);
+                    html += '</div>';
+                }
+                html += '</details>';
+                continue;
+            }
+            var sectionId = key === 'important' ? 'clsImportantSection' : 'clsCompanySection';
+            html += '<section class="cls-section" id="' + sectionId + '" data-category="' + key + '"><div class="cls-section-head"><span class="cls-section-title">' + escapeHtml(section.label || labels[key]) + '</span><span class="cls-section-count">' + (section.error ? '获取异常' : items.length + ' 条') + '</span></div><div class="cls-items">';
+            if (section.error && !items.length) html += '<div class="cls-error">' + escapeHtml(section.error) + (data.refreshing ? ' · 后台重试中' : ' · 可点“刷新当日”重试') + '</div>';
+            else if (section.error) html += '<div class="cls-stale-note">部分缓存可用，正在重试失败分类：' + escapeHtml(section.error) + '</div>';
+            else if (section.loading) html += '<div class="cls-empty">正在读取本地缓存…</div>';
+            if (!items.length && !section.error && !section.loading) html += '<div class="cls-empty">该日期暂无电报</div>';
+            else for (var j = 0; j < items.length; j++) html += _clsRenderTelegraphItem(items[j]);
+            html += '</div></section>';
+        }
+    }
+    container.innerHTML = html + '</div>';
+    _clsRenderTopicPicker();
+    initTabSidebarScroll('clsSidebar', ['clsDateNavigation','clsKeywordControls','clsTodayTimelineSection','clsImportantSection','clsCompanySection','clsAllSection']);
+    _clsRefreshTelegraphSync();
+}
+function _clsRenderTelegraphItem(item, category) {
+    item = item || {};
+    var displayedTime = String(item.time || '');
+    var timeIso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(displayedTime) ? displayedTime.replace(' ', 'T') + '+08:00' : '';
+    var matched = item.matched_keywords || _clsMatchedKeywords(item);
+    var chips = matched.map(function(word) { return '<span class="cls-keyword-match">' + escapeHtml(word) + '</span>'; }).join('');
+    var categoryChip = category ? '<span class="cls-search-category">' + escapeHtml(category) + '</span>' : '';
+    var searchClasses = category ? ' cls-search-hit' + (_clsTimelineSearchActive ? ' cls-search-marquee' : '') : '';
+    return '<article class="cls-item' + searchClasses + '"><div class="cls-item-top"><time class="cls-time"' + (timeIso ? ' datetime="' + escapeHtml(timeIso) + '" title="北京时间（UTC+8）"' : '') + '>' + escapeHtml(displayedTime) + '</time><div class="cls-item-title"><span class="cls-item-title-text">' + escapeHtml(item.title || '') + '</span><span class="cls-item-badges">' + chips + categoryChip + '</span></div></div><div class="cls-item-content">' + escapeHtml(item.content || '') + '</div></article>';
+}
+function _clsSearchTimelineStock(element) {
+    if (!element) return;
+    var encoded = element.getAttribute('data-cls-terms') || element.parentElement?.getAttribute('data-cls-terms') || '';
+    if (!encoded) return;
+    var keyword = '';
+    try { keyword = decodeURIComponent(encoded); } catch (e) { return; }
+    var terms = keyword.split('|').map(function(term) { return term.trim(); }).filter(function(term, index, all) { return term && all.indexOf(term) === index; });
+    if (!terms.length) return;
+    _clsTimelineSearchActive = true;
+    _clsKeywordQuery = terms.join('|');
+    var input = document.getElementById('clsKeywordInput');
+    if (input) input.value = _clsKeywordQuery;
+    _clsSearchTelegraph();
+}
+function _clsCurrentKeywordTerms() {
+    var input = document.getElementById('clsKeywordInput');
+    var raw = input ? input.value : _clsKeywordQuery;
+    var seen = {};
+    return raw.split('|').map(function(term) { return term.trim(); }).filter(function(term) {
+        var key = term.toLocaleLowerCase();
+        if (!term || seen[key]) return false;
+        seen[key] = true;
+        return true;
+    });
+}
+function _clsMatchedKeywords(item) {
+    var text = ((item && item.title) || '') + '\\n' + ((item && item.content) || ''), lower = text.toLocaleLowerCase();
+    return _clsCurrentKeywordTerms().filter(function(term) { return lower.indexOf(term.toLocaleLowerCase()) >= 0; });
+}
+function _clsRenderTopicPicker() {
+    var picker = document.getElementById('clsTopicPicker');
+    if (!picker) return;
+    var selected = {};
+    _clsCurrentKeywordTerms().forEach(function(term) { selected[term.toLocaleLowerCase()] = true; });
+    picker.innerHTML = _clsTopicNames.map(function(name) {
+        var active = selected[name.toLocaleLowerCase()];
+        return '<button type="button" class="cls-topic-chip' + (active ? ' active' : '') + '" data-topic="' + escapeHtml(name) + '" aria-pressed="' + (active ? 'true' : 'false') + '">' + escapeHtml(name) + '</button>';
+    }).join('');
+    picker.onclick = function(event) {
+        var button = event.target.closest('[data-topic]');
+        if (button) _clsToggleTopicKeyword(button.getAttribute('data-topic'));
+    };
+}
+function _clsUpdateKeywordPicker() { _clsRenderTopicPicker(); }
+function _clsSetAllTopicKeywords(selected) {
+    if (selected && !_clsTopicNames.length) {
+        _clsPendingTopicSelection = true;
+        _clsLoadTelegraphExtras();
+        return;
+    }
+    var input = document.getElementById('clsKeywordInput');
+    var terms = selected ? _clsTopicNames.slice() : [];
+    _clsKeywordQuery = terms.join('|');
+    if (input) input.value = _clsKeywordQuery;
+    _clsSearchResults = null;
+    _clsSearchLoading = false;
+    _clsRenderTelegraph(_clsTelegraphByDate[_clsSelectedDate] || {date:_clsSelectedDate,sections:{},min_date:(_clsSyncStatus||{}).min_date,max_date:(_clsSyncStatus||{}).max_date});
+}
+function _clsToggleTopicKeyword(topic) {
+    _clsTimelineSearchActive = false;
+    var terms = _clsCurrentKeywordTerms();
+    var index = terms.findIndex(function(term) { return term.toLocaleLowerCase() === topic.toLocaleLowerCase(); });
+    if (index >= 0) terms.splice(index, 1); else terms.push(topic);
+    var input = document.getElementById('clsKeywordInput');
+    _clsKeywordQuery = terms.join('|');
+    if (input) input.value = _clsKeywordQuery;
+    _clsSearchResults = null;
+    _clsSearchLoading = false;
+    _clsRenderTelegraph(_clsTelegraphByDate[_clsSelectedDate] || {date:_clsSelectedDate,sections:{},min_date:(_clsSyncStatus||{}).min_date,max_date:(_clsSyncStatus||{}).max_date});
+}
+function _clsRenderTelegraphSearchResults(labels) {
+    if (_clsSearchLoading) return '<div class="cls-section"><div class="cls-empty">正在本地归档中检索所选日期范围…</div></div>';
+    var result = _clsSearchResults || {}, items = result.items || [];
+    var rangeLabel = escapeHtml((result.start || _clsRangeStart) + ' 至 ' + (result.end || _clsRangeEnd));
+    var html = '<div class="cls-search-results-head">“' + escapeHtml(result.keyword || '') + '” · ' + rangeLabel + ' · 命中 ' + items.length + ' 条 · 本地已覆盖 ' + (result.cached_dates || 0) + ' 天';
+    if (_clsSyncStatus && _clsSyncStatus.active) html += ' · 两个月归档仍在后台补齐';
+    html += '</div>';
+    if (result.error) return html + '<div class="cls-section"><div class="cls-error">搜索失败：' + escapeHtml(result.error) + '</div></div>';
+    if (!items.length) return html + '<div class="cls-section"><div class="cls-empty">当前已缓存的数据中没有匹配内容；后台补齐完成后可再次搜索。</div></div>';
+    var groups = {};
+    items.forEach(function(item) { var day = item.date || ''; (groups[day] = groups[day] || []).push(item); });
+    Object.keys(groups).sort().reverse().forEach(function(day) {
+        html += '<div class="cls-search-date-head">' + escapeHtml(day) + ' · ' + groups[day].length + ' 条</div>';
+        groups[day].forEach(function(item) { html += '<section class="cls-section" data-category="' + escapeHtml(item.category || 'all') + '">' + _clsRenderTelegraphItem(item, labels[item.category] || item.category) + '</section>'; });
+    });
+    return html;
+}
+function _clsSearchTelegraph() {
+    var input = document.getElementById('clsKeywordInput');
+    var keyword = input ? input.value.split('|').map(function(term) { return term.trim(); }).filter(Boolean).filter(function(term, index, all) { return all.indexOf(term) === index; }).join('|') : _clsKeywordQuery;
+    if (!keyword) { _clsClearTelegraphSearch(); return; }
+    _clsKeywordQuery = keyword;
+    var rangeInputs = document.querySelectorAll('.cls-range-date input');
+    _clsRangeStart = rangeInputs[0] ? rangeInputs[0].value : _clsRangeStart;
+    _clsRangeEnd = rangeInputs[1] ? rangeInputs[1].value : _clsRangeEnd;
+    var request = ++_clsSearchSeq;
+    _clsSearchLoading = true; _clsSearchResults = null;
+    _clsRenderTelegraph(_clsTelegraphByDate[_clsSelectedDate] || {date:_clsSelectedDate,sections:{},min_date:(_clsSyncStatus||{}).min_date,max_date:(_clsSyncStatus||{}).max_date});
+    var url = '/api/cls_telegraph_search?start=' + encodeURIComponent(_clsRangeStart) + '&end=' + encodeURIComponent(_clsRangeEnd) + '&keyword=' + encodeURIComponent(keyword);
+    fetch(url, {cache:'no-store'}).then(function(r) { return r.json(); }).then(function(result) {
+        if (request !== _clsSearchSeq) return;
+        if (result.error) throw new Error(result.error);
+        _clsSearchResults = result; _clsSearchLoading = false;
+        _clsRenderTelegraph(_clsTelegraphByDate[_clsSelectedDate] || {date:_clsSelectedDate,sections:{},min_date:(_clsSyncStatus||{}).min_date,max_date:(_clsSyncStatus||{}).max_date});
+    }).catch(function(error) {
+        if (request !== _clsSearchSeq) return;
+        _clsSearchResults = {keyword:keyword,start:_clsRangeStart,end:_clsRangeEnd,items:[],cached_dates:0,error:String(error.message||error)};
+        _clsSearchLoading = false;
+        _clsRenderTelegraph(_clsTelegraphByDate[_clsSelectedDate] || {date:_clsSelectedDate,sections:{}});
+    });
+}
+function _clsClearTelegraphSearch() {
+    _clsTimelineSearchActive = false;
+    _clsSearchSeq++;
+    _clsSearchLoading = false; _clsSearchResults = null;
+    var input = document.getElementById('clsKeywordInput');
+    _clsKeywordQuery = '';
+    if (input) input.value = '';
+    _clsRenderTelegraph(_clsTelegraphByDate[_clsSelectedDate] || {date:_clsSelectedDate,sections:{},min_date:(_clsSyncStatus||{}).min_date,max_date:(_clsSyncStatus||{}).max_date});
+}
+function _clsDateChanged(dateText) {
+    _clsSelectedDate = dateText || '';
+    _clsTimelineSearchActive = false;
+    _clsAllExpanded = false;
+    _clsAllLoadingDate = '';
+    _clsSearchResults = null;
+    _clsSearchLoading = false;
+    _clsFetchTelegraph(_clsSelectedDate, false);
+}
+
 </script>
 </body>
 </html>
@@ -37483,6 +39851,33 @@ class Handler(BaseHTTPRequestHandler):
                     _set_cache('theme_structure_tree', result)
             self._respond_json(result, cors_headers)
 
+        elif path == '/api/attention_board':
+            no_cache = query.get('no_cache', ['0'])[0].strip() == '1'
+            date_param = query.get('date', [None])[0]
+            if date_param:
+                result = _build_attention_archive(date_param=date_param, force=no_cache)
+            else:
+                ttl = 60 if _is_trading_hours() else 600
+                result = None if no_cache else _get_cached('attention_board', ttl=ttl)
+                if result is None:
+                    result = _build_attention_archive(force=no_cache)
+                    _set_cache('attention_board', result)
+            self._respond_json(result, cors_headers)
+
+        elif path == '/api/attention_mk':
+            date_param = (query.get('date', [''])[0] or '').strip()
+            try:
+                datetime.strptime(date_param, '%Y-%m-%d')
+            except ValueError:
+                self._respond_json({'error': '请选择有效的交易日'}, cors_headers)
+                return
+            snapshot = _build_attention_archive(date_param=date_param)
+            if not snapshot or snapshot.get('error') or not snapshot.get('board'):
+                self._respond_json(snapshot or {'error': '该交易日暂无注意力看板'}, cors_headers)
+                return
+            result = build_attention_mk(snapshot['board'], _kph_industry_reverse, _kph_industry_as_of)
+            self._respond_json(result, cors_headers)
+
         elif path == '/api/review_summary':
             no_cache = query.get('no_cache', ['0'])[0].strip() == '1'
             ttl = 60 if _is_trading_hours() else 600   # 盘中60s / 非盘600s
@@ -37861,17 +40256,24 @@ class Handler(BaseHTTPRequestHandler):
             self._respond_json(_auction_load_report(day), cors_headers)
 
         elif path == '/api/today_zt_timeline':
-            # 盯盘首屏轻量接口：只返回今日涨停时间轴，避免等待完整题材风向重型计算。
+            # 题材风向/舆情监控共用同一完整快照，确保股票名单、题材标签与板数标记一致。
             try:
                 no_cache = query.get('no_cache', ['0'])[0].strip() == '1'
-                live_session = _is_trading_hours()
-                bj_day = _bj_now().strftime('%Y%m%d')
-                # 盘前/盘后与盘中必须使用不同缓存键，避免 9:25 切换后继续返回盘前的昨日快照。
-                cache_key = 'today_zt_timeline:%s:%s' % (bj_day, 'live' if live_session else 'closed')
-                result = None if no_cache else _get_cached(cache_key, ttl=60 if live_session else 300)
-                if result is None:
-                    result = _build_today_timeline_fast()
+                # 与题材风向页面直接读取同一共享快照的 timeline，不另行拼装或省略字段。
+                if no_cache:
+                    result = _build_theme_wind_strength(top_n=10)
+                    now = _bj_now()
+                    cache_key = 'theme_wind_strength:%s:%s:%s' % (
+                        10, now.strftime('%Y%m%d'), 'live' if _is_trading_hours() else 'closed')
                     _set_cache(cache_key, result)
+                else:
+                    result = _shared_theme_wind_snapshot(top_n=10)
+                result = dict(result or {})
+                result['timeline'] = list(result.get('timeline') or [])
+                result['live_source'] = result.get('live_source') or 'theme_wind_shared_snapshot'
+                result['retrying'] = bool(result.get('live_unavailable'))
+                if result.get('live_unavailable'):
+                    result['message'] = result.get('message') or '盘中实时涨停数据暂未到达，正在重试'
                 self._respond_json(result, cors_headers)
             except Exception as e:
                 import traceback
@@ -39308,6 +41710,10 @@ class Handler(BaseHTTPRequestHandler):
                     'records': records[:200],
                     'concepts': sorted(concepts_set),
                     'ths_concepts': ths_concepts,
+                    'kph_industry_concepts': _get_kph_industry_concepts(code),
+                    'kph_industry_as_of': _kph_industry_as_of,
+                    'dc_concepts': _get_dc_concepts(code),
+                    'dc_concepts_updated_at': _dc_concept_updated_at,
                     'code': code,
                     'name': records[0].get('stock_name', '') if records else '',
                 }, cors_headers)
@@ -39413,6 +41819,10 @@ class Handler(BaseHTTPRequestHandler):
                     'concepts': concepts,
                     'limit_rows': limit_rows,
                     'kpl_concepts': kpl_concepts,
+                    'kph_industry_concepts': _get_kph_industry_concepts(code),
+                    'kph_industry_as_of': _kph_industry_as_of,
+                    'dc_concepts': _get_dc_concepts(code),
+                    'dc_concepts_updated_at': _dc_concept_updated_at,
                     'kpl_records': kpl_records[:200],
                     'three_month': {
                         'count': len(three_month_dates),
@@ -39481,9 +41891,14 @@ class Handler(BaseHTTPRequestHandler):
                         name = kpl_records[0].get('stock_name', '')
                     result[c] = {
                         'limit_rows': rows[:20],
+                        'concepts': finder.get_stock_concepts(c),
                         'three_month': {'count': len(three_month_csv_dates), 'dates': three_month_csv_dates},
                         'kpl_records': kpl_records[:200],
                         'kpl_concepts': kpl_concepts,
+                        'kph_industry_concepts': _get_kph_industry_concepts(c),
+                        'kph_industry_as_of': _kph_industry_as_of,
+                        'dc_concepts': _get_dc_concepts(c),
+                        'dc_concepts_updated_at': _dc_concept_updated_at,
                         'three_month_kpl': {'count': len(three_month_kpl), 'dates': three_month_kpl},
                         'name': name,
                     }
@@ -39700,6 +42115,94 @@ class Handler(BaseHTTPRequestHandler):
             items.sort(key=lambda x: x.get('date', ''), reverse=True)
             sorted_tags = dict(sorted(all_tags.items(), key=lambda x: -x[1])[:50])
             self._respond_json({'items': items, 'tags': sorted_tags, 'total': len(items)}, cors_headers)
+
+        elif path == '/api/cls_telegraph':
+            date_text = query.get('date', [''])[0].strip()
+            force = query.get('refresh', ['0'])[0] == '1'
+            cache_only = query.get('cache_only', ['0'])[0] == '1'
+            earliest, latest = _cls_telegraph_date_bounds()
+            if not date_text:
+                date_text = latest.strftime('%Y-%m-%d')
+            try:
+                selected = datetime.strptime(date_text, '%Y-%m-%d').date()
+            except ValueError:
+                self._respond_json({'error': '日期格式无效，应为 YYYY-MM-DD'}, cors_headers)
+                return
+            if selected < earliest or selected > latest:
+                self._respond_json({'error': '日期超出近两个月范围'}, cors_headers)
+                return
+            category = query.get('category', [''])[0].strip()
+            if category and category not in {'important', 'company', 'all'}:
+                self._respond_json({'error': '不支持的电报分类'}, cors_headers)
+                return
+            if cache_only:
+                payload = _cls_read_telegraph_cache(date_text)
+                requested = [category] if category else ['important', 'company']
+                complete = bool(payload) and all(
+                    key in (payload.get('sections') or {}) and not (payload['sections'][key] or {}).get('error')
+                    for key in requested
+                )
+                refreshing = (any(date_text + ':' + key in _cls_telegraph_refreshing_dates
+                                  for key in requested)
+                              or (not category and date_text + ':primary' in _cls_telegraph_refreshing_dates))
+                if force or not complete:
+                    queued = False
+                    if category:
+                        queued = _cls_queue_telegraph_refresh(date_text, force=force, category=category)
+                    else:
+                        queued = _cls_queue_telegraph_refresh(date_text, force=force)
+                    refreshing = refreshing or queued
+                if payload is None:
+                    payload = {
+                        'date': date_text, 'cached': False, 'sections': {
+                            key: {'label': label, 'items': [],
+                                  'error': ('展开后加载' if key == 'all' else '本地尚无缓存，已在后台尝试获取')}
+                            for key, label in (('important', '重要消息'), ('company', '公司公告'), ('all', '全部电报'))
+                        }
+                    }
+                payload['refreshing'] = refreshing
+            else:
+                payload = _load_cls_telegraph_for_date(date_text, force=force, only_category=category or None)
+            payload['min_date'] = earliest.strftime('%Y-%m-%d')
+            payload['max_date'] = latest.strftime('%Y-%m-%d')
+            self._respond_json(payload, cors_headers)
+
+        elif path == '/api/cls_telegraph_sync':
+            earliest, latest = _cls_telegraph_date_bounds()
+            with _cls_telegraph_sync_lock:
+                state = dict(_cls_telegraph_sync_state)
+                state['errors'] = list(state.get('errors') or [])[-20:]
+            state.update({
+                'min_date': earliest.strftime('%Y-%m-%d'),
+                'max_date': latest.strftime('%Y-%m-%d'),
+                'cached_dates': _cls_telegraph_cache_dates(),
+            })
+            self._respond_json(state, cors_headers)
+
+        elif path == '/api/cls_telegraph_search':
+            start_text = (query.get('start', [''])[0] or '').strip()
+            end_text = (query.get('end', [''])[0] or '').strip()
+            keyword = (query.get('keyword', [''])[0] or '').strip()
+            earliest, latest = _cls_telegraph_date_bounds()
+            try:
+                start_day = datetime.strptime(start_text, '%Y-%m-%d').date()
+                end_day = datetime.strptime(end_text, '%Y-%m-%d').date()
+            except ValueError:
+                self._respond_json({'error': '请选择有效的开始和结束日期'}, cors_headers)
+                return
+            if start_day > end_day:
+                self._respond_json({'error': '开始日期不能晚于结束日期'}, cors_headers)
+                return
+            if start_day < earliest or end_day > latest:
+                self._respond_json({'error': '搜索范围需在本地近两个月数据范围内'}, cors_headers)
+                return
+            keywords = list(dict.fromkeys(term.strip() for term in keyword.split('|') if term.strip()))
+            if not keywords or len(keywords) > 100 or any(len(term) > 80 for term in keywords):
+                self._respond_json({'error': '请选择或输入1至100个关键词，每个关键词不超过80个字符'}, cors_headers)
+                return
+            result = _cls_telegraph_local_search(start_text, end_text, keyword)
+            result.update({'start': start_text, 'end': end_text, 'keyword': keyword})
+            self._respond_json(result, cors_headers)
 
         elif path == '/api/sentiment_detail':
             file = query.get('file', [''])[0].strip()
@@ -40136,26 +42639,8 @@ def main():
         except Exception as e:
             print(f"[预热] 连板联动失败: {e}")
 
-    def _sentiment_bg_refresh():
-        """后台守护线程，根据前端配置的间隔自动拉取帖子（即使浏览器已关闭）。"""
-        _BG_CONFIG_PATH = os.path.join(_SENTIMENT_DIR, 'bg_config.json')
-        print(f"[舆情后台] 启动，根据前端配置自动刷新")
-        while True:
-            try:
-                interval_min = 180  # 默认3小时
-                if os.path.exists(_BG_CONFIG_PATH):
-                    with open(_BG_CONFIG_PATH, 'r') as f:
-                        cfg = json.load(f)
-                        interval_min = cfg.get('intervalMin', 180)
-                print(f"[舆情后台] 间隔 {interval_min} 分钟，等待中...")
-                time.sleep(interval_min * 60)
-                merged, new_count = _fetch_jiuyan_posts()
-                print(f"[舆情后台] 抓取完成，新帖 {new_count} 条，总计 {len(merged)} 条（间隔 {interval_min} 分钟）")
-            except Exception as e:
-                print(f"[舆情后台] 异常: {e}")
-                time.sleep(60)
-
     threads = [
+        threading.Thread(target=_cls_telegraph_backfill_loop, daemon=True),
         threading.Thread(target=_warm_lianban, daemon=True),
         threading.Thread(target=_warm_stats, daemon=True),
         threading.Thread(target=_warm_hot, daemon=True),
@@ -40164,7 +42649,6 @@ def main():
         threading.Thread(target=_warm_high_frequency_pages, daemon=True),
         # 市场结构/连板联动由前端在首屏完成后按 20日 → 30日 → 联动顺序预热。
         # 不在服务启动时与首屏高频任务并发，避免用户刚切页时排队等待同一把构建锁。
-        threading.Thread(target=_sentiment_bg_refresh, daemon=True),
         # 旧版实时增量/收盘推送已取消；只保留“完整细分题材晋级快照”。
         threading.Thread(target=_feishu_promotion_loop, daemon=True),
         # 盯盘「涨停板数量 TOP10」：盘中检查，出现新涨停成员时才发送完整卡片。
