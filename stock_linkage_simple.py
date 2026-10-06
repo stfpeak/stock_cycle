@@ -16044,9 +16044,13 @@ td.lt-trajectory-cell {
 .attn-side-day { padding:5px 3px; border-top:1px solid rgba(142,196,214,.12); }
 .attn-side-date { display:block; width:100%; border:0; padding:2px 3px 4px; color:#f0d59b; background:transparent; font:inherit; font-size:.73em; font-weight:800; text-align:left; cursor:pointer; }
 .attn-side-kinds { display:flex; gap:3px; }
-.attn-side-kinds button { flex:1; border:1px solid rgba(121,188,214,.2); border-radius:5px; padding:2px 3px; color:#a9ceda; background:rgba(44,91,123,.24); font:inherit; font-size:.63em; cursor:pointer; }
+.attn-side-kinds button { display:flex; flex:1; flex-direction:column; align-items:center; justify-content:center; gap:3px; min-height:42px; border:1px solid rgba(121,188,214,.2); border-radius:5px; padding:4px 3px; color:#a9ceda; background:rgba(44,91,123,.24); font:inherit; font-size:.63em; cursor:pointer; }
 .attn-side-kinds button:hover,.attn-side-date:hover { color:#fff; background-color:rgba(81,154,185,.25); }
-.attn-side-kinds small { opacity:.75; }
+.attn-side-kind-label { color:#b4ced8; font-size:.95em; font-weight:800; letter-spacing:.04em; line-height:1; }
+.attn-side-kinds small { opacity:1; font-size:1.2em; font-weight:800; line-height:1; }
+.attn-side-kinds .attn-kind-al small { color:#f0c977; }
+.attn-side-kinds .attn-kind-an small { color:#76d8b2; }
+.attn-side-kinds .attn-kind-ar small { color:#9bbcff; }
 .attn-board { display:grid; gap:10px; min-width:0; }
 .attn-day { border:1px solid rgba(111,193,215,.32); border-radius:12px; background:rgba(13,38,65,.54); overflow:hidden; }
 .attn-day[open] { background:rgba(16,47,76,.68); box-shadow:0 6px 20px rgba(0,0,0,.12); }
@@ -16069,14 +16073,18 @@ td.lt-trajectory-cell {
 .attn-keyword:hover { color:#fff4d2; border-color:rgba(245,210,136,.65); background:rgba(123,100,46,.3); }
 .attn-empty { color:#87a4b2; font-size:.78em; padding:7px 9px; border:1px dashed rgba(157,197,210,.24); border-radius:7px; }
 .attn-axis-scroll { overflow-x:auto; border:1px solid rgba(121,188,214,.23); border-radius:9px; scrollbar-color:#638da5 transparent; }
-.attn-axis { min-width:1040px; width:100%; border-collapse:collapse; table-layout:fixed; font-size:.76em; }
+.attn-axis { min-width:1120px; width:100%; border-collapse:collapse; table-layout:fixed; font-size:.76em; }
 .attn-axis th,.attn-axis td { border-bottom:1px solid rgba(142,196,214,.15); border-right:1px solid rgba(142,196,214,.12); padding:6px; vertical-align:top; }
 .attn-axis tr:last-child td { border-bottom:0; }
 .attn-axis th { background:rgba(51,106,144,.29); color:#d2e9f1; text-align:center; white-space:nowrap; }
 .attn-axis th:nth-child(7) { background:rgba(139,115,65,.2); box-shadow:inset 0 0 0 1px rgba(236,198,112,.2); }
-.attn-axis th:first-child,.attn-axis td:first-child { width:150px; position:sticky; left:0; z-index:1; background:#183b5b; }
+.attn-axis th:first-child,.attn-axis td:first-child { width:230px; position:sticky; left:0; z-index:1; background:#183b5b; }
 .attn-axis td:first-child { background:#173650; }
-.attn-topic { border:0; background:transparent; color:#f7dc9f; font:inherit; font-weight:800; cursor:pointer; text-align:left; overflow-wrap:anywhere; }
+.attn-topic-titleline { display:flex; align-items:center; gap:6px; min-width:0; }
+.attn-topic { display:inline-flex; align-items:center; height:26px; flex:0 0 auto; border:0; padding:0; background:transparent; color:#f7dc9f; font:inherit; font-weight:800; line-height:1; cursor:pointer; text-align:left; white-space:nowrap; }
+.attn-topic-kline { display:inline-flex; align-items:center; justify-content:center; box-sizing:border-box; height:26px; flex:0 0 auto; border:1px solid rgba(120,190,211,.34); border-radius:5px; padding:0 8px; color:#b7dce6; background:rgba(39,83,107,.24); font:inherit; font-size:.76em; line-height:1; cursor:pointer; white-space:nowrap; }
+.attn-topic-kline:hover:not(:disabled) { color:#f3fbff; border-color:rgba(142,218,235,.72); background:rgba(48,119,147,.4); }
+.attn-topic-kline:disabled { opacity:.42; cursor:not-allowed; }
 .attn-topic:hover { color:#fff3d6; text-decoration:underline; }
 .attn-topic-sub { display:block; margin-top:3px; color:#96b9ca; font-size:.86em; }
 .attn-guidance { display:block; margin-top:6px; padding:5px 7px; border-left:2px solid rgba(226,190,112,.55); border-radius:0 5px 5px 0; color:#c5d5d9; background:rgba(175,151,96,.09); font-size:.76em; line-height:1.45; }
@@ -16129,10 +16137,12 @@ td.lt-trajectory-cell {
 .attn-methodology h4 span { margin-right:7px; color:#81c8d2; font:700 .65em/1.4 ui-monospace,monospace; letter-spacing:.12em; }
 .attn-methodology p { margin:4px 0; }
 .attn-methodology b { color:#d7e7e9; }
-.attn-model-equations { display:grid; gap:4px; margin:8px 0; }
-.attn-model-equations code { display:block; padding:5px 8px; border:1px solid rgba(111,182,197,.15); border-radius:5px; color:#d1e2e7; background:rgba(4,20,32,.3); font: .9em/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
-.attn-model-tree { margin:8px 0; padding:7px 10px; border-left:2px solid rgba(112,194,205,.38); color:#b5d0d8; background:rgba(31,75,91,.16); font: .88em/1.65 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
-.attn-model-tree b { display:block; margin-bottom:2px; color:#eddaa5; }
+.attn-model-questions { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:7px; margin:8px 0; }
+.attn-model-question { min-width:0; padding:8px 10px; border:1px solid rgba(111,182,197,.17); border-radius:7px; background:rgba(4,20,32,.27); }
+.attn-model-question b { display:block; margin-bottom:4px; color:#eddaa5; }
+.attn-model-question code { color:#d1e8ec; font: .92em/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
+.attn-model-flow { margin:8px 0; padding:7px 10px; border-left:2px solid rgba(112,194,205,.38); color:#b5d0d8; background:rgba(31,75,91,.16); }
+.attn-model-flow strong { color:#9de0e7; }
 .attn-methodology .attn-model-footnote { color:#91aeba; font-size:.9em; }
 .attn-mk-panel { border:1px solid rgba(104,190,194,.31); border-radius:9px; background:linear-gradient(115deg,rgba(28,91,98,.2),rgba(20,54,71,.24)); overflow:hidden; }
 .attn-mk-panel summary { display:flex; align-items:center; gap:8px; padding:9px 12px; color:#c8eef0; cursor:pointer; list-style:none; }
@@ -16166,7 +16176,7 @@ td.lt-trajectory-cell {
 .attn-mk-tags { display:flex; flex-wrap:wrap; gap:3px; margin-top:5px; }
 .attn-mk-keyword { padding:1px 5px; border:1px solid rgba(111,192,195,.21); border-radius:99px; color:#acd2d4; background:rgba(33,100,105,.15); font-size:.66em; font-style:normal; }
 @media (max-width:860px) { .attn-layout { grid-template-columns:116px minmax(0,1fr); gap:7px; } .attn-sidebar { padding:5px; } }
-@media (max-width:680px) { .attn-layout { display:flex; flex-direction:column; } .attn-sidebar { position:static; max-height:180px; width:100%; box-sizing:border-box; display:flex; flex-wrap:wrap; gap:3px; } .attn-sidebar-title { flex-basis:100%; padding:2px 4px; } .attn-side-day { flex:1 0 30%; max-width:32%; box-sizing:border-box; } .attn-day-source { flex-basis:100%; margin-left:0; } .attn-axis { min-width:1040px; } .attn-axis th:first-child,.attn-axis td:first-child { width:122px; } }
+@media (max-width:680px) { .attn-layout { display:flex; flex-direction:column; } .attn-sidebar { position:static; max-height:180px; width:100%; box-sizing:border-box; display:flex; flex-wrap:wrap; gap:3px; } .attn-sidebar-title { flex-basis:100%; padding:2px 4px; } .attn-side-day { flex:1 0 30%; max-width:32%; box-sizing:border-box; } .attn-day-source { flex-basis:100%; margin-left:0; } .attn-axis { min-width:1120px; } .attn-axis th:first-child,.attn-axis td:first-child { width:230px; } }
 </style>
 </head>
 <body>
@@ -22491,16 +22501,16 @@ function loadThemeWind() {
 
         // Section 5: 注意力/预期机制（Attention Is All You Need）
         html += '<div class="rt-section lt-trajectory-section" id="twReviewSection">';
-        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ffd700;">注意力/预期机制 <span class="count-badge">Attention Is All You Need · 近15个交易日</span> <span class="rt-refresh-icon" onclick="manualRefreshReview(true)" title="刷新">\u21bb</span><button class="rt-auto-refresh-btn" id="reviewAutoBtn" onclick="toggleReviewAutoRefresh()">\u23f1 自动刷新 1分钟</button></h3>';
-        html += '<section class="attn-methodology"><h4><span>FORMAL MODEL</span> 注意力（Attention） + 预期强度（expectation）</h4>' +
-            '<div class="attn-model-equations"><code>观察窗：W_t = {d_(t−14), …, d_t}</code>' +
-            '<code>题材全集：T_t = Themes(AL_t) ∪ Themes(AN_t) ∪ Themes(AR_t) = {T_1, T_2, …, T_n}</code>' +
-            '<code>跨概念强度：m_t(S_i) = |F(KPH_tags(S_i)) ∩ F(T_t)|；MK_t = {S_i : m_t(S_i) ≥ 2，S_i ∉ S(AL_t ∪ AN_t ∪ AR_t)，且非ST}</code>' +
-            '<code>强度序：R_t(S_i) = (C_i, −L_i, τ_i, −G_i, B_i)，按字典序升序；S_1 ≻ S_2 ≻ S_3 …</code></div>' +
-            '<div class="attn-model-tree"><b>日级观察结构 M_t</b><div>├─ 注意力分层：AL_t（Attention List）／AN_t（Attention New）／AR_t（Attention Rotation）</div>' +
-            '<div>├─ 题材节点：T_j → 成分股票集合 S(T_j) = {S_1, S_2, …}</div><div>└─ 跨题材交集：MK_t → S_i ↔ {T_j}，按 m_t(S_i) 降序</div></div>' +
-            '<p><b>变量：</b>C_i∈{0,1,2} 分别表示连板、首板/大涨观察、断板；L_i 为当日板数；τ_i 为首次封板时间；G_i 为创/科当日涨幅（仅大涨观察项参与）；B_i 为断板交易日数。相同板数按 τ_i 越早越强；断板按 B_i 越小越靠前。</p>' +
-            '<p class="attn-model-footnote">F 为主题族归并函数，同族近义/上下位标签只计1个概念（如地产链/房地产、锂电池/钠电池）；同时过滤 ST、*ST、S*ST。每个日期独立回放近15日状态；MK 使用本地开盘红 KPH 标签快照，展开时显示其数据基准日。历史日期的 MK 是该标签快照与当日关键词集的交叉映射，不代表历史成分股快照。</p></section>';
+        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ffd700;">注意力/预期机制 + 决策 <span class="count-badge">Attention Is All You Need · 近15个交易日</span> <span class="rt-refresh-icon" onclick="manualRefreshReview(true)" title="刷新">\u21bb</span><button class="rt-auto-refresh-btn" id="reviewAutoBtn" onclick="toggleReviewAutoRefresh()">\u23f1 自动刷新 1分钟</button></h3>';
+        html += '<section class="attn-methodology"><h4>注意力 + 预期强度：用四个问题读懂题材</h4>' +
+            '<div class="attn-model-questions">' +
+            '<div class="attn-model-question"><b>1. 看多长时间？</b><code>W_t = 最近15个交易日</code><br>每个日期单独回看当天及此前14个交易日，超出窗口不参与本轮归类。</div>' +
+            '<div class="attn-model-question"><b>2. 哪些题材进入观察？</b><code>T_t = AL_t ∪ AN_t ∪ AR_t</code><br>AL：出现2板及以上、持续跟踪的题材；AN：近3个交易日未出现的新题材，以及未匹配既有题材的大涨股；AR：多只股票轮流首板、但暂未走出连板的题材。</div>' +
+            '<div class="attn-model-question"><b>3. 同题材里谁更强？</b><code>连板（板数高优先） &gt; 首板/大涨 &gt; 断板</code><br>同板数按涨停时间早到晚；断板股按断板天数少到多。</div>' +
+            '<div class="attn-model-question"><b>4. 题材预期看什么？</b><code>E(T) = f(最高板、晋级、失败、首板/大涨扩散、断板)</code><br>看梯队是否延续、是否有新股票加入、失败是否增多；这是观察框架，不是预测分数。</div>' +
+            '</div><div class="attn-model-flow"><strong>看板关系：</strong>交易日 → AL / AN / AR / MK → 题材 T → 股票 S。<br>' +
+            '<strong>MK 交集：</strong>命中数 M(S) = |独立题材标签(S) ∩ T_t|；仅保留 M(S) ≥ 2、非 ST，且未在 AL / AN / AR 重复出现的股票；命中题材越多，排列越靠前。</div>' +
+            '<p class="attn-model-footnote">近义或上下位标签先合并为同一题材族（如地产链/房地产、锂电池/钠电池），避免重复计数。MK 使用本地开盘红 KPH 标签快照，展开时显示数据基准日；历史日期的 MK 是该标签快照与当日关键词集的交叉映射，不代表历史成分股快照。</p></section>';
         html += '<div id="twReviewBody"><div class="lt-trajectory-loading">AL / AN / AR 看板加载中...</div></div>';
         html += '</div></div>';
 
@@ -27543,6 +27553,7 @@ function renderReviewSummary(data) {
 
 var _attentionDayCache = {};
 var _attentionTopicData = {};
+var _attentionKlineData = {};
 var _attentionTopicSeq = 0;
 var _attentionArchive = null;
 function _attentionEsc(value) { return _kplEsc(String(value == null ? '' : value)); }
@@ -27574,6 +27585,24 @@ function attentionOpenStock(el) {
     openDsStockFromRhythm(name, code, '', list, index);
 }
 function attentionOpenTopic(el) { jumpToKplSearch(el.getAttribute('data-theme') || ''); }
+function attentionOpenTopicKline(el) {
+    var key = el && el.getAttribute('data-kline-key') || '';
+    var theme = el && el.getAttribute('data-theme') || '';
+    if (!key || !theme) return;
+    // 题材地图渲染时可能会重置共享排序表；点击时从注意力快照恢复该题材自己的股票顺序。
+    _tmmThemeKlineOrder[key] = (_attentionKlineData[key] || []).slice();
+    _tmmOpenThemeKline(theme, key);
+}
+function _attentionPrepareTopicKline(topic, date, kind, index) {
+    var key = 'attention-' + String(date || '').replace(/[^0-9-]/g, '') + '-' + kind + '-' + index;
+    var stocks = (topic && topic.stocks || []).map(function(stock) {
+        var code = stock.code || stock.stock_code || '';
+        return code ? {stock_name: stock.name || code, stock_code: code} : null;
+    }).filter(Boolean);
+    _attentionKlineData[key] = stocks;
+    _tmmThemeKlineOrder[key] = stocks.slice();
+    return {key:key, count:stocks.length};
+}
 function _attentionStockChip(stock) {
     var broken = stock.status === 'broken';
     var css = (broken ? 'broken' : (stock.is_big_gain ? 'big-gain' : (stock.level === 1 ? 'first' : ''))) +
@@ -27768,6 +27797,8 @@ function _attentionCategory(kind, topics, date) {
     h += '<div class="attn-axis-scroll"><table class="attn-axis"><thead><tr><th>细分题材</th>';
     h += '<th>5+板</th><th>5板</th><th>4板</th><th>3板</th><th>2板</th><th>首板 / 大涨</th><th>断板 +1</th><th>断板 +N</th></tr></thead><tbody>';
     topics.forEach(function(topic) {
+        var topicIndex = topics.indexOf(topic);
+        var topicKline = _attentionPrepareTopicKline(topic, date, kind, topicIndex);
         var activeCells = {}, inactiveCells = {};
         columns.forEach(function(col) { activeCells[col] = []; inactiveCells[col] = []; });
         (topic.stocks || []).forEach(function(stock) {
@@ -27782,8 +27813,10 @@ function _attentionCategory(kind, topics, date) {
         });
         var hasInactive = columns.some(function(col) { return inactiveCells[col].length > 0; });
         var detailRows = hasInactive ? 3 : 1;
-        h += '<tr class="attn-topic-row" id="attn-theme-' + _attentionEsc(date) + '-' + kind + '-' + topics.indexOf(topic) + '"><td rowspan="' + detailRows + '"><button type="button" class="attn-topic" data-theme="' +
-            _attentionEsc(topic.theme) + '" onclick="attentionOpenTopic(this)">' + _attentionEsc(topic.theme) + '</button>' +
+        h += '<tr class="attn-topic-row" id="attn-theme-' + _attentionEsc(date) + '-' + kind + '-' + topicIndex + '"><td rowspan="' + detailRows + '"><div class="attn-topic-titleline"><button type="button" class="attn-topic" data-theme="' +
+            _attentionEsc(topic.theme) + '" onclick="attentionOpenTopic(this)">' + _attentionEsc(topic.theme) + '</button><button type="button" class="attn-topic-kline" data-theme="' + _attentionEsc(topic.theme) + '" data-kline-key="' +
+            _attentionEsc(topicKline.key) + '" onclick="event.stopPropagation();attentionOpenTopicKline(this)" title="查看该细分题材表格中的股票K线" aria-label="' + _attentionEsc(topic.theme) + ' K线"' +
+            (topicKline.count ? '' : ' disabled') + '>K线</button></div>' +
             '<span class="attn-topic-sub">' + (Number(topic.current_max_level || 0) > 0 ? '当日最高 ' + _attentionEsc(topic.current_max_level) + '板 · ' : '') +
             _attentionEsc(topic.current_limit_count || 0) + '只涨停' + (Number(topic.current_big_gain_count || 0) ? ' · ' + _attentionEsc(topic.current_big_gain_count) + '只创/科大涨' : '') + '</span>' +
             '<span class="attn-guidance">' + _attentionEsc(topic.guidance || '') + '</span>' +
@@ -27827,7 +27860,7 @@ function renderAttentionBoard(archive, opened) {
         h += '<div class="attn-side-day"><button type="button" class="attn-side-date" data-date="' + _attentionEsc(day.date) + '" data-kind="" onclick="attentionNavigateFromButton(this)">' +
             _attentionEsc(day.date) + '</button><div class="attn-side-kinds">';
         ['AL','AN','AR'].forEach(function(kind) {
-            h += '<button type="button" data-date="' + _attentionEsc(day.date) + '" data-kind="' + kind + '" onclick="attentionNavigateFromButton(this)">' + kind + ' <small>' +
+            h += '<button type="button" class="attn-kind-' + kind.toLowerCase() + '" data-date="' + _attentionEsc(day.date) + '" data-kind="' + kind + '" onclick="attentionNavigateFromButton(this)"><span class="attn-side-kind-label">' + kind + '</span><small>' +
                 Number(counts[kind.toLowerCase()] || 0) + '</small></button>';
         });
         h += '</div></div>';
