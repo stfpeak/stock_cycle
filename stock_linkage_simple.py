@@ -15959,6 +15959,21 @@ td.lt-trajectory-cell {
 .concept-kline-cell .kline-img.min { margin-bottom: 0; }
 .concept-kline-cell .min-fallback { display: flex; align-items: center; justify-content: center; height: 48px; background: rgba(255,255,255,0.05); border-radius: 4px; color: #888; font-size: 12px; border: 1px dashed #333; margin-bottom: 3px; }
 
+/* 实时 · 今日涨停 K线走势：题材筛选条与卡片前置题材标识 */
+.rt-zt-kline-filters { margin:8px 0 4px; padding:8px 10px; border:1px solid rgba(79,195,247,.25); border-radius:8px; background:rgba(8,30,58,.52); }
+.rt-zt-kline-filter-head { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:6px; }
+.rt-zt-kline-filter-label { color:#90caf9; font-size:.78em; font-weight:700; }
+.rt-zt-kline-filter-count { color:#78909c; font-size:.74em; margin-right:auto; }
+.rt-zt-kline-filter-action { border:1px solid rgba(100,181,246,.34); background:rgba(30,64,104,.55); color:#b3e5fc; border-radius:5px; padding:2px 8px; font-size:.74em; cursor:pointer; }
+.rt-zt-kline-filter-action:hover { border-color:#4fc3f7; color:#fff; }
+.rt-zt-kline-filter-list { display:flex; flex-wrap:wrap; gap:5px; }
+.rt-zt-kline-theme-filter { border:1px solid rgba(120,144,156,.36); background:rgba(27,45,69,.52); color:#78909c; border-radius:12px; padding:3px 9px; font-size:.76em; line-height:1.25; cursor:pointer; transition:background .14s,border-color .14s,color .14s,opacity .14s; }
+.rt-zt-kline-theme-filter.is-selected { background:rgba(0,188,212,.16); border-color:rgba(34,211,238,.76); color:#cffafe; box-shadow:inset 0 0 0 1px rgba(34,211,238,.12); }
+.rt-zt-kline-theme-filter:not(.is-selected) { opacity:.48; }
+.rt-zt-kline-card-theme { display:block; min-height:15px; margin:0 0 3px; color:#67e8f9; font-size:10px; line-height:1.25; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rt-zt-kline-card-theme .theme-prefix { color:#7dd3fc; margin-right:3px; }
+.rt-zt-kline-card-head .sk-zt-time { position:static; margin-left:auto; font-size:9px; flex-shrink:0; }
+
 /* 日期分布图 */
 .dist-chart { margin: 8px 0; }
 .dist-bar-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
@@ -16871,6 +16886,9 @@ td.lt-trajectory-cell {
 @media (max-width:680px) { .tsm-structure-btn { margin-left:0; } .tsm-theme-structure-modal { width:98%; padding:14px 10px; } }
 @media (max-width:680px) { .tsm-head { padding:7px 9px; } .tsm-source { width:100%; margin-left:0; } .tsm-date-picker { margin-left:0; } .tsm-scroll { padding:6px; } .tsm-list { grid-template-columns:minmax(360px,1fr); } }
 @media (prefers-reduced-motion:reduce) { .tsm-card.is-strong { animation:none; border-color:rgba(248,113,113,.82); } }
+/* 题材风向是高密度实时页：关闭本页所有呼吸灯/跑马灯/高板彩环等循环动画，
+   保留静态颜色和边框，避免页面长时间打开持续占用浏览器 CPU/GPU。 */
+#tab-themewind *, #tab-themewind *::before, #tab-themewind *::after { animation:none !important; }
 /* 连板联动 · 近15日历史天梯：日期控件与天梯视口固定在连板联动页内，避免受市场结构媒体样式影响 */
 #tab-ladderlinkage .ms-linkage-15day { margin: 0 0 14px; }
 #tab-ladderlinkage .ms-linkage-history-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 0 8px; padding:8px 11px; border:1px solid rgba(102,187,216,.26); border-radius:10px; background:linear-gradient(135deg,rgba(24,57,78,.88),rgba(19,31,48,.72)); box-shadow:0 5px 16px rgba(0,0,0,.12); }
@@ -29628,13 +29646,122 @@ function refreshRtZtHover(pair) {
 // 实时·今日涨停的题材走势：复用题材复盘“涨停节奏”的K线卡片、列数和刷新交互。
 var _rtTodayZtKlineOpen = false;
 var _rtTodayZtKlineCols = '';
+var _rtTodayZtKlineThemeSelection = null;
+
+function _rtTodayZtKlineThemes() {
+    var seen = {}, themes = [], hits = _kplSectionHits.rtTodayZt || [];
+    // hits 已与今日涨停表共用同一个“封板时间 → 连板 → 名称”展示顺序。
+    // 不再按 first_time 字段二次排序：按股票逐只扫描，题材首次出现的位置即筛选条位置。
+    hits.forEach(function(s) {
+        var tags = (s.subthemes && s.subthemes.length) ? s.subthemes : ['未归类'];
+        tags.forEach(function(tag) {
+            tag = String(tag || '').trim();
+            if (tag && !seen[tag]) {
+                seen[tag] = true;
+                themes.push(tag);
+            }
+        });
+    });
+    return themes;
+}
+
+function _rtTodayZtSyncThemeSelection() {
+    var themes = _rtTodayZtKlineThemes();
+    if (!_rtTodayZtKlineThemeSelection) {
+        _rtTodayZtKlineThemeSelection = {};
+        themes.forEach(function(theme) { _rtTodayZtKlineThemeSelection[theme] = true; });
+        return themes;
+    }
+    themes.forEach(function(theme) {
+        if (_rtTodayZtKlineThemeSelection[theme] === undefined) _rtTodayZtKlineThemeSelection[theme] = true;
+    });
+    Object.keys(_rtTodayZtKlineThemeSelection).forEach(function(theme) {
+        if (themes.indexOf(theme) === -1) delete _rtTodayZtKlineThemeSelection[theme];
+    });
+    return themes;
+}
+
+function _rtTodayZtSelectedKlineHits() {
+    var hits = _kplSectionHits.rtTodayZt || [];
+    _rtTodayZtSyncThemeSelection();
+    return hits.filter(function(s) {
+        var tags = (s.subthemes && s.subthemes.length) ? s.subthemes : ['未归类'];
+        return tags.some(function(tag) { return _rtTodayZtKlineThemeSelection[String(tag || '').trim()]; });
+    });
+}
+
+function _rtTodayZtKlineFilterHtml() {
+    var themes = _rtTodayZtSyncThemeSelection();
+    var selected = themes.filter(function(theme) { return _rtTodayZtKlineThemeSelection[theme]; }).length;
+    var chips = themes.map(function(theme, index) {
+        var selectedCls = _rtTodayZtKlineThemeSelection[theme] ? ' is-selected' : '';
+        return '<button type="button" class="rt-zt-kline-theme-filter' + selectedCls + '" onclick="toggleRtTodayZtKlineTheme(' + index + ')" title="' + _kplEsc(theme) + '">' + _kplEsc(theme) + '</button>';
+    }).join('');
+    return '<div class="rt-zt-kline-filters-inner"><div class="rt-zt-kline-filter-head">' +
+        '<span class="rt-zt-kline-filter-label">题材筛选</span><span class="rt-zt-kline-filter-count">已选 ' + selected + ' / ' + themes.length + '</span>' +
+        '<button type="button" class="rt-zt-kline-filter-action" onclick="setRtTodayZtKlineThemes(true)">全选</button>' +
+        '<button type="button" class="rt-zt-kline-filter-action" onclick="setRtTodayZtKlineThemes(false)">全取消</button></div>' +
+        '<div class="rt-zt-kline-filter-list">' + chips + '</div></div>';
+}
+
+function renderRtTodayZtKlineGrid(forceTs) {
+    var hits = _rtTodayZtSelectedKlineHits();
+    if (!hits.length) return '<div class="empty" style="padding:18px 0;">未选择题材；请选择一个或多个题材</div>';
+    var seen = {}, cells = '';
+    hits.forEach(function(item) {
+        var code = item.stock_code || '';
+        if (!code || seen[code]) return;
+        seen[code] = true;
+        var name = item.stock_name || '';
+        var tags = (item.subthemes && item.subthemes.length) ? item.subthemes : ['未归类'];
+        var kurl = sinaKlineImg(code), murl = sinaMinImg(code);
+        var srcK = forceTs ? kurl.replace(/\?\d*$/, '') + '?' + forceTs : kurl;
+        var srcM = forceTs ? murl.replace(/\?\d*$/, '') + '?' + forceTs : murl;
+        var time = (item.show_zt_time && Number(item.first_time || 999999) < 999999)
+            ? '<span class="sk-zt-time">涨停 ' + _kplLevelFormatTime(item.first_time) + '</span>' : '';
+        cells += '<div class="concept-kline-cell" onclick="showEnlargedConceptCell(this)" style="cursor:pointer;">' +
+            '<div class="sk-header rt-zt-kline-card-head"><div class="rt-zt-kline-card-theme"><span class="theme-prefix">题材</span>' + tags.map(function(tag) { return _kplEsc(tag); }).join(' · ') + '</div>' +
+            '<div class="sk-title-line"><span class="sk-name">' + _kplEsc(name) + '</span><span class="sk-code">' + _kplEsc(code) + '</span>' + time + '</div></div>' +
+            '<img class="kline-img" src="' + srcK + '" onerror="retryImg(this)">' +
+            '<img class="kline-img min" src="' + srcM + '" onload="checkMinImgLoad(this)" onerror="retryImg(this)">' +
+            '</div>';
+    });
+    return '<div class="concept-kline-grid">' + cells + '</div>';
+}
+
+function _rtTodayZtRerenderKlines(forceTs) {
+    var wrap = document.getElementById('kpl-kline-wrap-rtTodayZt');
+    if (!wrap) return;
+    var filter = wrap.querySelector('.rt-zt-kline-filters');
+    var gridEl = _kplWrapGridEl(wrap);
+    if (filter) filter.innerHTML = _rtTodayZtKlineFilterHtml();
+    if (gridEl) gridEl.innerHTML = renderRtTodayZtKlineGrid(forceTs);
+    _kplApplyKlineCols(wrap);
+}
+
+function toggleRtTodayZtKlineTheme(index) {
+    var themes = _rtTodayZtSyncThemeSelection();
+    var theme = themes[index];
+    if (!theme) return;
+    _rtTodayZtKlineThemeSelection[theme] = !_rtTodayZtKlineThemeSelection[theme];
+    _rtTodayZtRerenderKlines();
+}
+
+function setRtTodayZtKlineThemes(checked) {
+    var themes = _rtTodayZtSyncThemeSelection();
+    themes.forEach(function(theme) { _rtTodayZtKlineThemeSelection[theme] = !!checked; });
+    _rtTodayZtRerenderKlines();
+}
+
 function _rtTodayZtKlineWrapHtml() {
     var hits = _kplSectionHits.rtTodayZt || [];
     var open = _rtTodayZtKlineOpen;
-    var grid = open ? renderKplKlineGrid(hits, String(Date.now())) : '';
+    _rtTodayZtSyncThemeSelection();
+    var grid = open ? renderRtTodayZtKlineGrid(String(Date.now())) : '';
     if (_rtTodayZtKlineCols && grid) grid = grid.replace('class="concept-kline-grid"', 'class="concept-kline-grid" style="grid-template-columns:repeat(' + _rtTodayZtKlineCols + ', minmax(340px, 1fr));"');
     var wrap = '<div id="kpl-kline-wrap-rtTodayZt" class="concept-kline-wrap' + (open ? ' kpl-wrap-open' : '') + '" data-open="' + (open ? '1' : '0') + '" data-kline-cols="' + _rtTodayZtKlineCols + '" style="max-height:' + (open ? 'none' : '0') + ';overflow:hidden">';
     wrap += _kplKlineColbarHtml('rtTodayZt');
+    wrap += '<div class="rt-zt-kline-filters">' + _rtTodayZtKlineFilterHtml() + '</div>';
     wrap += '<div class="kpl-kline-grid-holder"><div class="kpl-kline-scroll">' + grid + '</div></div></div>';
     return wrap;
 }
@@ -31315,7 +31442,11 @@ function toggleKplKlines(secId) {
     var hits = secId ? _kplSectionHits[secId] : _kplSearchHits;
     if (hits) {
         var gridEl = _kplWrapGridEl(wrap);
-        if (!gridEl.innerHTML.trim()) gridEl.innerHTML = renderKplKlineGrid(hits);
+        if (!gridEl.innerHTML.trim()) {
+            gridEl.innerHTML = secId === 'rtTodayZt'
+                ? renderRtTodayZtKlineGrid()
+                : renderKplKlineGrid(hits);
+        }
     }
     _kplApplyKlineCols(wrap);
     _kplWrapOpenState(wrap, true);
@@ -31336,7 +31467,11 @@ function refreshKplKlines(secId) {
     var hits = secId ? _kplSectionHits[secId] : _kplSearchHits;
     if (!wrap || !hits) return;
     var gridEl = _kplWrapGridEl(wrap);
-    gridEl.innerHTML = renderKplKlineGrid(hits, ts);
+    if (secId === 'rtTodayZt') {
+        _rtTodayZtRerenderKlines(ts);
+    } else {
+        gridEl.innerHTML = renderKplKlineGrid(hits, ts);
+    }
     _kplApplyKlineCols(wrap);
     if (wrap.getAttribute('data-open') === '1') _kplWrapOpenState(wrap, true);
 }
