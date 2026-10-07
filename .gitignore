@@ -14,6 +14,13 @@ data/*.png
 data/hot/
 data/kline_data/
 data/JYGS_ZT/
+# 竞价后的全市场实时行情原始快照：本地回溯底稿，体积大且不应进入代码仓库
+data/auction_market_snapshots/
+data/auction_reports/
+# Attention 每日题材分类快照：本地可回溯数据，不进入代码仓库
+data/attention_snapshots/
+# 题材强弱矩阵日快照：服务分钟覆盖、云端同步保留，不进入代码仓库
+data/theme_strength_matrix/
 
 # 报告/截图
 reports/dashboard.html

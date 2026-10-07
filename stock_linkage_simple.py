@@ -12,6 +12,7 @@ import sys
 import json
 import sqlite3
 import threading
+import socket
 import bisect
 import time
 import importlib
@@ -731,10 +732,9 @@ def _feishu_color(text, color):
 
 
 def _feishu_publish_auction_report(report):
-    """推送完整竞价快照：初版/复核版各一份，和磁盘报告严格同源。"""
-    if (not report or not report.get('available')
-            or not _auction_snapshot_is_complete(report.get('market_snapshot'), report.get('date'))):
-        print('[竞价报告] 拒绝推送：缺少完整的当日全市场竞价快照')
+    """推送竞价报告；快照或日 K 开盘价均可作为同源开盘价口径。"""
+    if not report or not report.get('available') or not report.get('complete', report.get('quote_complete')):
+        print('[竞价报告] 拒绝推送：缺少可用的目标日开盘价')
         return False
     stage = '9:29:20 复核版' if report.get('stage') == 'verified' else '9:25 初版'
     blocks = []
@@ -762,7 +762,7 @@ def _feishu_publish_auction_report(report):
     if not blocks:
         blocks = ['当日竞价强势股暂未形成可归类的细分题材。']
     return _feishu_send_cards('竞价报告 · %s' % stage, 'turquoise', blocks,
-                              '数据同源于盯盘页面，报告已保存')
+                              '%s · 报告已保存' % (report.get('quote_basis') or '开盘价口径'))
 
 
 def _feishu_promotion_blocks(tws_data):
@@ -4147,6 +4147,30 @@ def _auction_report_path(day_ymd):
     return os.path.join(_AUCTION_REPORT_DIR, '%s.json' % (day_ymd or ''))
 
 
+def _auction_latest_saved_report_day(before_or_on=None):
+    """返回最近一份可直接展示的竞价报告日期。
+
+    正式报告优先于同日的 9:25 初版；不把 cloud-source 这类同步底稿当成页面报告。
+    """
+    if not os.path.isdir(_AUCTION_REPORT_DIR):
+        return ''
+    upper = str(before_or_on or '').replace('-', '')
+    finals, initials = [], []
+    try:
+        names = os.listdir(_AUCTION_REPORT_DIR)
+    except OSError:
+        return ''
+    for name in names:
+        matched = re.match(r'^(\d{8})(\.initial)?\.json$', str(name))
+        if not matched:
+            continue
+        saved_day = matched.group(1)
+        if upper and saved_day > upper:
+            continue
+        (initials if matched.group(2) else finals).append(saved_day)
+    return max(finals) if finals else (max(initials) if initials else '')
+
+
 def _auction_market_snapshot_path(day_ymd):
     """9:25 后的全市场竞价截面；一天一份且只写首次有效结果。"""
     return os.path.join(_AUCTION_MARKET_SNAPSHOT_DIR, '%s.json' % (day_ymd or ''))
@@ -4431,6 +4455,73 @@ def _auction_quote_item(code, quote, prev_lianban=0, tags=None):
     }
 
 
+def _auction_kline_open_quotes(day_ymd, codes):
+    """按目标交易日日 K 开盘价读取竞价口径行情。
+
+    集合竞价在 9:25 形成当天开盘价，因此历史回放使用 ``open / prev_close``
+    即可完整复现竞价涨幅。优先用目标行的 prev_close；少数旧行缺失时，回查
+    前一交易日 close。只查询报告候选股票，不扫全表，避免影响页面加载。
+    """
+    day = str(day_ymd or '').replace('-', '')
+    codes = sorted({str(code or '').zfill(6) for code in (codes or []) if str(code or '').strip()})
+    if len(day) != 8 or not codes:
+        return {}
+    target = '%s-%s-%s' % (day[:4], day[4:6], day[6:])
+    prev = _auction_prev_trade_day(day)
+    prev_fmt = '%s-%s-%s' % (prev[:4], prev[4:6], prev[6:]) if prev else ''
+    db = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
+    if not os.path.exists(db):
+        return {}
+    result = {}
+    try:
+        conn = sqlite3.connect(db)
+        cur = conn.cursor()
+        placeholders = ','.join('?' * len(codes))
+        cur.execute(
+            f'''SELECT stock_code, open, prev_close
+                FROM kline_daily WHERE trade_date=? AND stock_code IN ({placeholders})''',
+            [target] + codes,
+        )
+        missing = []
+        for code, open_px, prev_close in cur.fetchall():
+            code = str(code).zfill(6)
+            try:
+                op, pc = float(open_px or 0), float(prev_close or 0)
+            except (TypeError, ValueError):
+                missing.append(code)
+                continue
+            if op > 0 and pc > 0:
+                result[code] = {'open': op, 'prev_close': pc, 'change_pct': round((op - pc) / pc * 100, 2)}
+            else:
+                missing.append(code)
+        missing = sorted(set(codes) - set(result))
+        if missing and prev_fmt:
+            missing_ph = ','.join('?' * len(missing))
+            cur.execute(
+                f'''SELECT stock_code, open FROM kline_daily
+                    WHERE trade_date=? AND stock_code IN ({missing_ph})''',
+                [target] + missing,
+            )
+            open_map = {str(code).zfill(6): value for code, value in cur.fetchall()}
+            cur.execute(
+                f'''SELECT stock_code, close FROM kline_daily
+                    WHERE trade_date=? AND stock_code IN ({missing_ph})''',
+                [prev_fmt] + missing,
+            )
+            for code, prev_close in cur.fetchall():
+                code = str(code).zfill(6)
+                try:
+                    op, pc = float(open_map.get(code) or 0), float(prev_close or 0)
+                except (TypeError, ValueError):
+                    continue
+                if op > 0 and pc > 0:
+                    result[code] = {'open': op, 'prev_close': pc, 'change_pct': round((op - pc) / pc * 100, 2)}
+        conn.close()
+    except Exception as exc:
+        print('[竞价报告] 日K开盘价读取失败 %s: %s' % (target, exc))
+    return result
+
+
 def _auction_sector_top5(date_fmt=None):
     """指定交易日的精选板块 Top5，排序和过滤与题材风向卡片完全共用。"""
     try:
@@ -4459,9 +4550,10 @@ def _auction_sector_top5(date_fmt=None):
 
 
 def _auction_build_report(stage='initial', market_snapshot=None, day_ymd=None):
-    """只用当日全市场竞价快照重建报告，再关联昨日梯队和近15日题材索引。
+    """构建竞价报告：昨日梯队 + 近15日题材索引 + 目标日开盘价。
 
-    缺少有效全市场快照时拒绝生成“完整报告”，不能退回竞价异动候选池冒充全市场。
+    优先使用 9:25 全市场原始快照；快照缺失时，历史日期从日 K 开盘价回放，
+    当天盘中则以实时开盘价补齐候选股票。快照是原始底稿而非报告生成前提。
     """
     now_bj = _bj_now()
     today = str(day_ymd or now_bj.strftime('%Y%m%d')).replace('-', '')
@@ -4471,12 +4563,7 @@ def _auction_build_report(stage='initial', market_snapshot=None, day_ymd=None):
     if not prev:
         return {'date': today, 'available': False, 'message': '缺少前一交易日天梯数据'}
     market_snapshot = market_snapshot or _auction_load_market_snapshot(today)
-    if not _auction_snapshot_is_complete(market_snapshot, today):
-        return {
-            'date': '%s-%s-%s' % (today[:4], today[4:6], today[6:]),
-            'available': False, 'stage': stage,
-            'message': '缺少当日全市场竞价原始快照，暂不生成不完整报告；采集成功后自动重试。',
-        }
+    snapshot_available = _auction_snapshot_is_complete(market_snapshot, today)
     _kpl_ensure_loaded()
     prev_fmt = '%s-%s-%s' % (prev[:4], prev[4:6], prev[6:])
     today_fmt = '%s-%s-%s' % (today[:4], today[4:6], today[6:])
@@ -4501,18 +4588,61 @@ def _auction_build_report(stage='initial', market_snapshot=None, day_ymd=None):
             if len(code) == 6 and code.isdigit():
                 tags_by_code.setdefault(code, []).append(tag)
 
-    # 快照本身覆盖全市场：不再通过候选股实时行情接口补数据，所有涨幅、开盘价、昨收
-    # 都来自同一采样文件，避免一部分股票取快照、一部分股票取稍后行情造成口径漂移。
-    quotes = {}
-    for row in market_snapshot.get('stocks') or []:
-        code = str((row or {}).get('code') or '').zfill(6)
+    # 当日涨停理由补入候选池，保证历史回放不会遗漏当天一字/强势首板形成的新题材。
+    for row in _kpl_rows_by_date.get(today_fmt, []) or []:
+        code = str(row.get('stock_code') or '').zfill(6)
         if len(code) != 6 or not code.isdigit():
             continue
-        quotes[code] = {
-            'name': row.get('name') or code,
-            'price': row.get('price'), 'open': row.get('open'),
-            'prev_close': row.get('prev_close'), 'change_pct': row.get('change_pct'),
-            'limit_pct': _limit_pct_for(code, row.get('name') or ''),
+        tags = _auction_stock_tags(code, today_fmt)
+        if tags:
+            tags_by_code.setdefault(code, []).extend(tags)
+    for code, tags in list(tags_by_code.items()):
+        tags_by_code[code] = list(dict.fromkeys(tags))
+
+    # 报告候选：昨日 2 板+、近15日同题材涨停股、以及目标日涨停股。
+    candidate_codes = set(ladder) | set(tags_by_code)
+    quotes = {}
+    quote_basis = ''
+    if snapshot_available:
+        # 原始快照覆盖全市场，是盘中 9:25 的最高优先级底稿。
+        for row in market_snapshot.get('stocks') or []:
+            code = str((row or {}).get('code') or '').zfill(6)
+            if len(code) != 6 or not code.isdigit():
+                continue
+            quotes[code] = {
+                'name': row.get('name') or code,
+                'price': row.get('price'), 'open': row.get('open'),
+                'prev_close': row.get('prev_close'), 'change_pct': row.get('change_pct'),
+                'limit_pct': _limit_pct_for(code, row.get('name') or ''),
+            }
+        quote_basis = '全市场9:25原始快照'
+    else:
+        # 历史回放：日 K 开盘价就是 9:25 集合竞价最终价格。
+        kline_quotes = _auction_kline_open_quotes(today, candidate_codes)
+        for code, quote in kline_quotes.items():
+            quotes[code] = {
+                'name': (ladder.get(code) or {}).get('name') or _kpl_stock_index.get(code, {}).get('stock_name') or code,
+                'open': quote.get('open'), 'prev_close': quote.get('prev_close'),
+                'change_pct': quote.get('change_pct'),
+                'limit_pct': _limit_pct_for(code, (ladder.get(code) or {}).get('name') or ''),
+            }
+        if quotes:
+            quote_basis = '日K开盘价（9:25）'
+        # 当前 9:25 日 K 尚未落库时，临时读取实时开盘价；盘后历史不会走此分支。
+        if not quotes and today == now_bj.strftime('%Y%m%d') and _is_trading_hours():
+            flags = _kpl_strong_flags(candidate_codes)
+            for code, flag in flags.items():
+                quotes[code] = {
+                    'name': (ladder.get(code) or {}).get('name') or _kpl_stock_index.get(code, {}).get('stock_name') or code,
+                    'open': None, 'prev_close': None, 'change_pct': flag.get('open_pct'),
+                    'limit_pct': _limit_pct_for(code, (ladder.get(code) or {}).get('name') or ''),
+                }
+            if quotes:
+                quote_basis = '盘中实时开盘价'
+    if not quotes:
+        return {
+            'date': today_fmt, 'available': False, 'stage': stage,
+            'message': '目标交易日缺少可用开盘价：日K尚未落库且实时开盘价不可用。',
         }
 
     item_by_code = {}
@@ -4579,16 +4709,6 @@ def _auction_build_report(stage='initial', market_snapshot=None, day_ymd=None):
                                 key=lambda x: (-(x['prev_lianban'] or 0), -(x['open_pct'] or -999), x['name']))
 
     sectors = _auction_sector_top5(today_fmt)
-    if not sectors and today != now_bj.strftime('%Y%m%d'):
-        # 离线回溯时若 levistock 历史排行不可用，才兼容旧报告保存的板块样本；
-        # 仍通过题材风向同一过滤/排序函数，不能重新按涨幅另排一套。
-        old_report = _auction_load_report(today)
-        sectors = _theme_wind_ranked_sector_rows(old_report.get('sector_top5') or [], top_n=5)
-        sectors = [{
-            'name': str(row.get('name') or row.get('plate_name') or '').strip(),
-            'change_pct': round(float(row.get('change_pct', row.get('pct_chg', row.get('change', 0))) or 0), 2),
-            'stock_count': int(row.get('stock_count') or row.get('count') or 0),
-        } for row in sectors if str(row.get('name') or row.get('plate_name') or '').strip()]
     def normalized_topic_name(value):
         return re.sub(r'(概念|板块|行业)$', '', str(value or '').strip())
     for group in groups.values():
@@ -4605,7 +4725,9 @@ def _auction_build_report(stage='initial', market_snapshot=None, day_ymd=None):
     report = {
         'date': today_fmt, 'available': True, 'stage': stage,
         'generated_at': now_bj.strftime('%Y-%m-%d %H:%M:%S'),
-        'source': 'levistock.stocks_all_em 全市场竞价原始快照 + 昨日连板梯队 + KPL细分题材/近15日涨停索引',
+        'source': '%s + 昨日连板梯队 + KPL细分题材/近15日涨停索引' % quote_basis,
+        'quote_basis': quote_basis,
+        'quote_complete': True,
         'market_snapshot': _auction_market_snapshot_ref(market_snapshot, today),
         'sector_match_method': 'normalized_exact_name',
         # 同一股票可能挂多个细分题材，报告头部按证券代码去重，避免重复计数。
@@ -4682,7 +4804,9 @@ def _auction_add_dimensions(report):
         })
 
     snapshot = report.get('market_snapshot') or {}
-    report['complete'] = _auction_snapshot_is_complete(snapshot, report.get('date'))
+    # complete 表示本报告的竞价涨幅口径可用；不再等同于“存在全市场原始快照”。
+    # 历史日的日 K 开盘价同样可以完整回放昨日梯队、题材广度与一字/强势判定。
+    report['complete'] = bool(report.get('quote_complete') or _auction_snapshot_is_complete(snapshot, report.get('date')))
     breadth_rows = []
     if report['complete']:
         for group in groups:
@@ -4703,16 +4827,12 @@ def _auction_add_dimensions(report):
         -x['positive'], -x['sample'], x['theme']))
 
     notes = []
-    if not snapshot.get('available'):
-        notes.append('缺少全市场竞价原始快照：当前内容只能作为旧报告重组，不能视为完整报告。')
-        if snapshot.get('message'):
-            notes.append(str(snapshot.get('message')))
+    if not snapshot.get('available') and report.get('quote_basis') == '日K开盘价（9:25）':
+        notes.append('竞价涨幅按目标交易日日 K 开盘价 / 前收回放；未使用全市场原始快照。')
+    elif not snapshot.get('available') and not report.get('quote_complete'):
+        notes.append('缺少可用开盘价，报告未能完成。')
     if top5 and all(not item.get('constituent_verified') for item in top5):
         notes.append('Top5 题材关联不是板块成分股代码交叉核验；历史报告的题材关联口径未记录。')
-    if top5 and not report.get('complete'):
-        notes.append('本报告缺少全市场竞价快照；旧版已保存的Top5无法补证为当日精选板块卡片的完整同屏截面。')
-    if groups and not report.get('complete'):
-        notes.append('缺少原始竞价快照，近15日细分题材个股涨幅不展示，避免把盘后数据冒充竞价涨幅。')
     if breadth_rows and not any(item.get('stock_detail_available') for item in breadth_rows):
         notes.append('本日已存文件只有近20日题材统计值，没有逐只成员竞价涨幅；使用原始全市场快照重建后可生成近15日逐股明细。')
 
@@ -4733,14 +4853,9 @@ def _auction_add_dimensions(report):
 
 
 def _auction_rebuild_report_from_snapshot(day_ymd, stage='verified', persist=True):
-    """用指定日期已保存的全市场原始快照重建报告；快照缺失时明确失败，不做盘后伪回填。"""
+    """重建指定日期竞价报告：快照优先，缺失则按日 K 开盘价回放。"""
     day = str(day_ymd or '').replace('-', '')
     snapshot = _auction_load_market_snapshot(day)
-    if not snapshot:
-        return {
-            'date': day, 'available': False,
-            'message': '找不到 data/auction_market_snapshots/%s.json，不能还原该日竞价报告。' % day,
-        }
     report = _auction_build_report(stage=stage, market_snapshot=snapshot, day_ymd=day)
     if report.get('available') and persist:
         _auction_save_report(report)
@@ -4748,9 +4863,8 @@ def _auction_rebuild_report_from_snapshot(day_ymd, stage='verified', persist=Tru
 
 
 def _auction_save_report(report):
-    if not (report or {}).get('available') or not _auction_snapshot_is_complete(
-            (report or {}).get('market_snapshot'), (report or {}).get('date')):
-        print('[竞价报告] 拒绝保存：缺少完整的当日全市场竞价快照')
+    if not (report or {}).get('available') or not (report or {}).get('complete', (report or {}).get('quote_complete')):
+        print('[竞价报告] 拒绝保存：缺少可用的目标日开盘价')
         return False
     day = (report or {}).get('date', '').replace('-', '')
     if not day:
@@ -4766,13 +4880,18 @@ def _auction_save_report(report):
     os.replace(tmp, path)
     if report.get('stage') != 'initial':
         _auction_report_cache[day] = report
+        _auction_report_cache.pop('_fallback:' + day, None)
     return True
 
 
 def _auction_load_report(day_ymd=None):
     day = (day_ymd or '').replace('-', '')
+    default_day_request = not bool(day)
     if not day:
         day = _bj_now().strftime('%Y%m%d')
+    fallback_cache_key = '_fallback:' + day
+    if default_day_request and fallback_cache_key in _auction_report_cache:
+        return _auction_report_cache[fallback_cache_key]
     if day in _auction_report_cache:
         return _auction_report_cache[day]
     path = _auction_report_path(day)
@@ -4785,11 +4904,39 @@ def _auction_load_report(day_ymd=None):
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 report = json.load(f)
+            # 旧版报告将“无全市场快照”视为不可用。现在可以按同日 K 线开盘价
+            # 无损重算，避免页面持续展示旧的“不完整”状态。
+            if report.get('available') and not report.get('quote_basis'):
+                rebuilt = _auction_build_report(stage=report.get('stage') or 'historical', day_ymd=day)
+                if rebuilt.get('available'):
+                    _auction_save_report(rebuilt)
+                    _auction_report_cache[day] = rebuilt
+                    return rebuilt
             report = _auction_add_dimensions(report)
             _auction_report_cache[day] = report
             return report
         except Exception:
             pass
+    # 历史报告未落盘时，用日 K 的开盘价直接回放生成；页面回看无需依赖竞价快照。
+    rebuilt = _auction_build_report(stage='historical', day_ymd=day)
+    if rebuilt.get('available'):
+        _auction_save_report(rebuilt)
+        _auction_report_cache[day] = rebuilt
+        return rebuilt
+    # 盯盘首屏默认请求“今天”。非交易日、当天尚未完成 9:25 采集或本地尚未补数时，
+    # 不应让已经保存的报告消失；自动展示最近一份，且把回退状态明确交给前端标记。
+    # 显式指定日期的历史回看仍维持原语义：不存在就提示该日期尚未生成。
+    if default_day_request:
+        fallback_day = _auction_latest_saved_report_day(before_or_on=day)
+        if fallback_day and fallback_day != day:
+            fallback = _auction_load_report(fallback_day)
+            if fallback.get('available'):
+                result = dict(fallback)
+                result['fallback'] = True
+                result['requested_date'] = '%s-%s-%s' % (day[:4], day[4:6], day[6:])
+                result['fallback_message'] = '当前日期竞价报告尚未生成，已展示最近已保存报告'
+                _auction_report_cache[fallback_cache_key] = result
+                return result
     return {'date': '%s-%s-%s' % (day[:4], day[4:6], day[6:]) if len(day) == 8 else '',
             'available': False, 'message': '当日竞价报告尚未生成'}
 
@@ -4827,40 +4974,39 @@ def _auction_report_loop():
                         existing = _auction_load_report(day)
                         existing_snapshot = existing.get('market_snapshot') or {}
                         if (existing.get('available') and existing.get('stage') == 'initial'
-                                and existing_snapshot.get('available')):
-                            print('[竞价报告] %s 9:25 初版已存在且引用有效快照，跳过重复生成' % day)
+                                and (existing_snapshot.get('available') or not (market_snapshot or {}).get('available'))):
+                            print('[竞价报告] %s 9:25 初版已存在，跳过重复生成' % day)
                             fired.add((day, 'initial'))
-                        elif market_snapshot and market_snapshot.get('available'):
-                            report = _auction_build_report('initial', market_snapshot)
+                        else:
+                            report = _auction_build_report('initial', market_snapshot, day)
                             if report.get('available'):
                                 _auction_save_report(report)
                                 _feishu_publish_auction_report(report)
-                                print('[竞价报告] %s 初版已从全市场快照生成并保存' % day)
+                                print('[竞价报告] %s 初版已按%s生成并保存' % (day, report.get('quote_basis') or '开盘价'))
                                 fired.add((day, 'initial'))
-                        else:
-                            print('[竞价报告] %s 全市场快照暂不可用，将在 9:25 窗口内重试' % day)
+                            else:
+                                print('[竞价报告] %s 开盘价暂不可用，将在 9:25 窗口内重试' % day)
                 if verify_start <= sec < 9 * 3600 + 30 * 60 + 30 and (day, 'verified') not in fired:
                     with _auction_report_lock:
                         existing = _auction_load_report(day)
                         existing_snapshot = existing.get('market_snapshot') or {}
                         if (existing.get('available') and existing.get('stage') == 'verified'
-                                and existing_snapshot.get('available')):
-                            print('[竞价报告] %s 9:29:20 复核版已存在且引用有效快照，跳过重复推送' % day)
+                                and (existing_snapshot.get('available') or not _auction_load_market_snapshot(day))):
+                            print('[竞价报告] %s 9:29:20 复核版已存在，跳过重复推送' % day)
                             fired.add((day, 'verified'))
                         else:
                             market_snapshot = _auction_load_market_snapshot(day)
                             if not market_snapshot or not market_snapshot.get('available'):
                                 # 初版窗口若接口断连，复核窗口继续抢救采集一次；成功后原子落盘。
                                 market_snapshot = capture_snapshot(day, force=True)
-                            if market_snapshot and market_snapshot.get('available'):
-                                report = _auction_build_report('verified', market_snapshot)
-                                if report.get('available'):
-                                    _auction_save_report(report)
-                                    _feishu_publish_auction_report(report)
-                                    print('[竞价报告] %s 复核版已从全市场快照生成并保存' % day)
-                                    fired.add((day, 'verified'))
+                            report = _auction_build_report('verified', market_snapshot, day)
+                            if report.get('available'):
+                                _auction_save_report(report)
+                                _feishu_publish_auction_report(report)
+                                print('[竞价报告] %s 复核版已按%s生成并保存' % (day, report.get('quote_basis') or '开盘价'))
+                                fired.add((day, 'verified'))
                             else:
-                                print('[竞价报告] %s 全市场快照仍不可用，复核报告不落盘；窗口内继续重试' % day)
+                                print('[竞价报告] %s 开盘价仍不可用，复核报告不落盘；窗口内继续重试' % day)
             # 只保留当前进程所需的去重标记；历史报告全部留在磁盘。
             if len(fired) > 8:
                 fired = {x for x in fired if x[0] >= day}
@@ -5639,6 +5785,651 @@ def _strong_arb_build(date_fmt, promo_today_col):
     return out[:8]
 
 
+def _tws_matrix_time_value(value):
+    """题材强弱矩阵的封板时间排序值；缺失时间统一沉底。"""
+    try:
+        value = int(value or 0)
+    except (TypeError, ValueError):
+        value = 0
+    return value if 0 < value < 999999 else 999999
+
+
+def _tws_matrix_stock_list(stocks):
+    """矩阵中同题材股票按连板高度、首封时间稳定排序并去重。"""
+    by_code = {}
+    for raw in stocks or []:
+        code = str((raw or {}).get('code') or '')
+        if not code:
+            continue
+        item = dict(raw)
+        old = by_code.get(code)
+        if old is None or int(item.get('lianban') or 0) > int(old.get('lianban') or 0):
+            by_code[code] = item
+    return sorted(by_code.values(), key=lambda item: (
+        -int(item.get('lianban') or 0), _tws_matrix_time_value(item.get('first_time')),
+        item.get('name') or '', item.get('code') or ''))
+
+
+def _tws_matrix_auction_flags(date_fmt, tws_data, codes):
+    """读取题材矩阵的竞价涨幅。
+
+    统一口径为目标交易日的 ``开盘价 / 昨收 - 1``：A 股集合竞价在 9:25
+    确定开盘价，历史复盘直接从日 K 线读取即可，不依赖额外保存的竞价快照。
+    仅当天盘中日 K 未落库时，才以实时行情开盘价临时补齐。
+    """
+    date_ymd = str(date_fmt or '').replace('-', '')
+    need = {str(code).zfill(6) for code in (codes or []) if str(code or '').strip()}
+    if not date_ymd or not need:
+        return {}, ''
+
+    # 历史及已收盘当日：直接取日 K 开盘价和该行 prev_close；prev_close 缺失时
+    # 再回查前一交易日 close。这样“昨日天梯 → 今日竞价”严格按相邻交易日计算。
+    out = {}
+    db = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
+    target_fmt = f'{date_ymd[:4]}-{date_ymd[4:6]}-{date_ymd[6:]}'
+    prev_ymd = _kpl_lagged_day(date_ymd, -1)
+    prev_fmt = f'{prev_ymd[:4]}-{prev_ymd[4:6]}-{prev_ymd[6:]}' if prev_ymd else ''
+    try:
+        if os.path.exists(db):
+            conn = sqlite3.connect(db)
+            cur = conn.cursor()
+            placeholders = ','.join('?' * len(need))
+            cur.execute(
+                f'''SELECT stock_code, open, prev_close
+                    FROM kline_daily
+                    WHERE trade_date=? AND stock_code IN ({placeholders})''',
+                [target_fmt] + sorted(need),
+            )
+            for code, open_px, prev_close in cur.fetchall():
+                try:
+                    op, pc = float(open_px or 0), float(prev_close or 0)
+                except (TypeError, ValueError):
+                    continue
+                if op > 0 and pc > 0:
+                    out[str(code).zfill(6)] = {'open_pct': round((op - pc) / pc * 100, 2), 'is_yizi': False}
+            missing = sorted(need - set(out))
+            if missing and prev_fmt:
+                missing_ph = ','.join('?' * len(missing))
+                cur.execute(
+                    f'''SELECT stock_code, open FROM kline_daily
+                        WHERE trade_date=? AND stock_code IN ({missing_ph})''',
+                    [target_fmt] + missing,
+                )
+                open_map = {str(code).zfill(6): value for code, value in cur.fetchall()}
+                cur.execute(
+                    f'''SELECT stock_code, close FROM kline_daily
+                        WHERE trade_date=? AND stock_code IN ({missing_ph})''',
+                    [prev_fmt] + missing,
+                )
+                for code, prev_close in cur.fetchall():
+                    code = str(code).zfill(6)
+                    try:
+                        op, pc = float(open_map.get(code) or 0), float(prev_close or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if op > 0 and pc > 0:
+                        out[code] = {'open_pct': round((op - pc) / pc * 100, 2), 'is_yizi': False}
+            conn.close()
+    except Exception as exc:
+        print(f'[题材强弱矩阵] 历史开盘价读取失败 {target_fmt}: {exc}')
+    if out:
+        return out, '日K开盘价（9:25）'
+
+    # 仅当前盘中在日 K 尚未落库时使用实时开盘价；历史日没有 K 线则不做猜测。
+    if (tws_data or {}).get('trading') and date_fmt == _bj_now().strftime('%Y-%m-%d'):
+        return _kpl_strong_flags(need), '盘中实时开盘价'
+    return {}, ''
+
+
+def _tws_matrix_extra_themes(code, theme_universe):
+    """用开盘红、同花顺本地库补充“同名题材”的精确映射。
+
+    KPL 涨停理由始终是矩阵的主题来源；补充库只在标签与已有主题完全相同
+    时才关联，避免近义词扩散把无关题材拼到一起。
+    """
+    candidates = []
+    try:
+        candidates.extend(_get_kph_industry_concepts(code) or [])
+    except Exception:
+        pass
+    try:
+        candidates.extend(finder.get_stock_concepts(code) or [])
+    except Exception:
+        pass
+    matched = set()
+    for raw in candidates:
+        text = str(raw or '').strip()
+        if not text:
+            continue
+        if text in theme_universe:
+            matched.add(text)
+        for tag in _traj_valid_tags(text, text):
+            if tag in theme_universe:
+                matched.add(tag)
+    return matched
+
+
+def _tws_matrix_item_codes(item):
+    """矩阵题材卡所涉及的股票代码；仅用于本地概念关联，不额外联网。"""
+    groups = [
+        (item.get('baseline') or {}).get('stocks') or [],
+        (item.get('baseline') or {}).get('leaders') or [],
+        item.get('chains') or [], item.get('firsts') or [], item.get('promoted') or [],
+        item.get('migrated') or [], item.get('auction') or [], item.get('weak') or [],
+        item.get('failures') or [], item.get('strong_gem') or [], item.get('core') or [],
+    ]
+    codes = set()
+    for stocks in groups:
+        for stock in stocks:
+            code = str((stock or {}).get('code') or '').zfill(6)
+            if len(code) == 6 and code.isdigit():
+                codes.add(code)
+    return codes
+
+
+def _tws_matrix_cluster_related(items, base_bucket):
+    """在既定强弱档内，把存在共同题材归属的卡片相邻摆放。
+
+    关联边只来自同一股票在开盘红 / 同花顺本地概念库中共同命中的当前矩阵题材，
+    且仍沿用细分题材过滤。因此“新能源车—汽车零部件”等真实共现会靠近，
+    资产重组、次新股等泛标签不会改变排序。``base_bucket`` 把连板高度、断档状态
+    作为硬边界，关联性只在同强度档内做稳定聚类。
+    """
+    if len(items or []) < 2:
+        return items or []
+    universe = {str(item.get('theme') or '').strip() for item in items if str(item.get('theme') or '').strip()}
+    if len(universe) < 2:
+        return items
+    item_codes = {item['theme']: _tws_matrix_item_codes(item) for item in items}
+    code_themes = {}
+    for theme, codes in item_codes.items():
+        for code in codes:
+            code_themes.setdefault(code, set()).add(theme)
+    edges = {}
+    for code, themes in code_themes.items():
+        # 先保留涨停/大涨记录本身已说明的共同归属，再用两个本地概念库补充。
+        themes = set(themes) | _tws_matrix_extra_themes(code, universe)
+        themes = sorted(theme for theme in themes if theme in universe)
+        for index, left in enumerate(themes):
+            for right in themes[index + 1:]:
+                pair = (left, right)
+                edges[pair] = edges.get(pair, 0) + 1
+    if not edges:
+        return items
+
+    def score(left, right):
+        return edges.get(tuple(sorted((left, right))), 0)
+
+    # 让页面/接口可解释“为什么相邻”；当前 UI 不强制展示，后续可直接复用。
+    for item in items:
+        theme = item.get('theme') or ''
+        item['related_themes'] = [other for other in sorted(
+            (candidate for candidate in universe if candidate != theme),
+            key=lambda candidate: (-score(theme, candidate), candidate)) if score(theme, other) > 0]
+
+    # 只在同一既定强度桶中聚类：强度排序优先，关联排序次之。
+    buckets = {}
+    bucket_order = []
+    for item in items:
+        key = base_bucket(item)
+        if key not in buckets:
+            buckets[key] = []
+            bucket_order.append(key)
+        buckets[key].append(item)
+    ordered = []
+    for key in bucket_order:
+        remaining = list(buckets[key])
+        while remaining:
+            cluster = [remaining.pop(0)]  # 原排序首位永远是簇锚点，保持稳定性。
+            while remaining:
+                scored = [(sum(score(candidate.get('theme') or '', member.get('theme') or '')
+                               for member in cluster), -position, candidate)
+                          for position, candidate in enumerate(remaining)]
+                best_score, _neg_pos, best = max(scored, key=lambda row: (row[0], row[1]))
+                if best_score <= 0:
+                    break
+                remaining.remove(best)
+                cluster.append(best)
+            ordered.extend(cluster)
+    return ordered
+
+
+def _build_theme_strength_matrix(tws_data):
+    """题材强弱矩阵：把昨日结构、9:25 预期和今日验证放进同一张题材卡。
+
+    AL（Attention List）只放当日 2 板+ 的确认题材；AN（Attention New）只放
+    近三日首次出现的首板题材；AR（Attention Rotation）保留未进入 AL 的昨日
+    题材，既包括弱预期下的新首板回流，也包括“昨日有涨停、今日完全无涨停”的
+    断档题材。最后一种不能被省略，否则观察者看不到题材是轮动、延续还是退潮。
+
+    KPL 涨停标签是题材主口径；开盘红/同花顺只做完全同名的补充映射。竞价取
+    目标日开盘价相对昨收的变动，历史复盘不依赖当日保存的竞价快照。
+    """
+    payload = tws_data or {}
+    days = (payload.get('promotion') or {}).get('days') or []
+    date_fmt = payload.get('date') or (days[-1].get('date') if days else '')
+    if len(days) < 2:
+        return {'date': date_fmt, 'available': False, 'lanes': {}, 'auction_source': ''}
+    yesterday, today = days[-2], days[-1]
+    prev_themes = yesterday.get('themes') or []
+    today_themes = today.get('themes') or []
+
+    def valid_theme(value):
+        value = str(value or '').strip()
+        return value if value and not _tws_is_generic_tag(value) else ''
+
+    def theme_map(rows):
+        result = {}
+        for row in rows:
+            theme = valid_theme((row or {}).get('theme'))
+            if not theme:
+                continue
+            item = result.setdefault(theme, {
+                'theme': theme, 'stocks': [], 'failures': [], 'strong_gem': [], 'is_new': False,
+            })
+            item['stocks'].extend(dict(stock) for stock in (row.get('stocks') or []))
+            item['failures'].extend(dict(stock) for stock in (row.get('failures') or []))
+            item['strong_gem'].extend(dict(stock) for stock in (row.get('strong_gem') or []))
+            item['is_new'] = bool(item['is_new'] or row.get('is_new'))
+        for item in result.values():
+            item['stocks'] = _tws_matrix_stock_list(item['stocks'])
+            item['failures'] = _tws_matrix_stock_list(item['failures'])
+            item['strong_gem'] = _tws_matrix_stock_list(item['strong_gem'])
+        return result
+
+    prev_map, today_map = theme_map(prev_themes), theme_map(today_themes)
+    # 题材可以有多重归属，但一只昨日梯队股当日的最终验证只应有一个事实口径：
+    # 今日仍涨停优先，其次才是“未晋级”的实际收盘涨跌幅。供弱预期卡回看竞价→收盘。
+    today_outcomes = {}
+    for today_item in today_map.values():
+        for stock in today_item.get('stocks') or []:
+            code = str(stock.get('code') or '').zfill(6)
+            if code:
+                today_outcomes[code] = {
+                    'today_limit': True,
+                    'final_pct': stock.get('change_pct'),
+                }
+        for stock in today_item.get('failures') or []:
+            code = str(stock.get('code') or '').zfill(6)
+            if code and not today_outcomes.get(code, {}).get('today_limit'):
+                today_outcomes[code] = {
+                    'today_limit': False,
+                    'final_pct': stock.get('change_pct'),
+                }
+    # 题材是否曾经出现过连板，按本次 4 日观察窗口的真实涨停股计算；
+    # failures 只是“未晋级”留痕，不能反向当成当天涨停。
+    history_maps = [theme_map((day or {}).get('themes') or []) for day in days]
+    history_max_lianban = {
+        theme: max((int(stock.get('lianban') or 0)
+                    for hmap in history_maps for stock in (hmap.get(theme) or {}).get('stocks') or []), default=0)
+        for theme in set().union(*(set(hmap) for hmap in history_maps))
+    }
+    previous_codes = {
+        stock.get('code') for item in prev_map.values() for stock in item.get('stocks') or [] if stock.get('code')
+    }
+    auction_flags, auction_source = _tws_matrix_auction_flags(date_fmt, payload, previous_codes)
+
+    def auction_stocks(stocks, only_chain=False):
+        out = []
+        for stock in stocks or []:
+            if only_chain and int(stock.get('lianban') or 0) < 2:
+                continue
+            flag = auction_flags.get(stock.get('code') or '') or {}
+            value = flag.get('open_pct')
+            if isinstance(value, (int, float)):
+                item = dict(stock, open_pct=round(float(value), 2))
+                outcome = today_outcomes.get(str(stock.get('code') or '').zfill(6)) or {}
+                if outcome:
+                    item.update(outcome)
+                out.append(item)
+        return _tws_matrix_stock_list(out)
+
+    def weak_stocks(stocks, only_chain=False):
+        return [stock for stock in auction_stocks(stocks, only_chain) if float(stock.get('open_pct') or 0) < 5]
+
+    def prior_state(theme):
+        """题材昨日梯队与核心股竞价，作为今天判断强弱的统一基线。"""
+        prior = _tws_matrix_stock_list((prev_map.get(theme) or {}).get('stocks') or [])
+        chains = [stock for stock in prior if int(stock.get('lianban') or 0) >= 2]
+        max_lb = max([int(stock.get('lianban') or 0) for stock in prior] or [0])
+        leaders = [stock for stock in prior if int(stock.get('lianban') or 0) == max_lb][:2]
+        auction = auction_stocks(leaders)
+        return {'stocks': prior, 'chains': chains, 'max_lianban': max_lb,
+                'leaders': leaders, 'auction': auction}
+
+    def today_state(theme):
+        """当天题材梯队：连板是确认，首板是补涨/新生的广度。"""
+        today_item = today_map.get(theme) or {}
+        current = _tws_matrix_stock_list(today_item.get('stocks') or [])
+        chains = [stock for stock in current if int(stock.get('lianban') or 0) >= 2]
+        firsts = [stock for stock in current if int(stock.get('lianban') or 0) == 1]
+        old_by_code = {stock.get('code'): stock for stock in (prev_map.get(theme) or {}).get('stocks') or []}
+        promoted, migrated = [], []
+        for stock in chains:
+            old = old_by_code.get(stock.get('code'))
+            if not old:
+                continue
+            old_lb = int(old.get('lianban') or 0)
+            if int(stock.get('lianban') or 0) > old_lb:
+                promoted.append(dict(stock, prev_lianban=old_lb))
+                if old_lb == 1:
+                    migrated.append(dict(stock, prev_lianban=old_lb))
+        return {'stocks': current, 'chains': chains, 'firsts': firsts,
+                'failures': _tws_matrix_stock_list(today_item.get('failures') or []),
+                'strong_gem': _tws_matrix_stock_list(today_item.get('strong_gem') or []),
+                'promoted': _tws_matrix_stock_list(promoted), 'migrated': _tws_matrix_stock_list(migrated)}
+
+    # AL：题材只要在当前观察窗口出现过 2 板+，就保留其运行轨迹。
+    # 所以“昨日 2 板、今日断板但首板补涨”的题材仍属于 AL，不能误放入 AR。
+    al_items = {}
+    for theme in sorted(set(prev_map) | set(today_map) | set(history_max_lianban)):
+        current = today_state(theme)
+        prior = prior_state(theme)
+        # 观察窗口更早的遗留记录不能单独生成卡片：昨日、今日均无有效涨停股时不展示。
+        if not prior['stocks'] and not current['stocks']:
+            continue
+        if not current['chains'] and not prior['chains'] and history_max_lianban.get(theme, 0) < 2:
+            continue
+        al_items[theme] = {'theme': theme, 'baseline': prior, 'chains': current['chains'],
+                           'firsts': list(current['firsts']), 'promoted': current['promoted'],
+                           'migrated': current['migrated'], 'auction': prior['auction'],
+                           'weak': weak_stocks(prior['leaders']), 'failures': current['failures'],
+                           'strong_gem': current['strong_gem'],
+                           'today_absent': not bool(current['stocks'])}
+    al_themes = set(al_items)
+
+    # 首板先做“归属校验”：一只看似独立的首板，如果开盘啦/同花顺标签与 AL
+    # 题材完全同名，就作为该 AL 题材的补涨/跟风收编，避免在 AN/AR 重复出现。
+    reassigned_codes = set()
+    for source_theme in sorted(today_map):
+        if source_theme in al_themes:
+            continue
+        for stock in today_state(source_theme)['firsts']:
+            matches = _tws_matrix_extra_themes(stock.get('code'), al_themes)
+            if not matches:
+                continue
+            # 多个 AL 题材同时命中时，归入当前结构最高的那个，保证一只股票只展示一次。
+            target = sorted(matches, key=lambda theme: (
+                -max(int((al_items[theme]['baseline'] or {}).get('max_lianban') or 0),
+                     max([int(s.get('lianban') or 0) for s in al_items[theme]['chains']] or [0])),
+                theme))[0]
+            if any(str(item.get('code')) == str(stock.get('code')) for item in al_items[target]['firsts']):
+                continue
+            al_items[target]['firsts'].append(dict(stock, matched_from=source_theme))
+            reassigned_codes.add(str(stock.get('code') or ''))
+
+    al = []
+    for theme, item in al_items.items():
+        item['firsts'] = _tws_matrix_stock_list(item['firsts'])
+        # 跨题材校验收编的首板同样代表今日仍有题材活跃度，不能再显示为“今日无涨停”。
+        item['today_absent'] = not bool(item['chains'] or item['firsts'] or item['strong_gem'])
+        has_assist = bool(item['firsts'])
+        has_promotion = bool(item['promoted'])
+        has_weak_leader = bool(item['weak'])
+        # 强预期闭环：昨日核心股竞价至少 +5%，并且同一只股票今日继续涨停。
+        # 仅“题材有涨停”不算闭环，避免把补涨股误标成核心预期兑现。
+        item['strong_expectation'] = [stock for stock in item.get('auction') or []
+                                      if float(stock.get('open_pct') or 0) >= 5 and stock.get('today_limit')]
+        if item['chains']:
+            if item['migrated']:
+                signal, reason = '确认', '1→2 连板确认'
+            elif has_promotion and has_assist:
+                signal, reason = '延续强', '晋级 + 首板助攻'
+            elif has_promotion:
+                signal, reason = ('修复强' if has_weak_leader else '延续'), '连板晋级确认'
+            elif has_assist:
+                signal, reason = '强', '连板在场 + 首板补涨'
+            else:
+                signal, reason = '确认', '当日连板在场'
+        elif has_assist:
+            signal, reason = '补涨', '梯队断板 · 首板承接'
+        else:
+            signal, reason = '断档', '昨日梯队 · 今日无涨停'
+        item['signal'], item['signal_reason'] = signal, reason
+        al.append(item)
+    al.sort(key=lambda item: (
+        1 if item.get('today_absent') else 0,
+        -max(max([int(s.get('lianban') or 0) for s in item.get('chains') or []] or [0]),
+             int((item.get('baseline') or {}).get('max_lianban') or 0)),
+        _tws_matrix_time_value(((item.get('chains') or item.get('firsts') or [{}])[0]).get('first_time')),
+        item['theme']))
+    al = _tws_matrix_cluster_related(al, lambda item: (
+        1 if item.get('today_absent') else 0,
+        -max(max([int(stock.get('lianban') or 0) for stock in item.get('chains') or []] or [0]),
+             int((item.get('baseline') or {}).get('max_lianban') or 0)),
+    ))
+
+    # AN：近三日首次出现且仍停留在首板阶段。最早封板股就是当天核心股。
+    an = []
+    an_themes = set()
+    for theme, item in today_map.items():
+        if theme in al_themes or not item.get('is_new'):
+            continue
+        current = today_state(theme)
+        firsts = [stock for stock in current['firsts'] if str(stock.get('code') or '') not in reassigned_codes]
+        if not firsts:
+            continue
+        an_themes.add(theme)
+        an.append({'theme': theme, 'baseline': {'stocks': [], 'chains': [], 'max_lianban': 0,
+                                                  'leaders': [], 'auction': []},
+                   'chains': [], 'firsts': _tws_matrix_stock_list(firsts), 'core': firsts[:1],
+                   'promoted': [], 'migrated': [], 'auction': [], 'weak': [],
+                   'failures': current['failures'], 'strong_gem': current['strong_gem'],
+                   'today_absent': False,
+                   'signal': '新生', 'signal_reason': '首板待 1→2 验证'})
+    an.sort(key=lambda item: (_tws_matrix_time_value(item['firsts'][0].get('first_time')),
+                                   item['theme']))
+    # AN 全为当日新生/首板，同一档内优先连在共同概念更强的题材旁边。
+    an = _tws_matrix_cluster_related(an, lambda _item: 0)
+
+    # AR：仅保留“不同股票轮番首板、至今没有 1→2”的轮动题材。
+    # 昨日已有连板结构的题材属于 AL，即便今天只剩补涨首板或完全断档，也不进入 AR。
+    ar = []
+    for theme, item in sorted(today_map.items()):
+        if theme in al_themes or theme in an_themes:
+            continue
+        current = today_state(theme)
+        firsts = [stock for stock in current['firsts'] if str(stock.get('code') or '') not in reassigned_codes]
+        if not firsts or current['chains'] or history_max_lianban.get(theme, 0) >= 2:
+            continue
+        prior = prior_state(theme)
+        ar.append({'theme': theme, 'baseline': prior, 'chains': [], 'firsts': _tws_matrix_stock_list(firsts),
+                   'core': firsts[:1], 'promoted': [], 'migrated': [],
+                   'auction': prior['auction'], 'weak': weak_stocks(prior['leaders']),
+                   'failures': current['failures'], 'strong_gem': current['strong_gem'],
+                   'today_absent': False, 'signal': '轮动', 'signal_reason': '连续首板 · 尚无 1→2'})
+    ar.sort(key=lambda item: (
+        -int((item.get('baseline') or {}).get('max_lianban') or 0),
+        _tws_matrix_time_value((item.get('firsts') or [{}])[0].get('first_time')),
+        item['theme']))
+    ar = _tws_matrix_cluster_related(ar, lambda item: -int((item.get('baseline') or {}).get('max_lianban') or 0))
+
+    return {
+        'date': date_fmt, 'available': True, 'auction_source': auction_source,
+        'lanes': {'AL': al, 'AN': an, 'AR': ar},
+        'summary': {
+            'al': len(al), 'an': len(an), 'ar': len(ar),
+            'breaks': sum(1 for item in al if item.get('today_absent')),
+        },
+        'note': '昨日天梯定结构，9:25 开盘定预期，今日连板/首板/断档定验证；KPL 为主，开盘红/同花顺仅精确同名补充。',
+    }
+
+
+# ===== 题材强弱矩阵：交易日分钟快照 / 近20日回看 =====
+# 矩阵与题材风向共用同一份实时涨停池；此处只负责把每个交易日的最后一版
+# 持久化下来。历史重建显式禁用实时行情，保证不会混入未来交易日的数据。
+_THEME_STRENGTH_MATRIX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'theme_strength_matrix')
+# 排序加入题材共现聚类后，旧快照需按历史截止日重建，不能继续沿用旧展示顺序。
+_THEME_STRENGTH_MATRIX_VERSION = 2
+_theme_strength_matrix_lock = threading.RLock()
+
+
+def _theme_strength_matrix_window_dates():
+    """可回看的最近20个交易日（最新在前）。"""
+    now = _bj_now()
+    today = now.strftime('%Y%m%d')
+    latest = (_get_latest_zt_data_date() or '').replace('-', '')
+    if _is_trading_hours() and today in _trading_days:
+        anchor = today
+    elif latest:
+        anchor = min(today, latest)
+    else:
+        anchor = today
+    days = [day for day in _trading_days if day <= anchor][-20:]
+    return [f'{day[:4]}-{day[4:6]}-{day[6:]}' for day in reversed(days)]
+
+
+def _theme_strength_matrix_path(date_fmt):
+    clean = str(date_fmt or '').replace('-', '')
+    return os.path.join(_THEME_STRENGTH_MATRIX_DIR, clean + '.json')
+
+
+def _theme_strength_matrix_read(date_fmt):
+    try:
+        with open(_theme_strength_matrix_path(date_fmt), 'r', encoding='utf-8') as fh:
+            saved = json.load(fh)
+        if (saved.get('version') == _THEME_STRENGTH_MATRIX_VERSION and
+                saved.get('date') == date_fmt and isinstance(saved.get('matrix'), dict)):
+            return saved
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
+def _theme_strength_matrix_trim():
+    """只保留最近20个交易日的日快照，分钟更新覆盖同一个日文件。"""
+    keep = {date.replace('-', '') for date in _theme_strength_matrix_window_dates()}
+    try:
+        for filename in os.listdir(_THEME_STRENGTH_MATRIX_DIR):
+            if not re.fullmatch(r'\d{8}\.json', filename):
+                continue
+            if filename[:-5] not in keep:
+                os.remove(os.path.join(_THEME_STRENGTH_MATRIX_DIR, filename))
+    except OSError:
+        pass
+
+
+def _theme_strength_matrix_write(matrix, status='final'):
+    """原子覆盖同一交易日快照，避免读到半写入 JSON。"""
+    date_fmt = str((matrix or {}).get('date') or '')
+    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date_fmt) or not matrix.get('available'):
+        return False
+    saved = {
+        'version': _THEME_STRENGTH_MATRIX_VERSION,
+        'date': date_fmt,
+        'generated_at': _bj_now().isoformat(),
+        'status': status,
+        'matrix': matrix,
+    }
+    try:
+        os.makedirs(_THEME_STRENGTH_MATRIX_DIR, exist_ok=True)
+        path = _theme_strength_matrix_path(date_fmt)
+        tmp = path + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as fh:
+            json.dump(saved, fh, ensure_ascii=False, separators=(',', ':'))
+        os.replace(tmp, path)
+        _theme_strength_matrix_trim()
+        return True
+    except OSError as exc:
+        print('[题材强弱矩阵] 快照写入失败 %s: %s' % (date_fmt, exc))
+        return False
+
+
+def _theme_strength_matrix_decorate(matrix, persist=False):
+    """给返回给页面的矩阵补齐快照元信息；实时版本会在后台分钟任务覆盖保存。"""
+    if not isinstance(matrix, dict):
+        return matrix
+    date_fmt = str(matrix.get('date') or '')
+    is_live_day = bool(_is_trading_hours() and date_fmt == _bj_now().strftime('%Y-%m-%d'))
+    matrix['snapshot_status'] = 'live' if is_live_day else 'final'
+    matrix['generated_at'] = _bj_now().isoformat()
+    if persist and matrix.get('available'):
+        _theme_strength_matrix_write(matrix, 'live' if is_live_day else 'final')
+    matrix['available_dates'] = _theme_strength_matrix_window_dates()
+    matrix['selected_date'] = date_fmt
+    return matrix
+
+
+def _build_theme_strength_matrix_as_of(date_fmt):
+    """历史回看专用：只读取目标日及其此前三日的涨停/日线数据。"""
+    _kpl_ensure_loaded()
+    promotion = _build_theme_promotion(date_fmt, live_target=False)
+    matrix = _build_theme_strength_matrix({
+        'date': date_fmt,
+        'trading': False,
+        'promotion': promotion,
+    })
+    return _theme_strength_matrix_decorate(matrix, persist=False)
+
+
+def _get_theme_strength_matrix_snapshot(date_fmt):
+    """返回一个历史日矩阵；没有本地快照时按历史截止日重建一次并落盘。"""
+    visible = _theme_strength_matrix_window_dates()
+    if date_fmt not in visible:
+        return {'available': False, 'date': date_fmt, 'available_dates': visible,
+                'error': '请选择最近20个交易日内的日期'}
+    with _theme_strength_matrix_lock:
+        saved = _theme_strength_matrix_read(date_fmt)
+        if saved and isinstance(saved.get('matrix'), dict):
+            matrix = saved['matrix']
+        else:
+            matrix = _build_theme_strength_matrix_as_of(date_fmt)
+            if matrix.get('available'):
+                _theme_strength_matrix_write(matrix, 'final')
+        matrix = dict(matrix)
+        matrix['available_dates'] = visible
+        matrix['selected_date'] = date_fmt
+        matrix['snapshot_status'] = (saved or {}).get('status', matrix.get('snapshot_status', 'final'))
+        return matrix
+
+
+def _theme_strength_matrix_backfill_loop():
+    """服务启动后温和补齐近20日缺失快照；不阻塞首屏，也不访问实时行情。"""
+    time.sleep(8)
+    try:
+        for date_fmt in reversed(_theme_strength_matrix_window_dates()):
+            if _theme_strength_matrix_read(date_fmt):
+                continue
+            with _theme_strength_matrix_lock:
+                if _theme_strength_matrix_read(date_fmt):
+                    continue
+                matrix = _build_theme_strength_matrix_as_of(date_fmt)
+                if matrix.get('available'):
+                    _theme_strength_matrix_write(matrix, 'final')
+                    print('[题材强弱矩阵] 已补齐历史快照 %s' % date_fmt)
+            time.sleep(0.25)
+    except Exception as exc:
+        print('[题材强弱矩阵] 历史快照补齐失败: %s' % exc)
+
+
+def _theme_strength_matrix_live_loop():
+    """交易日 09:25~15:00 每分钟重建并保存，不依赖浏览器是否打开。"""
+    last_tick = ''
+    while True:
+        try:
+            if not _is_trading_hours():
+                time.sleep(15)
+                continue
+            now = _bj_now()
+            tick = now.strftime('%Y%m%d%H%M')
+            if tick != last_tick:
+                key = 'theme_wind_strength:10:%s:live' % now.strftime('%Y%m%d')
+                # 绕过60秒读缓存，确保每个自然分钟重新向实时涨停源取数；
+                # 与页面/飞书仍写回同一缓存，三端口径一致。
+                with _theme_wind_build_lock:
+                    data = _build_theme_wind_strength(top_n=10)
+                    _set_cache(key, data)
+                matrix = data.get('theme_strength_matrix') or {}
+                if matrix.get('available') and matrix.get('date') == now.strftime('%Y-%m-%d'):
+                    _theme_strength_matrix_write(matrix, 'live')
+                    print('[题材强弱矩阵] 盘中快照 %s' % now.strftime('%H:%M'))
+                last_tick = tick
+            time.sleep(2)
+        except Exception as exc:
+            print('[题材强弱矩阵] 盘中刷新失败: %s' % exc)
+            time.sleep(10)
+
+
 def _build_theme_wind_strength(top_n=10):
     """题材风向 Section 0：精选板块强度 Top10 + 每板块细分题材横向树（涨停股/补涨池/特别关注）。"""
     _kpl_ensure_loaded()
@@ -5685,6 +6476,7 @@ def _build_theme_wind_strength(top_n=10):
             'strong_arb': [],
             'today_theme_review': {'date': bj_today_fmt, 'available': False,
                                    'live_unavailable': True, 'sections': []},
+            'theme_strength_matrix': {'date': bj_today_fmt, 'available': False, 'lanes': {}, 'auction_source': ''},
         }
     if not date_fmt and resolved_ymd:
         date_fmt = f"{resolved_ymd[:4]}-{resolved_ymd[4:6]}-{resolved_ymd[6:]}"
@@ -5942,6 +6734,10 @@ def _build_theme_wind_strength(top_n=10):
     # 今日题材复盘与「连板涨停表现 / 细分题材晋级」复用同一份 promotion 快照，
     # 不另拉行情、不混入未来日数据，盘中随本接口的分钟快照一起更新。
     result['today_theme_review'] = _build_today_theme_review(result)
+    # 矩阵使用与时间轴/细分题材晋级完全相同的 result；盘中由独立分钟任务
+    # 覆盖写入日快照，页面请求仅复用该份数据，不会因页面是否打开影响保存。
+    result['theme_strength_matrix'] = _theme_strength_matrix_decorate(
+        _build_theme_strength_matrix(result), persist=_is_trading_hours())
     return result
 
 
@@ -6151,7 +6947,7 @@ def _kpl_patch_dayfile_first_times(date_ymd, ft_map):
     return changed
 
 
-def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
+def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None, live_target=None):
     """细分题材晋级（4日连续观察）：以 date_fmt 为锚点取最近4个交易日，每列按细分题材聚合当日涨停股，
     列内严格按涨停时间排序（题材为主角、股票为配角）。
     返回 {'days': [{date, today, themes: [{theme, cnt, promo, same_stock, stocks: [{code,name,first_time,lianban,board}]}]}]}
@@ -6160,7 +6956,9 @@ def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
     - same_stock = 该题材今日涨停股 ∩ 前一列同题材涨停股 非空（同一股票连板晋级 vs 新股票接力维持细分热度）
     - today_zt_stocks = 当日实时涨停股列表（题材风向 timeline 同源的 zt_stocks，含 code/name/lianban/first_time/
       reason_tag/reason_brief），今日列直接复用、不再独立拉实时池（与时间轴严格同源、同一分钟快照）
-    - today_zt_date = 上述列表对应的交易日（YYYYMMDD，来自 pool[0]['trade_date']），今日列日期匹配守卫"""
+    - today_zt_date = 上述列表对应的交易日（YYYYMMDD，来自 pool[0]['trade_date']），今日列日期匹配守卫
+    - live_target = True 时仅目标列允许使用盘中实时行情；历史矩阵回放传 False，
+      从而严格只使用所选交易日及此前的数据，不把今天的实时行情带入历史快照。"""
     if not date_fmt:
         return {'days': []}
     # 锚点不再在此推进到「北京当天」：date_fmt 由 _build_theme_wind_strength 统一传入，
@@ -6168,6 +6966,8 @@ def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
     # 盘前（北京 9:00 前未开盘）date_fmt = 昨日（最近数据交易日）→ 今日列显示昨日内容；
     # 盘中（9:00 后）date_fmt = 当天 → 今日列由 today_zt_stocks 实时源接管（时间轴同源），与时间轴同步更新。
     date_ymd = date_fmt.replace('-', '')
+    if live_target is None:
+        live_target = bool(_is_trading_hours() and date_fmt == _bj_now().strftime('%Y-%m-%d'))
     tmp = []
     cur = date_ymd
     for _ in range(4):
@@ -6181,7 +6981,7 @@ def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
         df = f"{dy[:4]}-{dy[4:6]}-{dy[6:]}"
         rows = _kpl_rows_by_date.get(df) or []
         is_today = (df == date_fmt)
-        if is_today and today_zt_stocks and today_zt_date and df.replace('-', '') == today_zt_date:
+        if live_target and is_today and today_zt_stocks and today_zt_date and df.replace('-', '') == today_zt_date:
             # 复用题材风向已构建的今日实时 zt_stocks（timeline 同源，同一份 akshare 实时池），
             # 字段映射为 promotion 内部 KPL 行格式；lianban 走 _kpl_true_lianban 的 lianban_computed 直取分支，与 timeline 严格一致
             rows = [
@@ -6189,7 +6989,7 @@ def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
                  'first_time': s.get('first_time', 999999), 'lianban_computed': s.get('lianban') or 1,
                  'reason_tag': s.get('reason_tag', '') or '', 'reason_brief': s.get('reason_brief', '') or ''}
                 for s in today_zt_stocks if s.get('code')]
-        elif not rows and is_today and _is_trading_hours():
+        elif not rows and live_target and is_today:
             rows = _kpl_today_live_rows()          # 兜底：pool 为空（akshare 挂）→ 实时 akshare 涨停池（60s 刷新，含 first_time）
         elif not rows:
             rows = _kpl_akshare_zt_rows(dy)        # KPL 缺文件日 → akshare 涨停池兜底（含 first_time）
@@ -6197,7 +6997,7 @@ def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
         # - open_pct = (开盘-昨收)/昨收*100（高开2%以上 + 9:35前封板 = 高开秒板）
         # - is_yizi  = 开盘价 == 涨停价（一字板首板）
         strong_flags = {}
-        if is_today and rows:
+        if live_target and is_today and rows:
             _today_codes = sorted({r.get('stock_code', '') for r in rows if r.get('stock_code')})
             if _today_codes:
                 _sq = _spot_quotes_for_codes(_today_codes)
@@ -6238,7 +7038,7 @@ def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
                 'lianban': lb,
                 'board': _kpl_board_of_code(code),
             }
-            if is_today and code in strong_flags:
+            if live_target and is_today and code in strong_flags:
                 entry['open_pct'] = strong_flags[code]['open_pct']
                 entry['is_yizi'] = strong_flags[code]['is_yizi']
             for t in tags:      # 多标签归属：一股可进多个细分题材（如 消费电子+苹果概念），不省略题材
@@ -6275,7 +7075,7 @@ def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
 
         # 最新交易日补充“创/科大涨”：只取该细分题材成分中，今日实时涨幅 >10% 的创业板/科创板股票。
         # 已在上方今日涨停区出现的股票不重复展示；所有题材统一批量取行情，避免逐题材联网请求。
-        if is_today and themes:
+        if live_target and is_today and themes:
             gem_candidates = {}
             gem_by_theme = {}
             today_codes = {s.get('code') for th in themes for s in th.get('stocks', []) if s.get('code')}
@@ -6311,7 +7111,7 @@ def _build_theme_promotion(date_fmt, today_zt_stocks=None, today_zt_date=None):
         failure_codes = sorted({pc for pt, members in prev_theme_map.items()
                                 for pc in members
                                 if pc not in current_theme_codes.get(pt, set())})
-        if is_today:
+        if live_target and is_today:
             quotes = _spot_quotes_for_codes(failure_codes) if failure_codes else {}
         else:
             historical_pct = _review_load_daily_change_pct(failure_codes, [df], allow_live=False) if failure_codes else {}
@@ -15976,6 +16776,101 @@ td.lt-trajectory-cell {
 .ttr-summary { background: rgba(76,175,160,.055); }
 .ttr-summary-list { display: grid; grid-template-columns: 1fr; gap: 3px; margin-top: 4px; color: #aebfca; font-size: .78em; line-height: 1.65; }
 .ttr-summary-list > div { padding: 2px 7px; border-left: 2px solid rgba(126,201,163,.55); background: rgba(126,201,163,.035); }
+/* 题材强弱矩阵：视觉语言对齐「涨停原因标签轨迹」——深蓝底、层级芯片、少量金色结论。 */
+.tsm-wrap { overflow:hidden; border:1px solid rgba(30,144,201,.46); border-radius:10px; background:linear-gradient(135deg,rgba(13,39,74,.82),rgba(11,28,57,.78)); box-shadow:inset 0 1px 0 rgba(125,211,252,.09); }
+.tsm-head { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; padding:8px 11px; border-bottom:1px solid rgba(56,189,248,.22); color:#b8d8ee; font-size:.78em; line-height:1.45; }
+.tsm-head b { color:#e0f2fe; font-size:1.05em; }
+.tsm-counts { display:flex; align-items:center; gap:4px; }
+.tsm-counts span { padding:1px 6px; border:1px solid rgba(56,189,248,.34); border-radius:99px; font-size:.9em; font-weight:800; }
+.tsm-counts .al { color:#fef3c7; background:rgba(217,119,6,.2); }
+.tsm-counts .an { color:#bae6fd; background:rgba(14,116,144,.22); }
+.tsm-counts .ar { color:#ddd6fe; background:rgba(109,40,217,.19); }
+.tsm-counts .break { color:#cbd5e1; background:rgba(71,85,105,.22); }
+.tsm-source { margin-left:auto; color:#7dd3fc; white-space:normal; }
+.tsm-date-picker { display:inline-flex; align-items:center; gap:5px; margin-left:2px; padding:2px 5px 2px 7px; border:1px solid rgba(125,211,252,.32); border-radius:7px; color:#94cbe4; background:rgba(8,47,73,.32); font-size:.86em; white-space:nowrap; }
+.tsm-date-picker select { max-width:126px; border:0; border-radius:4px; outline:0; color:#e0f2fe; background:#123c5e; font:700 1em/1.5 inherit; cursor:pointer; }
+.tsm-scroll { overflow-x:auto; padding:8px; scrollbar-color:#38bdf8 transparent; }
+/* AL / AN / AR 是三段纵向阅读路径；每段内部才按题材 T1、T2…自动换行。 */
+.tsm-grid { display:grid; grid-template-columns:minmax(0,1fr); gap:8px; min-width:0; align-items:start; }
+.tsm-lane { min-width:0; border:1px solid rgba(30,144,201,.3); border-radius:8px; overflow:hidden; background:rgba(15,52,96,.18); }
+.tsm-lane[data-lane="AN"] { background:rgba(14,116,144,.12); border-color:rgba(34,211,238,.28); }
+.tsm-lane[data-lane="AR"] { background:rgba(76,29,149,.12); border-color:rgba(167,139,250,.28); }
+.tsm-lane-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:6px; padding:7px 9px; color:#fde68a; background:rgba(180,83,9,.18); border-bottom:1px solid rgba(251,191,36,.18); }
+.tsm-lane[data-lane="AN"] .tsm-lane-head { color:#a5f3fc; background:rgba(8,145,178,.15); }
+.tsm-lane[data-lane="AR"] .tsm-lane-head { color:#ddd6fe; background:rgba(109,40,217,.15); }
+.tsm-lane-head b { font-size:.9em; letter-spacing:.05em; }
+.tsm-lane-head small { color:#d9b999; font-size:.72em; }
+.tsm-list { display:grid; grid-template-columns:repeat(auto-fit,minmax(430px,1fr)); gap:7px; padding:7px; }
+.tsm-card { min-width:0; padding:7px; border:1px solid rgba(56,189,248,.22); border-radius:7px; background:rgba(15,43,76,.43); }
+.tsm-card.is-strong { border-color:rgba(248,113,113,.72); box-shadow:inset 3px 0 0 rgba(239,68,68,.82),0 0 0 0 rgba(239,68,68,0); animation:tsm-strong-border-pulse 2.2s ease-in-out infinite; }
+@keyframes tsm-strong-border-pulse { 0%,100% { border-color:rgba(248,113,113,.56); box-shadow:inset 3px 0 0 rgba(239,68,68,.72),0 0 0 0 rgba(239,68,68,0); } 50% { border-color:rgba(254,202,202,.98); box-shadow:inset 3px 0 0 rgba(239,68,68,.95),0 0 11px 1px rgba(239,68,68,.34); } }
+.tsm-card.is-break { opacity:.74; border-color:rgba(100,116,139,.36); background:rgba(30,41,59,.34); }
+.tsm-card-top { display:flex; flex-wrap:wrap; align-items:center; gap:5px; min-width:0; }
+.tsm-structure-btn { margin-left:auto; padding:1px 6px; border:1px solid rgba(56,189,248,.42); border-radius:5px; color:#bae6fd; background:rgba(8,145,178,.15); font:700 .7em/1.45 inherit; white-space:nowrap; cursor:pointer; }
+.tsm-structure-btn:hover { color:#fff; border-color:#7dd3fc; background:rgba(14,116,144,.3); box-shadow:0 0 7px rgba(34,211,238,.24); }
+.tsm-theme { min-width:0; padding:0; border:0; color:#fef3c7; background:transparent; font:800 .88em/1.35 inherit; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer; }
+.tsm-theme:hover { color:#fff; text-decoration:underline; }
+.tsm-signal { flex:0 1 auto; max-width:100%; padding:1px 6px; border:1px solid rgba(250,204,21,.42); border-radius:99px; color:#fde68a; background:rgba(180,83,9,.2); font-size:.7em; font-weight:800; line-height:1.35; white-space:normal; overflow-wrap:anywhere; }
+.tsm-signal.new { border-color:rgba(34,211,238,.42); color:#a5f3fc; background:rgba(8,145,178,.17); }
+.tsm-signal.rotate { border-color:rgba(167,139,250,.46); color:#ddd6fe; background:rgba(109,40,217,.17); }
+.tsm-flow { display:grid; grid-template-columns:minmax(0,1fr) 12px minmax(0,1fr) 12px minmax(0,1.18fr); gap:3px; align-items:stretch; margin-top:6px; }
+.tsm-phase { min-width:0; overflow:hidden; padding:5px 6px; border:1px solid rgba(56,189,248,.18); border-radius:5px; background:rgba(14,47,82,.24); color:#dbeafe; font-size:.75em; line-height:1.55; overflow-wrap:anywhere; }
+.tsm-phase > span { display:block; min-width:0; }
+.tsm-phase strong { display:block; margin-bottom:1px; color:#7dd3fc; font-size:.92em; }
+.tsm-phase.auction { background:rgba(8,145,178,.14); }
+.tsm-phase.auction strong { color:#67e8f9; }
+.tsm-phase.today { background:rgba(180,83,9,.12); }
+.tsm-phase.today strong { color:#fde68a; }
+.tsm-lane[data-lane="AN"] .tsm-phase.today { background:rgba(8,145,178,.13); }
+.tsm-lane[data-lane="AN"] .tsm-phase.today strong { color:#a5f3fc; }
+.tsm-card.is-break .tsm-phase.today { background:rgba(51,65,85,.3); }
+.tsm-card.is-break .tsm-phase.today strong { color:#cbd5e1; }
+.tsm-arrow { display:flex; align-items:center; justify-content:center; color:#38bdf8; font-size:.9em; }
+.tsm-stock { display:inline-block; max-width:100%; margin:1px 2px 1px 0; padding:1px 4px; border:1px solid rgba(56,189,248,.28); border-radius:4px; color:#e0f2fe; background:rgba(6,78,119,.2); font:650 .82em/1.42 inherit; text-align:left; white-space:normal; overflow-wrap:anywhere; cursor:pointer; vertical-align:baseline; }
+.tsm-stock:hover { color:#fff; border-color:#7dd3fc; box-shadow:0 0 6px rgba(34,211,238,.3); }
+/* 一整枚股票芯片（名称 / 主创科 / 板数 / 时间 / 涨幅）统一与阶段标题等大。 */
+.tsm-stock-name { color:inherit; font-size:.84em; font-weight:750; line-height:inherit; }
+.tsm-board { display:inline-block; margin-left:3px; padding:0 3px; border-radius:3px; font-size:.84em; font-weight:850; line-height:1.35; vertical-align:1px; }
+.tsm-board.main { color:#dbeafe; border:1px solid rgba(147,197,253,.48); background:rgba(30,64,175,.18); }
+.tsm-board.gem { color:#cffafe; border:1px solid rgba(34,211,238,.52); background:rgba(8,145,178,.22); }
+.tsm-board.star { color:#ede9fe; border:1px solid rgba(196,181,253,.55); background:rgba(109,40,217,.22); }
+.tsm-stock + .tsm-stock:before, .tsm-more:before { content:''; }
+.tsm-stock.lb-1 { background:linear-gradient(135deg,rgba(180,83,9,.76),rgba(234,179,8,.68)); border-color:rgba(250,204,21,.72); color:#fff; }
+.tsm-stock.lb-2 { background:linear-gradient(135deg,rgba(194,65,12,.78),rgba(251,146,60,.72)); border-color:rgba(251,146,60,.78); color:#fff; }
+.tsm-stock.lb-3 { background:linear-gradient(135deg,rgba(185,28,28,.78),rgba(239,68,68,.72)); border-color:rgba(248,113,113,.78); color:#fff; }
+.tsm-stock.lb-4 { background:linear-gradient(135deg,rgba(107,33,168,.8),rgba(168,85,247,.72)); border-color:rgba(192,132,252,.78); color:#fff; }
+.tsm-stock.lb-high { background:linear-gradient(135deg,rgba(159,18,57,.83),rgba(202,138,4,.78)); border-color:rgba(253,224,71,.85); color:#fff; }
+.tsm-stock .tsm-lb { margin-left:3px; color:#fff7d6; font-size:.84em; font-weight:850; }
+.tsm-stock .tsm-prev { margin-left:3px; color:#dbeafe; font-size:.84em; }
+.tsm-stock .tsm-time { margin-left:3px; color:#fef3c7; font-size:.84em; }
+.tsm-stock .tsm-auction, .tsm-stock .tsm-final { margin-left:3px; padding:0 3px; border-radius:3px; font-size:.84em; font-weight:800; }
+.tsm-stock .tsm-auction.up, .tsm-stock .tsm-final.up { color:#fecaca; background:rgba(185,28,28,.34); }
+.tsm-stock .tsm-auction.down, .tsm-stock .tsm-final.down { color:#bbf7d0; background:rgba(22,101,52,.32); }
+.tsm-stock .tsm-auction.flat, .tsm-stock .tsm-final.unknown { color:#fde68a; background:rgba(146,64,14,.3); }
+.tsm-stock .tsm-final.limit { color:#fef3c7; background:rgba(202,138,4,.42); }
+.tsm-more { color:#7dd3fc; font-weight:800; }
+.tsm-phase .first { margin-top:3px; padding-top:3px; border-top:1px dashed rgba(56,189,248,.28); }
+.tsm-phase .first b { color:#fde68a; }
+.tsm-phase .gem { margin-top:3px; color:#c4b5fd; }
+.tsm-phase .gem b { color:#ddd6fe; }
+.tsm-baseline-lv { color:#fde68a; font-weight:750; }
+.tsm-baseline-new { color:#7dd3fc; font-weight:700; }
+.tsm-none { color:#cbd5e1; font-weight:700; }
+.tsm-muted { color:#94a3b8; }
+.tsm-proof { display:flex; flex-wrap:wrap; align-items:center; gap:3px; margin-top:5px; padding:4px 5px; border-radius:5px; font-size:.74em; line-height:1.45; }
+.tsm-proof.strong { border:1px solid rgba(250,204,21,.48); background:linear-gradient(90deg,rgba(180,83,9,.18),rgba(250,204,21,.08)); }
+.tsm-proof.weak { border-top:1px dashed rgba(148,163,184,.48); background:rgba(30,41,59,.28); }
+.tsm-proof-label { padding:1px 5px; border-radius:99px; font-weight:850; }
+.tsm-proof.strong .tsm-proof-label { color:#fff7d6; background:rgba(202,138,4,.52); }
+.tsm-proof.weak .tsm-proof-label { color:#cbd5e1; background:rgba(71,85,105,.58); }
+.tsm-proof-text { color:#94a3b8; font-size:.92em; font-weight:700; }
+.tsm-empty { padding:9px; color:#94a3b8; font-size:.78em; text-align:center; }
+.tsm-theme-structure-modal { width:96%; max-width:1320px; max-height:92vh; padding:16px 20px; }
+.tsm-theme-structure-modal .tsm-theme-structure-body { overflow:auto; max-height:calc(92vh - 78px); padding:2px 2px 12px; }
+.tsm-theme-structure-modal .ms-tp-card { margin:0; }
+@media (max-width:680px) { .tsm-structure-btn { margin-left:0; } .tsm-theme-structure-modal { width:98%; padding:14px 10px; } }
+@media (max-width:680px) { .tsm-head { padding:7px 9px; } .tsm-source { width:100%; margin-left:0; } .tsm-date-picker { margin-left:0; } .tsm-scroll { padding:6px; } .tsm-list { grid-template-columns:minmax(360px,1fr); } }
+@media (prefers-reduced-motion:reduce) { .tsm-card.is-strong { animation:none; border-color:rgba(248,113,113,.82); } }
 /* 连板联动 · 近15日历史天梯：日期控件与天梯视口固定在连板联动页内，避免受市场结构媒体样式影响 */
 #tab-ladderlinkage .ms-linkage-15day { margin: 0 0 14px; }
 #tab-ladderlinkage .ms-linkage-history-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 0 8px; padding:8px 11px; border:1px solid rgba(102,187,216,.26); border-radius:10px; background:linear-gradient(135deg,rgba(24,57,78,.88),rgba(19,31,48,.72)); box-shadow:0 5px 16px rgba(0,0,0,.12); }
@@ -16244,6 +17139,7 @@ td.lt-trajectory-cell {
                 <a class="np-sidebar-item" data-np-section="twLtTrajectorySection" onclick="scrollToNpSection('twLtTrajectorySection')">🌐 涨停标签轨迹</a>
                 <a class="np-sidebar-item" data-np-section="twTopThemeSection" onclick="scrollToNpSection('twTopThemeSection')">🏆 TOP题材风向</a>
                 <a class="np-sidebar-item" data-np-section="twTodayTopicReviewSection" onclick="scrollToNpSection('twTodayTopicReviewSection')">📝 今日题材复盘</a>
+                <a class="np-sidebar-item" data-np-section="twThemeStrengthMatrixSection" onclick="scrollToNpSection('twThemeStrengthMatrixSection')">🧩 题材强弱矩阵</a>
                 <a class="np-sidebar-item" data-np-section="twReviewSection" onclick="scrollToNpSection('twReviewSection')">🧭 注意力/预期机制</a>
                 <div style="border-top:1px solid rgba(255,255,255,0.06);margin:6px 0;"></div>
                 <div class="np-sidebar-hide" onclick="toggleTabSidebar('twSidebar','twSidebarShow')" title="隐藏导航">✖ 隐藏</div>
@@ -16614,6 +17510,20 @@ td.lt-trajectory-cell {
             <span class="kline-modal-close" onclick="closeTmmThemeKline()">&times;</span>
         </div>
         <div id="tmmThemeKlineBody"></div>
+    </div>
+</div>
+
+<!-- 题材风向 · 题材强弱矩阵：复用连板联动细分题材卡片 -->
+<div id="tsmThemeStructureModal" class="kline-modal-overlay" onclick="if(event.target===this)closeTsmThemeStructure()">
+    <div class="kline-modal tsm-theme-structure-modal">
+        <div class="kline-modal-header">
+            <div class="kline-modal-title-area">
+                <h3 id="tsmThemeStructureTitle" style="margin:0;font-size:1.05em;">题材结构</h3>
+                <span id="tsmThemeStructureCounter" class="kline-modal-counter"></span>
+            </div>
+            <span class="kline-modal-close" onclick="closeTsmThemeStructure()">&times;</span>
+        </div>
+        <div id="tsmThemeStructureBody" class="tsm-theme-structure-body"></div>
     </div>
 </div>
 
@@ -22499,7 +23409,14 @@ function loadThemeWind() {
         html += '<div id="twTodayTopicReviewBody">' + renderTodayThemeReview(twsData ? twsData.today_theme_review : null) + '</div>';
         html += '</div>';
 
-        // Section 5: 注意力/预期机制（Attention Is All You Need）
+        // Section 5: 题材强弱矩阵（与连板涨停表现 / 竞价快照同源）
+        html += '<div class="rt-section lt-trajectory-section" id="twThemeStrengthMatrixSection">';
+        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ffd700;">🧩 题材强弱矩阵 <span class="count-badge">' + _kplEsc((twsData && twsData.theme_strength_matrix && twsData.theme_strength_matrix.date) || '最新交易日') + '</span></h3>';
+        if (twsData && twsData.theme_strength_matrix) _tsmLiveMatrixData = twsData.theme_strength_matrix;
+        html += '<div id="twThemeStrengthMatrixBody">' + renderThemeStrengthMatrix(twsData ? twsData.theme_strength_matrix : null) + '</div>';
+        html += '</div>';
+
+        // Section 6: 注意力/预期机制（Attention Is All You Need）
         html += '<div class="rt-section lt-trajectory-section" id="twReviewSection">';
         html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ffd700;">注意力/预期机制 + 决策 <span class="count-badge">Attention Is All You Need · 近15个交易日</span> <span class="rt-refresh-icon" onclick="manualRefreshReview(true)" title="刷新">\u21bb</span><button class="rt-auto-refresh-btn" id="reviewAutoBtn" onclick="toggleReviewAutoRefresh()">\u23f1 自动刷新 1分钟</button></h3>';
         html += '<section class="attn-methodology"><h4>注意力 + 预期强度：用四个问题读懂题材</h4>' +
@@ -22517,7 +23434,7 @@ function loadThemeWind() {
         container.innerHTML = html;
         _fillTrajDefaultDates('tw');
         updateTrajLbBadge('tw');
-        initTabSidebarScroll('twSidebar', ['twWindStrengthSection','twLtTrajectoryLbSection','twLtTrajectorySection','twTopThemeSection','twTodayTopicReviewSection','twReviewSection']);
+        initTabSidebarScroll('twSidebar', ['twWindStrengthSection','twLtTrajectoryLbSection','twLtTrajectorySection','twTopThemeSection','twTodayTopicReviewSection','twThemeStrengthMatrixSection','twReviewSection']);
         loadAttentionBoard(false);
         updateReviewNavSel();   // 导航渲染在 _reviewSelDate 赋值之前，需手动补选中态
         _twsStartPoll();        // 精选板块强度细分卡片 30s 实时行情轮询
@@ -24608,11 +25525,14 @@ function _auctionDimensionStock(item, showThemes) {
 }
 function _tmmRenderAuctionReport(report) {
     if (!report || !report.available) return '<div class="auction-report"><div class="auction-head">📋 竞价报告</div><div class="auction-empty">' + _kplEsc((report && report.message) || '交易日北京时间 9:25 自动生成并保存，9:29:20 自动复核') + '</div></div>';
-    var stage = report.complete === false ? '旧版存档 · 非原始快照生成'
+    var stage = report.stage === 'historical' ? '历史开盘价回放'
         : (report.stage === 'verified' ? '9:29:20 复核版' : '9:25 初版');
+    var isKline = report.quote_basis === '日K开盘价（9:25）';
     var integrityClass = report.complete === false ? ' incomplete' : '';
-    var integrityText = report.complete === false ? '⚠ 缺原始快照 · 不完整' : '✓ 全市场快照重建';
-    var h = '<section class="auction-report"><div class="auction-head">📋 竞价报告 <span class="auction-stage">' + stage + '</span><span class="auction-integrity' + integrityClass + '">' + integrityText + '</span><span class="auction-meta">' + _kplEsc(report.date || '') + ' · 一字 ' + Number(report.one_word_count || 0) + ' 只（去重）</span></div>';
+    var integrityText = report.complete === false ? '⚠ 开盘价缺失'
+        : (isKline ? '✓ 日K开盘价（9:25）' : (report.quote_basis === '盘中实时开盘价' ? '✓ 实时开盘价' : '✓ 全市场9:25快照'));
+    var fallbackNote = report.fallback ? '<span class="auction-stage" title="' + _kplEsc(report.fallback_message || '') + '">最近已保存</span>' : '';
+    var h = '<section class="auction-report"><div class="auction-head">📋 竞价报告 ' + fallbackNote + '<span class="auction-stage">' + stage + '</span><span class="auction-integrity' + integrityClass + '">' + integrityText + '</span><span class="auction-meta">' + _kplEsc(report.date || '') + ' · 一字 ' + Number(report.one_word_count || 0) + ' 只（去重）</span></div>';
     var d = report.dimensions;
     if (d) {
         var ladder = d.yesterday_ladder || {};
@@ -24923,6 +25843,9 @@ var _msThemeDateIdx = {};  // 每张细分题材金字塔独立回放位置，0=
 var _msEvolutionDate = ''; // 题材10日演化总结独立日期选择
 var _msLinkageMode = false;
 var _msRecentEvolutionWindow = 10;
+// 题材强弱矩阵弹窗直接复用连板联动的题材金字塔；独立状态避免干扰两个原页面。
+var _tsmThemeStructureData = null;
+var _tsmThemeStructureDateIdx = {};
 
 function _msThemeEvent(stock, date) {
     var events = (stock && stock.events) || {};
@@ -25036,10 +25959,11 @@ function _msThemeSearchAttr(themeName) {
 
 function _msRenderThemePyramidCard(idx, theme, dates, scope) {
     var isLinkage = scope === 'linkage';
-    var datePositions = isLinkage ? _msLinkageThemeDateIdx : _msThemeDateIdx;
+    var isMatrix = scope === 'matrix';
+    var datePositions = isMatrix ? _tsmThemeStructureDateIdx : (isLinkage ? _msLinkageThemeDateIdx : _msThemeDateIdx);
     var pos = datePositions[idx];
     if (pos === undefined || pos < 0 || pos >= dates.length) pos = 0;
-    var cardId = (isLinkage ? 'msLinkageThemePyrCard-' : 'msThemePyrCard-') + idx;
+    var cardId = (isMatrix ? 'tsmThemeStructureCard-' : (isLinkage ? 'msLinkageThemePyrCard-' : 'msThemePyrCard-')) + idx;
     return '<section class="ms-tp-card" id="' + cardId + '">' + _msRenderThemePyramidInner(idx, theme, dates, pos, scope) + '</section>';
 }
 
@@ -25236,6 +26160,7 @@ function _msSelectEvolution10(date) {
 }
 
 function _msRenderThemePyramidInner(idx, theme, dates, pos, scope) {
+    var linkageStyle = scope === 'linkage' || scope === 'matrix';
     var date = dates[pos] || '';
     var stocks = theme.stocks || [];
     var themeKlineKey = _msPrepareThemeKline(theme, dates, pos, 20, 'pyramid');
@@ -25306,7 +26231,7 @@ function _msRenderThemePyramidInner(idx, theme, dates, pos, scope) {
             climaxMarks += '<span class="ms-tp-climax-mark" style="left:' + climaxLeft.toFixed(2) + '%" title="' + _kplEsc(dates[cmi]) + '"></span>';
         }
     }
-    var scopeArg = scope === 'linkage' ? ',\\x27linkage\\x27' : '';
+    var scopeArg = scope === 'linkage' ? ',\\x27linkage\\x27' : (scope === 'matrix' ? ',\\x27matrix\\x27' : '');
     h += '<div class="ms-tp-slider-row"><span>最新</span><div class="ms-tp-slider-track">' + climaxMarks + '<input type="range" min="0" max="' + Math.max(0, dates.length - 1) + '" value="' + sliderPos + '" oninput="_msThemeSlide(' + idx + ',this.value' + scopeArg + ')"></div><span>' + _kplEsc((dates[dates.length - 1] || '').slice(5)) + '</span></div>';
     h += '<div class="ms-tp-sides-head"><span>当日晋级</span><span>历史断板 / 足迹</span></div>';
     h += '<div class="ms-tp-body"><div class="ms-tp-pyramid">';
@@ -25325,8 +26250,8 @@ function _msRenderThemePyramidInner(idx, theme, dates, pos, scope) {
                 var it = live[li];
                 var cls = it.actual >= 5 ? 'lvhigh' : 'lv' + it.actual;
                 var label = it.resumed ? '重启·' + it.actual + '板' : it.actual + '板';
-                var currentValue = _msLinkageMode ? (it.stock.pcts || {})[date] : (it.stock.cum_pcts || {})[date];
-                var currentLabel = currentValue === undefined ? '' : ' <i class="ms-tp-cum">' + (_msLinkageMode ? '' : '累计') + _msThemePct(currentValue) + '</i>';
+                var currentValue = linkageStyle ? (it.stock.pcts || {})[date] : (it.stock.cum_pcts || {})[date];
+                var currentLabel = currentValue === undefined ? '' : ' <i class="ms-tp-cum">' + (linkageStyle ? '' : '累计') + _msThemePct(currentValue) + '</i>';
                 var liveTime = _kplLevelFormatTime(it.event.first_time);
                 var timeLabel = liveTime && liveTime !== '--' ? ' <i class="ms-tp-time">封板' + _kplEsc(liveTime) + '</i>' : '';
                 var extra = timeLabel + (it.resumed ? ' <i class="ms-tp-restart">沿' + lv + '板</i>' : '') + currentLabel;
@@ -25339,12 +26264,12 @@ function _msRenderThemePyramidInner(idx, theme, dates, pos, scope) {
         for (var bi = 0; bi < brokenHere.length; bi++) {
             var br = brokenHere[bi];
             // 历史日期回放的断板股展示首板以来累计涨幅；不再把单日缺失误显示为“涨跌幅待补”。
-            var brCum = (_msLinkageMode || br.cum === undefined) ? '' : ' · 累计' + _msThemePct(br.cum);
+            var brCum = (linkageStyle || br.cum === undefined) ? '' : ' · 累计' + _msThemePct(br.cum);
             var breakLabel = (br.peak <= 1 ? '首板' : '曾' + br.peak + '板') + ' (+' + br.gap + ')';
-            var brMove = _msLinkageMode
+            var brMove = linkageStyle
                 ? (br.pct === undefined ? '' : _msThemePct(br.pct))
                 : (br.cum === undefined ? (br.pct === undefined ? '累计涨幅待补' : '当日' + _msThemePct(br.pct)) : '累计' + _msThemePct(br.cum));
-            var brPctValue = _msLinkageMode ? br.pct : (br.cum === undefined ? br.pct : br.cum);
+            var brPctValue = linkageStyle ? br.pct : (br.cum === undefined ? br.pct : br.cum);
             var brPctCls = brPctValue === undefined ? '' : (Number(brPctValue) >= 0 ? ' ms-pct-up' : ' ms-pct-down');
             h += _msThemeChip(br.stock, breakLabel, 'break', ' <i class="ms-tp-pct' + brPctCls + '">' + _kplEsc(brMove) + '</i>', theme.theme);
         }
@@ -25361,19 +26286,20 @@ function _msRenderThemePyramidInner(idx, theme, dates, pos, scope) {
 
 function _msThemeSlide(idx, raw, scope) {
     var isLinkage = scope === 'linkage';
-    var data = isLinkage ? _ladderLinkageData : _msData;
+    var isMatrix = scope === 'matrix';
+    var data = isMatrix ? _tsmThemeStructureData : (isLinkage ? _ladderLinkageData : _msData);
     if (!data) return;
     var pyramids = data.theme_pyramids || [];
     var dates = (data.dates || []).slice().sort(function(a, b) { return String(b).localeCompare(String(a)); });
     var theme = pyramids[idx];
     if (!theme || !dates.length) return;
-    var datePositions = isLinkage ? _msLinkageThemeDateIdx : _msThemeDateIdx;
+    var datePositions = isMatrix ? _tsmThemeStructureDateIdx : (isLinkage ? _msLinkageThemeDateIdx : _msThemeDateIdx);
     datePositions[idx] = Math.max(0, Math.min(dates.length - 1, Number(raw) || 0));
-    var card = document.getElementById((isLinkage ? 'msLinkageThemePyrCard-' : 'msThemePyrCard-') + idx);
+    var card = document.getElementById((isMatrix ? 'tsmThemeStructureCard-' : (isLinkage ? 'msLinkageThemePyrCard-' : 'msThemePyrCard-')) + idx);
     if (!card) return;
     // 两个页面可后台并行加载，不能让市场结构的全局模式覆盖连板联动卡片的展示口径。
     var previousMode = _msLinkageMode;
-    _msLinkageMode = isLinkage;
+    _msLinkageMode = isLinkage || isMatrix;
     card.innerHTML = _msRenderThemePyramidInner(idx, theme, dates, datePositions[idx], scope);
     _msLinkageMode = previousMode;
 }
@@ -26286,6 +27212,7 @@ function _twsRefreshBoardLive() {
         }
         var reportBody = document.getElementById('twTodayTopicReviewBody');
         if (reportBody) reportBody.innerHTML = renderTodayThemeReview(d.today_theme_review || null);
+        _tsmApplyLiveMatrix(d.theme_strength_matrix || null);
         // 实时 tab 的时间轴块 rtTimelineBox 不在 .tws-summary 内，仍单独替换（题材风向 twTimelineBox 随汇总区一并重建）
         var rt = document.getElementById('rtTimelineBox');
         if (rt) {
@@ -27193,14 +28120,17 @@ function manualRefreshTws() {
     var body = document.getElementById('twWindStrengthBody');
     if (!body) return;
     var reportBody = document.getElementById('twTodayTopicReviewBody');
+    var matrixBody = document.getElementById('twThemeStrengthMatrixBody');
     body.innerHTML = '<div class="lt-trajectory-loading">刷新中...</div>';
     if (reportBody) reportBody.innerHTML = '<div class="lt-trajectory-loading">同步刷新题材复盘...</div>';
+    if (matrixBody) matrixBody.innerHTML = '<div class="lt-trajectory-loading">同步刷新题材强弱矩阵...</div>';
     Promise.all([
         fetch('/api/sector_ranking?_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
         fetch('/api/theme_wind_strength?no_cache=1&_t=' + Date.now()).then(function(r) { return r.json(); }).catch(function() { return null; }),
     ]).then(function(arr) {
         body.innerHTML = renderThemeWindStrength(arr[0], arr[1]);
         if (reportBody) reportBody.innerHTML = renderTodayThemeReview(arr[1] ? arr[1].today_theme_review : null);
+        _tsmApplyLiveMatrix(arr[1] ? arr[1].theme_strength_matrix : null);
         _twsTlLastRefresh = Date.now();   // 手动↻ 已整体重渲染，抑制 _twsStartPoll 首轮 _twsPoll 内 2分钟聚合再次重渲染
         _twsStartPoll();
     }).catch(function() {
@@ -27535,6 +28465,159 @@ function renderTodayThemeReview(data) {
     h += '<div class="ttr-line">今日涨停天梯最高板：' + (leader.name ? stock(leader) + '，' + esc(leader.lianban || 0) + '板，' + (leader.theme ? '<span class="ttr-theme">【' + esc(leader.theme) + '】</span>' : '无') : '无') + '。</div>';
     h += '<div class="ttr-summary-list"><div>成功晋级题材：' + listThemes(summary.promoted_themes) + '</div><div>全部断板题材：' + listThemes(summary.unpromoted_themes) + '</div><div>有首板继续助攻的题材：' + listThemes(summary.assisted_themes) + '</div><div>今日新题材：' + listThemes(summary.new_themes) + '</div></div>';
     h += '</section></div>';
+    return h;
+}
+
+// 题材强弱矩阵：每张卡固定展示「昨日结构 → 9:25开盘 → 今日验证」，避免题材状态被拆散。
+// 当前日保持每分钟替换；选择历史日后只读对应日快照，不被实时轮询覆盖。
+var _tsmLiveMatrixData = null;
+var _tsmSelectedDate = '';
+var _tsmMatrixLoading = false;
+function _tsmApplyLiveMatrix(data) {
+    if (!data) return;
+    _tsmLiveMatrixData = data;
+    var liveDate = data.date || '';
+    if (_tsmSelectedDate && _tsmSelectedDate !== liveDate) return;
+    _tsmSelectedDate = liveDate;
+    var body = document.getElementById('twThemeStrengthMatrixBody');
+    if (body) body.innerHTML = renderThemeStrengthMatrix(data);
+}
+function selectThemeStrengthMatrixDate(date) {
+    if (!date || _tsmMatrixLoading) return;
+    _tsmSelectedDate = date;
+    if (_tsmLiveMatrixData && date === _tsmLiveMatrixData.date) {
+        _tsmApplyLiveMatrix(_tsmLiveMatrixData);
+        return;
+    }
+    var body = document.getElementById('twThemeStrengthMatrixBody');
+    if (!body) return;
+    _tsmMatrixLoading = true;
+    body.innerHTML = '<div class="lt-trajectory-loading">正在读取 ' + _kplEsc(date) + ' 的题材强弱矩阵快照...</div>';
+    fetch('/api/theme_strength_matrix?date=' + encodeURIComponent(date) + '&_t=' + Date.now())
+        .then(function(r) { return r.json(); }).catch(function() { return null; }).then(function(data) {
+            if (!data || data.error) {
+                body.innerHTML = '<div class="lt-trajectory-loading">历史矩阵加载失败，请重试</div>';
+                return;
+            }
+            body.innerHTML = renderThemeStrengthMatrix(data);
+        }).finally(function() { _tsmMatrixLoading = false; });
+}
+function renderThemeStrengthMatrix(data) {
+    if (!data || !data.available) return '<div class="lt-trajectory-loading">暂无可构建的题材强弱矩阵</div>';
+    if (!_tsmSelectedDate) _tsmSelectedDate = data.selected_date || data.date || '';
+    function esc(value) { return _kplEsc(value == null ? '' : String(value)); }
+    function timeOf(stock) {
+        var raw = Number((stock || {}).first_time || 0);
+        if (!(raw > 0 && raw < 999999)) return '';
+        var text = String(Math.floor(raw)).padStart(6, '0');
+        return text.slice(0, 2) + ':' + text.slice(2, 4);
+    }
+    function stocks(items, limit, options) {
+        items = items || [];
+        options = options || {};
+        if (!items.length) return '无';
+        var view = items.slice(0, limit || 4).map(function(stock) {
+            var lb = Number(stock.lianban || 0);
+            var label = lb >= 2 ? ((options.promoted ? '晋级' : '') + lb + '板') : '首板';
+            var when = timeOf(stock);
+            var pct = Number(stock.open_pct);
+            var auction = '';
+            if (options.auction && isFinite(pct)) {
+                // 涨幅一律暖红色，只有真实下跌才使用绿色，避免“低开强弱”误读成涨跌方向。
+                var auctionClass = pct > 0 ? 'up' : (pct < 0 ? 'down' : 'flat');
+                auction = '<span class="tsm-auction ' + auctionClass + '">' + (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%</span>';
+            }
+            var finalState = '';
+            if (options.final) {
+                var finalPct = Number(stock.final_pct);
+                if (stock.today_limit) {
+                    finalState = '<span class="tsm-final limit">→ 涨停</span>';
+                } else if (isFinite(finalPct)) {
+                    finalState = '<span class="tsm-final ' + (finalPct >= 0 ? 'up' : 'down') + '">→ 收盘 ' + (finalPct >= 0 ? '+' : '') + finalPct.toFixed(2) + '%</span>';
+                } else {
+                    finalState = '<span class="tsm-final unknown">→ 未涨停</span>';
+                }
+            }
+            var prev = options.previous && Number(stock.prev_lianban || 0) > 0 ? '<span class="tsm-prev">←' + Number(stock.prev_lianban) + '板</span>' : '';
+            var code = esc(stock.code || '').replace(/&#39;/g, '');
+            var name = esc(stock.name || stock.code || '—').replace(/&#39;/g, '');
+            var levelClass = lb >= 5 ? ' lb-high' : (' lb-' + Math.max(1, lb));
+            var board = String(stock.board || '主').trim();
+            var boardKey = board === '创' ? 'gem' : (board === '科' ? 'star' : 'main');
+            var boardText = boardKey === 'gem' ? '创' : (boardKey === 'star' ? '科' : '主');
+            return '<button type="button" class="tsm-stock' + levelClass + '" title="点击查看 ' + name + ' K线" onclick="openDsStockFromRhythm(&quot;' + name + '&quot;,&quot;' + code + '&quot;,&quot;&quot;,[],-1)"><span class="tsm-stock-name">' + name + '</span><span class="tsm-board ' + boardKey + '">' + boardText + '</span><span class="tsm-lb">' + label + '</span>' + prev + (when ? '<span class="tsm-time">' + when + '</span>' : '') + auction + finalState + '</button>';
+        });
+        if (items.length > (limit || 4)) view.push('<span class="tsm-more">+' + (items.length - (limit || 4)) + '</span>');
+        return view.join('');
+    }
+    function baseline(item) {
+        var base = item.baseline || {};
+        var leaders = base.leaders || [];
+        if (!leaders.length) return '<span class="tsm-baseline-new">近三日未出现</span>';
+        return '<span class="tsm-baseline-lv">最高 ' + esc(base.max_lianban || 0) + '板</span> ' + stocks(leaders, 2, {});
+    }
+    function todayResult(item) {
+        var result = [];
+        if ((item.chains || []).length) result.push('<div><b>连板</b>' + stocks(item.chains, 5, {previous:true, promoted:true}) + '</div>');
+        if ((item.firsts || []).length) result.push('<div class="first"><b>首板 / 补涨</b>' + stocks(item.firsts, 6, {}) + '</div>');
+        if ((item.strong_gem || []).length) result.push('<div class="gem"><b>创/科</b>' + stocks(item.strong_gem, 3, {}) + '</div>');
+        if (!result.length) return '<span class="tsm-none">今日无涨停</span>';
+        return result.join('');
+    }
+    function strongExpectation(item) {
+        var list = item.strong_expectation || [];
+        if (!list.length) return '';
+        return '<div class="tsm-proof strong"><span class="tsm-proof-label">强预期</span><span class="tsm-proof-text">竞价强 → 涨停确认</span>' + stocks(list, 2, {auction:true, final:true}) + '</div>';
+    }
+    function weakExpectation(item) {
+        var list = item.weak || [];
+        if (!list.length) return '';
+        return '<div class="tsm-proof weak"><span class="tsm-proof-label">弱预期</span><span class="tsm-proof-text">竞价 → 最终</span>' + stocks(list, 3, {auction:true, final:true}) + '</div>';
+    }
+    var lanes = [
+        {key:'AL', title:'AL', desc:'连板确认', css:'strong'},
+        {key:'AN', title:'AN', desc:'新题材', css:'new'},
+        {key:'AR', title:'AR', desc:'轮番首板 · 未现1→2', css:'rotate'}
+    ];
+    var summary = data.summary || {};
+    var dates = Array.isArray(data.available_dates) ? data.available_dates.slice() : [];
+    var currentDate = data.selected_date || data.date || '';
+    if (currentDate && dates.indexOf(currentDate) < 0) dates.unshift(currentDate);
+    var dateOptions = dates.map(function(date) {
+        return '<option value="' + esc(date) + '"' + (date === currentDate ? ' selected' : '') + '>' + esc(date) + (date === ((_tsmLiveMatrixData || {}).date) ? ' · 最新' : '') + '</option>';
+    }).join('');
+    var status = data.snapshot_status === 'live' ? '盘中每分钟保存' : '收盘快照';
+    var h = '<div class="tsm-wrap"><div class="tsm-head"><div><b>题材强弱矩阵</b><span> 昨日结构 → 开盘预期 → 今日验证</span></div>';
+    h += '<div class="tsm-counts"><span class="al">AL ' + Number(summary.al || 0) + '</span><span class="an">AN ' + Number(summary.an || 0) + '</span><span class="ar">AR ' + Number(summary.ar || 0) + '</span><span class="break">AL断档 ' + Number(summary.breaks || 0) + '</span></div>';
+    h += '<span class="tsm-source">' + esc(data.auction_source ? ('开盘：' + data.auction_source) : '开盘价待补全') + '</span>';
+    h += '<label class="tsm-date-picker" title="历史日期只展示当日及此前数据"><span>' + esc(status) + '</span><select onchange="selectThemeStrengthMatrixDate(this.value)">' + dateOptions + '</select></label></div>';
+    h += '<div class="tsm-scroll"><div class="tsm-grid">';
+    lanes.forEach(function(lane) {
+        var list = (data.lanes && data.lanes[lane.key]) || [];
+        h += '<section class="tsm-lane" data-lane="' + lane.key + '"><header class="tsm-lane-head"><b>' + lane.title + '</b><small>' + lane.desc + ' · ' + list.length + '</small></header><div class="tsm-list">';
+        if (!list.length) h += '<div class="tsm-empty">暂无符合条件题材</div>';
+        list.forEach(function(item) {
+            var sig = item.signal || '';
+            var reason = item.signal_reason || '';
+            var cardClass = (item.today_absent ? ' is-break' : '') + ((item.strong_expectation || []).length ? ' is-strong' : '');
+            h += '<article class="tsm-card' + cardClass + '"><div class="tsm-card-top"><button class="tsm-theme" onclick="jumpToKplSearch(\\x27' + esc(item.theme || '').replace(/&#39;/g, '') + '\\x27)" title="题材复盘：' + esc(item.theme || '') + '">' + esc(item.theme || '未分类') + '</button>';
+            if (sig) h += '<span class="tsm-signal ' + lane.css + '">' + esc(sig + (reason ? '·' + reason : '')) + '</span>';
+            h += '<button type="button" class="tsm-structure-btn" onclick="event.stopPropagation();openTsmThemeStructure(\\x27' + esc(item.theme || '').replace(/&#39;/g, '') + '\\x27)" title="打开连板联动同款题材结构">▦ 题材结构</button>';
+            h += '</div>';
+            h += '<div class="tsm-flow">';
+            h += '<div class="tsm-phase baseline"><strong>昨日</strong><span>' + baseline(item) + '</span></div>';
+            h += '<div class="tsm-arrow">→</div>';
+            h += '<div class="tsm-phase auction"><strong>开盘</strong><span>' + ((item.auction && item.auction.length) ? stocks(item.auction, 2, {auction:true}) : '<span class="tsm-muted">无开盘记录</span>') + '</span></div>';
+            h += '<div class="tsm-arrow">→</div>';
+            h += '<div class="tsm-phase today"><strong>今日</strong><span>' + todayResult(item) + '</span></div>';
+            h += '</div>';
+            h += strongExpectation(item);
+            h += weakExpectation(item);
+            h += '</article>';
+        });
+        h += '</div></section>';
+    });
+    h += '</div></div></div>';
     return h;
 }
 
@@ -35408,6 +36491,60 @@ function closeTmmThemeKline() {
     if (modal) modal.classList.remove('active');
     _tmmThemeKlineHits = [];
 }
+
+// 题材强弱矩阵 → 题材结构：直接使用连板联动接口的 theme_pyramids，
+// 渲染函数、分层规则、日期滑块、历史题材标签均与连板联动卡片共用。
+function _tsmRenderThemeStructure(themeName) {
+    var modal = document.getElementById('tsmThemeStructureModal');
+    var body = document.getElementById('tsmThemeStructureBody');
+    var title = document.getElementById('tsmThemeStructureTitle');
+    var counter = document.getElementById('tsmThemeStructureCounter');
+    if (!modal || !body || !_tsmThemeStructureData) return;
+    var pyramids = _tsmThemeStructureData.theme_pyramids || [];
+    var idx = -1;
+    for (var i = 0; i < pyramids.length; i++) {
+        if (String((pyramids[i] || {}).theme || '') === String(themeName || '')) { idx = i; break; }
+    }
+    if (idx < 0) {
+        body.innerHTML = '<div class="empty" style="padding:28px;text-align:center;">该细分题材暂未进入连板联动结构</div>';
+        if (title) title.textContent = themeName + ' · 题材结构';
+        if (counter) counter.textContent = '';
+        return;
+    }
+    var topic = pyramids[idx] || {};
+    var dates = (_tsmThemeStructureData.dates || []).slice().sort(function(a, b) { return String(b).localeCompare(String(a)); });
+    if (!dates.length) {
+        body.innerHTML = '<div class="empty" style="padding:28px;text-align:center;">暂无可回放的题材结构数据</div>';
+        return;
+    }
+    if (_tsmThemeStructureDateIdx[idx] === undefined) _tsmThemeStructureDateIdx[idx] = 0;
+    if (title) title.textContent = themeName + ' · 题材结构';
+    if (counter) counter.textContent = '连板联动同款 · 跟踪 ' + Number((topic.stocks || []).length) + ' 只股票';
+    var previousMode = _msLinkageMode;
+    _msLinkageMode = true;
+    body.innerHTML = _msRenderThemePyramidCard(idx, topic, dates, 'matrix');
+    _msLinkageMode = previousMode;
+}
+function openTsmThemeStructure(themeName) {
+    var modal = document.getElementById('tsmThemeStructureModal');
+    var body = document.getElementById('tsmThemeStructureBody');
+    var title = document.getElementById('tsmThemeStructureTitle');
+    if (!modal || !body) return;
+    if (title) title.textContent = themeName + ' · 题材结构';
+    modal.classList.add('active');
+    if (_tsmThemeStructureData) { _tsmRenderThemeStructure(themeName); return; }
+    body.innerHTML = '<div class="loading" style="padding:28px;text-align:center;">加载连板联动题材结构...</div>';
+    fetch('/api/ladder_linkage').then(function(r) { return r.json(); }).then(function(data) {
+        _tsmThemeStructureData = data || null;
+        _tsmRenderThemeStructure(themeName);
+    }).catch(function() {
+        body.innerHTML = '<div class="empty" style="padding:28px;text-align:center;">题材结构加载失败，请稍后重试</div>';
+    });
+}
+function closeTsmThemeStructure() {
+    var modal = document.getElementById('tsmThemeStructureModal');
+    if (modal) modal.classList.remove('active');
+}
 // 股票 chip（冷暖双色系，2 行块）：
 //   · 当前连板(在板/今日 断0) = 暖·vivid lt-lb-{1..4/high} 层色（今日另叠五彩+「今」tag），徽标「N连板/首板」
 //   · 历史连板(断板 断>=1)   = 冷·translucent（曾1灰蓝/2青/3蓝/4靛/5+暗金 按曾N板档取色），断板越久 alpha 越低，16+ 走淡(.bd-far)
@@ -40312,6 +41449,21 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback
                 self._respond_json({'error': str(e), 'traceback': traceback.format_exc()}, cors_headers)
 
+        elif path == '/api/theme_strength_matrix':
+            # 历史日期只读取（或首次按该日截止口径补建）独立日快照，
+            # 不经主题风向的实时接口，避免历史回看被今天数据覆盖。
+            try:
+                date_fmt = (query.get('date', [''])[0] or '').strip()
+                if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', date_fmt):
+                    self._respond_json({'available': False, 'error': '请选择有效交易日',
+                                        'available_dates': _theme_strength_matrix_window_dates()}, cors_headers)
+                else:
+                    self._respond_json(_get_theme_strength_matrix_snapshot(date_fmt), cors_headers)
+            except Exception as e:
+                import traceback
+                self._respond_json({'available': False, 'error': str(e),
+                                    'traceback': traceback.format_exc()}, cors_headers)
+
         elif path == '/api/theme_wind_strength':
             # 题材风向 Section 0：精选板块强度 Top10 + 细分题材横向树（涨停股/补涨池/特别关注）
             try:
@@ -42534,7 +43686,20 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     port = 6688
-    server = ThreadingHTTPServer(('0.0.0.0', port), Handler)
+    try:
+        # 浏览器访问 localhost 时可能优先解析为 ::1；双栈监听同时接受 IPv6 和 IPv4。
+        class _DualStackHTTPServer(ThreadingHTTPServer):
+            address_family = socket.AF_INET6
+
+            def server_bind(self):
+                self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+                super().server_bind()
+
+        server = _DualStackHTTPServer(('::', port), Handler)
+    except OSError as exc:
+        # 个别系统禁用了 IPv6 时仍保留原有 IPv4 服务能力。
+        print(f'[IPv6] 双栈监听不可用，回退到 IPv4：{exc}')
+        server = ThreadingHTTPServer(('0.0.0.0', port), Handler)
 
     hostname = os.uname().nodename if hasattr(os, 'uname') else 'localhost'
     print('=' * 50)
@@ -42680,6 +43845,9 @@ def main():
         threading.Thread(target=_warm_data_status, daemon=True),
         threading.Thread(target=_warm_kpl_top_tags, daemon=True),
         threading.Thread(target=_warm_high_frequency_pages, daemon=True),
+        # 题材强弱矩阵独立维护：盘中每分钟覆盖当日日快照，后台补齐近20日历史。
+        threading.Thread(target=_theme_strength_matrix_live_loop, daemon=True),
+        threading.Thread(target=_theme_strength_matrix_backfill_loop, daemon=True),
         # 市场结构/连板联动由前端在首屏完成后按 20日 → 30日 → 联动顺序预热。
         # 不在服务启动时与首屏高频任务并发，避免用户刚切页时排队等待同一把构建锁。
         # 旧版实时增量/收盘推送已取消；只保留“完整细分题材晋级快照”。
