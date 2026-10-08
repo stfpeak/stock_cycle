@@ -59,24 +59,24 @@
 .lt-th-time { color: #ffd700; font-style: normal; font-size: 0.85em; margin-left: 2px; }
 .lt-th-restart { color: #22d3ee; font-style: normal; font-size: 0.82em; margin-left: 2px; }
 
-/* ===== 题材导航 / 回到导航悬浮按钮 ===== */
+/* ===== 题材导航 / 回到导航悬浮按钮（莫兰迪配色：低饱和、灰调；色相由 --th-h 控制） ===== */
 .lt-theme-nav { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; padding: 8px 10px; border-radius: 8px;
                 background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); }
 .lt-theme-nav-title { align-self: center; margin-right: 6px; color: #ffd700; font-weight: 800; font-size: 0.85em; }
 .lt-theme-nav-btn { cursor: pointer; padding: 3px 10px; border-radius: 14px; font-size: 0.8em; font-weight: 700;
-    color: hsl(var(--th-h) 90% 86%); background: hsl(var(--th-h) 55% 24%); border: 1px solid hsl(var(--th-h) 65% 48%); }
-.lt-theme-nav-btn:hover { background: hsl(var(--th-h) 60% 33%); }
+    color: hsl(var(--th-h) 28% 90%); background: hsl(var(--th-h) 20% 30%); border: 1px solid hsl(var(--th-h) 24% 54%); }
+.lt-theme-nav-btn:hover { background: hsl(var(--th-h) 22% 38%); }
 .lt-theme-nav-btn i { font-style: normal; color: #ffd700; font-size: 0.85em; margin-left: 2px; }
 #watchBackNav { position: fixed; right: 18px; bottom: 22px; z-index: 90; cursor: pointer; padding: 9px 16px; border-radius: 22px;
     font-size: 0.9em; font-weight: 800; color: #1a1a2e; background: #ffd700; border: 0; box-shadow: 0 4px 14px rgba(0,0,0,0.5); }
 #watchBackNav:hover { background: #ffe34d; }
 
 /* ===== 题材行：标题居中 + 配色背景，同时作为行与行的分隔 ===== */
-.lt-trajectory-matrix tr.lt-theme-row > td { border-top: 3px solid hsl(var(--th-h) 65% 52%); }
-.lt-th-name { text-align: center; padding: 5px 6px; border-radius: 6px; color: hsl(var(--th-h) 95% 88%);
-    background: linear-gradient(135deg, hsl(var(--th-h) 62% 34%), hsl(var(--th-h) 58% 21%)); border: 1px solid hsl(var(--th-h) 65% 50%); }
-.lt-th-name .lt-tag-link { color: inherit; border-bottom-color: hsla(var(--th-h), 90%, 85%, 0.5); }
-.lt-th-total { color: hsl(var(--th-h) 40% 70%); }
+.lt-trajectory-matrix tr.lt-theme-row > td { border-top: 3px solid hsl(var(--th-h) 24% 52%); }
+.lt-th-name { text-align: center; padding: 5px 6px; border-radius: 6px; color: hsl(var(--th-h) 30% 93%);
+    background: linear-gradient(135deg, hsl(var(--th-h) 24% 38%), hsl(var(--th-h) 20% 27%)); border: 1px solid hsl(var(--th-h) 26% 56%); }
+.lt-th-name .lt-tag-link { color: inherit; border-bottom-color: hsla(var(--th-h), 30%, 88%, 0.5); }
+.lt-th-total { color: hsl(var(--th-h) 22% 76%); }
 .lt-row-flash { outline: 2px solid #ffd700; outline-offset: -2px; animation: ltRowFlash 1.8s ease-out forwards; }
 @keyframes ltRowFlash { 0% { outline-color: #ffd700; } 100% { outline-color: transparent; } }
 
@@ -176,13 +176,13 @@
 .lt-r-badge { display: inline-block; padding: 0 5px; margin-right: 5px; border-radius: 4px; font-size: 0.72em; font-weight: 900; font-style: normal;
       line-height: 1.5; vertical-align: middle; color: #1a1a2e; box-shadow: 0 0 8px rgba(255,230,0,0.55); }
 .lt-r-1, .lt-r-2, .lt-r-3, .lt-r-4, .lt-r-5 { background: #ffe600; }
-.lt-theme-nav-btn.lt-nav-top { border-width: 2px; box-shadow: 0 0 12px hsla(var(--th-h), 85%, 60%, 0.4); }
+.lt-theme-nav-btn.lt-nav-top { border-width: 2px; box-shadow: 0 0 12px hsla(var(--th-h), 30%, 66%, 0.35); }
 .lt-theme-nav-title small { margin-left: 8px; color: #7f8da3; font-weight: 400; font-size: 0.82em; }
 
 /* ===== 首列题材标题条：更精致的质感 ===== */
 .lt-th-name { position: relative; padding: 7px 10px; letter-spacing: 0.04em;
       box-shadow: inset 0 1px 0 rgba(255,255,255,0.2), inset 0 -1px 0 rgba(0,0,0,0.3), 0 3px 10px rgba(0,0,0,0.35); }
-.lt-th-name::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; border-radius: 6px 0 0 6px; background: hsl(var(--th-h) 85% 62%); }
+.lt-th-name::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; border-radius: 6px 0 0 6px; background: hsl(var(--th-h) 32% 66%); }
 
 /* ===== 参考列 / 最新列：参考连板联动题材卡片「今日」的柔和金色底 + 虚线分栏（取代原先的亮金外框与双线） ===== */
 .lt-trajectory-matrix td.lt-col-ref { background: rgba(196,173,121,0.08); border-left: 1px solid rgba(196,173,121,0.5); border-right: 1px solid rgba(196,173,121,0.5); }
@@ -220,3 +220,8 @@
     font-style: normal; font-size: 0.62em; font-weight: 900; line-height: 1.5; letter-spacing: 0.04em; border: 1px solid rgba(255,255,255,0.85); }
 .lt-trajectory-matrix .lt-flag-up { color: #fff; background: #ff2d55; box-shadow: 0 0 9px rgba(255,45,85,0.85); }
 .lt-trajectory-matrix .lt-flag-new { color: #04232b; background: #00e5ff; box-shadow: 0 0 9px rgba(0,229,255,0.85); }
+
+/* ===== 时间轴：压缩后的午休标记 ===== */
+.tws-tl-axis .tws-tl-lunch { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 0.62em; letter-spacing: 0.15em; color: #6f7a8a; pointer-events: none;
+    background: repeating-linear-gradient(135deg, rgba(255,255,255,0.05) 0 4px, transparent 4px 8px); border-left: 1px dashed rgba(255,255,255,0.18); border-right: 1px dashed rgba(255,255,255,0.18); }

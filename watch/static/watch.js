@@ -15,6 +15,14 @@
     window._twsPoll = function () {};
     window._twsRefreshBoardLive = function () {};     // 主页面另有 60s 全局定时器会调它，统一由本文件 30s 总时钟接管
 
+    // —— 覆盖：时间轴用压缩午休的版本；时间轴里的题材名点击 → 跳到下方「标签轨迹」表格中对应题材行 ——
+    window._twsRenderTimeline = window.watchRenderTimeline;
+    window._twsJumpToTheme = function (el) {
+        var theme = (el.getAttribute('data-jump-theme') || '').trim() || (el.getAttribute('data-jump-plate') || '').trim();
+        if (!theme) return;
+        if (!window.watchJumpThemeByName(theme) && typeof showToast === 'function') showToast('表格中暂无题材「' + theme + '」', 'info');
+    };
+
     // —— 覆盖：核心池联动本页不展示，避免每 5 分钟触发 market_structure 重请求 ——
     window._twsCorePoolLoad = function () {};
 

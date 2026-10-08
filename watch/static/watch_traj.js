@@ -3,6 +3,95 @@
  * 与原版差异：① 同格内「涨停」在上、「大涨」（创/科/北 涨幅>10% 未涨停）在下，以虚线分隔；
  *            ② 股票前标注 主/创/科/北；③ 最新列/参考列加 lt-col-latest / lt-col-ref 类，便于加宽与分隔。
  * 数据：/api/ladder_trajectory?surge=1 （surge_by_tag / reference_surge_by_tag）。 */
+/* 实时盯盘页专用：今日涨停时间轴渲染器。派生自主页面 _twsRenderTimeline（一次性分叉，此后独立演进）。
+ * 与原版差异：午休 11:30~13:00 由 90 分钟压缩为 15 分钟（轴整体变短，其余布局算法不变）。 */
+function watchRenderTimeline(twsData, boxId, searchMode) {
+    boxId = boxId || 'twTimelineBox';
+    var mapSearch = boxId === 'tmmTimelineBox' || searchMode === 'cls';
+    var AXIS_START = 25;   // 轴起点 = 距9:00分钟数（9:25）：A股9:25集合竞价后才产生涨停，9:00~9:25无数据，轴从9:25开始
+    var LUNCH_CUT = 75;   // 午休 11:30~13:00 共 90 分钟，压缩成 15 分钟（少 75 分钟空白）
+    var AXIS_LEN = 360 - AXIS_START - LUNCH_CUT;   // 轴总长 = 9:25~15:00 去掉压缩掉的午休 = 260 分钟（minute 基准距 9:00，150=11:30，240=13:00）
+    function eff(m) { return m <= 150 ? m : (m >= 240 ? m - LUNCH_CUT : 150 + (m - 150) / 6); }
+    var tl = (twsData && twsData.timeline) || [];
+    if (!tl.length) return '';
+    // 最小宽度随涨停股数自适应：股越多时间轴越宽（横向滚动），减少纵向 lane 数避免叠太高
+    var MIN_W = Math.round(Math.max(1500, tl.length * 46) * AXIS_LEN / 335);   // 轴变短后同比缩窄，每分钟像素不变，不会多出泳道
+    // 按分钟分组（同分钟多股 → 同列垂直堆叠）
+    var groups = {};
+    var gkeys = [];
+    for (var i = 0; i < tl.length; i++) {
+        var it = tl[i];
+        var m = it.minute;
+        var key = (m == null || m >= 9999) ? 'misc' : ('m' + m);
+        if (!groups[key]) { groups[key] = { minute: m, items: [] }; gkeys.push(key); }
+        groups[key].items.push(it);
+    }
+    gkeys.sort(function(a, b) {
+        var ma = a === 'misc' ? 9999 : parseInt(a.slice(1), 10);
+        var mb = b === 'misc' ? 9999 : parseInt(b.slice(1), 10);
+        return ma - mb;
+    });
+    // 每列估算横向宽度（px）：按最长 chip 文本（名称 + MAB 标签）
+    function colW(g) {
+        var w = 0;
+        for (var j = 0; j < g.items.length; j++) {
+            var it = g.items[j];
+            var mc = 0;
+            if (it.mab && it.mab.length) {
+                for (var mi2 = 0; mi2 < it.mab.length; mi2++) mc += ((it.mab[mi2].t || '').length * 9 + 14);
+            } else {
+                mc = (it.theme || '').length * 10;
+            }
+            var tw = (it.name || '').length * 13 + mc + 52;
+            if (tw > w) w = tw;
+        }
+        return w;
+    }
+    // 贪心 lane：每 lane 内 chip 横向不重叠（间隔 8px），放不下换新 lane；
+    // laneStack[l] = 该 lane 内最大同分钟堆叠数 → lane 高度动态 = maxStack*ROW_H（防同列多股越界覆盖下一 lane）
+    var lanes = [];
+    var laneRight = [];
+    var laneStack = [];
+    for (var gi = 0; gi < gkeys.length; gi++) {
+        var g = groups[gkeys[gi]];
+        var left = g.minute >= 9999 ? 0.985 : ((eff(Math.max(g.minute, AXIS_START)) - AXIS_START) / AXIS_LEN);
+        var w = colW(g) / MIN_W;
+        var placed = false;
+        for (var l = 0; l < lanes.length; l++) {
+            if (left >= laneRight[l] + 0.008) {
+                lanes[l].push(g); laneRight[l] = left + w + 0.008;
+                if (g.items.length > laneStack[l]) laneStack[l] = g.items.length;
+                placed = true; break;
+            }
+        }
+        if (!placed) { lanes.push([g]); laneRight.push(left + w + 0.008); laneStack.push(g.items.length); }
+    }
+    var marks = ['9:25', '9:30', '10:00', '10:30', '11:00', '11:30', '13:00', '13:30', '14:00', '14:30', '15:00'];
+    var mpos = [0, 5, 35, 65, 95, 125, 140, 170, 200, 230, 260];   // 13:00 起整体前移 75 分钟
+    var axis = '';
+    for (var mi = 0; mi < marks.length; mi++) {
+        axis += '<span class="tws-tl-tick" style="left:' + (mpos[mi] / AXIS_LEN * 100).toFixed(2) + '%">' + marks[mi] + '</span>';
+    }
+    axis += '<span class="tws-tl-lunch" style="left:' + (125 / AXIS_LEN * 100).toFixed(2) + '%;width:' + (15 / AXIS_LEN * 100).toFixed(2) + '%">午休</span>';
+    var h = '<div id="' + boxId + '" class="tws-tl-box"><div class="tws-summary-sec-head">⏱ 今日涨停时间轴（9:25~15:00）</div>';
+    h += '<div class="tws-tl-scroll"><div class="tws-timeline" style="min-width:' + MIN_W + 'px">';
+    h += '<div class="tws-tl-axis">' + axis + '</div>';
+    for (var li = 0; li < lanes.length; li++) {
+        h += '<div class="tws-tl-lane" style="height:' + (laneStack[li] * ROW_H) + 'px">';
+        for (var k = 0; k < lanes[li].length; k++) {
+            var g = lanes[li][k];
+            var leftPct = g.minute >= 9999 ? 98.5 : ((eff(Math.max(g.minute, AXIS_START)) - AXIS_START) / AXIS_LEN * 100);
+            g.items.sort(function(a, b2) { return (b2.lianban || 0) - (a.lianban || 0) || a.name.localeCompare(b2.name); });
+            for (var q = 0; q < g.items.length; q++) {
+                h += _twsTlChip(g.items[q], leftPct, q, mapSearch, searchMode);
+            }
+        }
+        h += '</div>';
+    }
+    h += '</div></div></div>';
+    return h;
+}
+
 function watchBoardOf(code) {
     code = String(code || '');
     if (code.slice(0, 2) === '30') return '创';
@@ -16,9 +105,15 @@ function watchBoardOf(code) {
 var _watchDeclNavs = [];
 function watchJumpThemeByName(name) {
     var links = document.querySelectorAll('tr.lt-theme-row .lt-th-name .lt-tag-link');
-    for (var i = 0; i < links.length; i++) {
-        if (links[i].textContent.trim() === name) { watchJumpTheme(Number(links[i].closest('tr').id.replace('wt-row-', ''))); return; }
+    var hit = null, i;
+    for (i = 0; i < links.length && !hit; i++) if (links[i].textContent.trim() === name) hit = links[i];
+    for (i = 0; i < links.length && !hit; i++) {            // 兜底：A+B 复合题材 / 简称，取名称互相包含的第一行
+        var t = links[i].textContent.trim();
+        if (t && (name.indexOf(t) >= 0 || t.indexOf(name) >= 0)) hit = links[i];
     }
+    if (!hit) return false;
+    watchJumpTheme(Number(hit.closest('tr').id.replace('wt-row-', '')));
+    return true;
 }
 function watchRenderDecline(data) {
     var d = data && data.decline;
@@ -229,7 +324,7 @@ function watchRenderTrajectory(data, bodyId) {
     Object.keys(stocksByTag).forEach(function(t) {
         ((stocksByTag[t] && stocksByTag[t][dates[0]]) || []).forEach(function(x) { sumCtx.todayLimit[x.code] = {lianban: x.lianban || 1}; });
     });
-    var HUES = [210, 285, 28, 168, 340, 52, 252, 140];     // 题材行配色循环（导航按钮与行标题同色）
+    var HUES = [212, 350, 38, 138, 270, 18, 178, 320];     // 莫兰迪色相循环（雾蓝/豆沙/沙驼/灰绿/藕紫/陶土/灰青/紫灰），低饱和由 CSS 控制；导航按钮与行标题同色
     // 最新日涨停数 TOP5 → R1~R5（同数量时保持表格顺序）
     var limitCnt = function(tag) { return ((stocksByTag[tag] && stocksByTag[tag][dates[0]]) || []).length; };
     var rankOf = {};
