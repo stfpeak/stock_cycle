@@ -4059,7 +4059,7 @@ def _build_theme_structure_tree():
 
 
 # ===== 题材风向 · 精选板块强度 + Top10细分题材卡片（Session 24） =====
-def _get_sector_ranking(refresh=False):
+def _get_sector_ranking(refresh=False, ttl=300):
     """精选板块强度排行（levistock 开盘红），300s 内存缓存。返回 list 或 []。
     今日非交易日/无数据时逐日回退最近过去交易日（周末→周五），缓存按日期分 key；
     与精准狙击 /api/sector_ranking 共用缓存，避免重复打盘红接口。"""
@@ -4081,7 +4081,7 @@ def _get_sector_ranking(refresh=False):
             result = lk.sector_ranking_kph(date=date_fmt, zs_type=lk.SECTOR_SELECTED)
             _set_cache(cache_key, result)
         else:
-            result = _get_cached(cache_key, ttl=300)
+            result = _get_cached(cache_key, ttl=ttl)
             if result is None:
                 result = lk.sector_ranking_kph(date=date_fmt, zs_type=lk.SECTOR_SELECTED)
                 _set_cache(cache_key, result)
@@ -6878,6 +6878,287 @@ def _trajectory_daily_change_pct(codes_by_date):
         if conn is not None:
             conn.close()
     return result
+
+
+def _traj_num(v):
+    try:
+        f = float(v)
+        return f if f == f else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _trajectory_live_market_rows():
+    """全市场实时行情（东方财富，20s 缓存，与大涨/涨幅>2%/跌幅榜共用，保证 30s 轮询每次都能取到新数据）。"""
+    rows = _get_cached('attention_live_market_rows', ttl=20)
+    if rows is None:
+        try:
+            rows = _auction_fetch_all_market_rows() or []
+        except Exception as exc:
+            print('[涨停原因标签轨迹] 盘中全市场行情获取失败: %s' % exc)
+            rows = []
+        _set_cache('attention_live_market_rows', rows)
+    return rows
+
+
+def _trajectory_board_of_code(code):
+    """轨迹用板块标识：主/创/科/北（北交所 920/8/4 开头）。"""
+    code = str(code or '').zfill(6)
+    if code[:2] == '30':
+        return '创'
+    if code[:2] == '68':
+        return '科'
+    if code[:3] == '920' or code[:1] in ('8', '4'):
+        return '北'
+    return '主'
+
+
+def _trajectory_surge_candidates(dates_fmt, limit_codes_by_date):
+    """创业板/科创板/北交所 当日涨幅 >10% 且未涨停的「大涨」股，返回 {date: {code: {'name','change_pct'}}}。
+    历史日读本地日线；今日盘中以全市场实时行情（与注意力看板共用 45s 缓存）为准。
+    涨停判定：已在当日涨停池，或涨幅已达涨停价（创/科 ≥19.5%，北 ≥29.5%）。"""
+    out = {}
+    dates_fmt = [d for d in dates_fmt if d]
+    if not dates_fmt:
+        return out
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
+    names = {}
+    try:
+        conn = sqlite3.connect(db_path, timeout=5)
+        ph = ','.join('?' * len(dates_fmt))
+        rows = conn.execute(
+            "SELECT stock_code, trade_date, change_pct FROM kline_daily WHERE trade_date IN (%s) AND change_pct > 10 "
+            "AND (stock_code LIKE '30%%' OR stock_code LIKE '68%%' OR stock_code LIKE '8%%' "
+            "OR stock_code LIKE '4%%' OR stock_code LIKE '92%%')" % ph, dates_fmt).fetchall()
+        for code, trade_date, pct in rows:
+            out.setdefault(trade_date, {})[str(code).zfill(6)] = {'name': '', 'change_pct': float(pct)}
+        all_codes = sorted({c for m in out.values() for c in m})
+        for i in range(0, len(all_codes), 800):
+            batch = all_codes[i:i + 800]
+            names.update({str(c).zfill(6): str(n or '').strip() for c, n in conn.execute(
+                'SELECT stock_code, stock_name FROM stocks WHERE stock_code IN (%s)' % ','.join('?' * len(batch)),
+                batch).fetchall() if n})
+        conn.close()
+    except Exception as exc:
+        print('[涨停原因标签轨迹] 大涨股日线读取失败: %s' % exc)
+    today_fmt = _bj_now().strftime('%Y-%m-%d')
+    if today_fmt in dates_fmt and _is_trading_hours():
+        live_rows = _get_cached('attention_live_market_rows', ttl=20)
+        if live_rows is None:
+            try:
+                live_rows = _auction_fetch_all_market_rows() or []
+            except Exception as exc:
+                print('[涨停原因标签轨迹] 盘中全市场行情获取失败: %s' % exc)
+                live_rows = []
+            _set_cache('attention_live_market_rows', live_rows)
+        if live_rows:
+            live_map = {}
+            seen = set()
+            for row in live_rows:
+                code = str((row or {}).get('stock_code') or '').strip().zfill(6)
+                if len(code) != 6 or not code.isdigit():
+                    continue
+                try:
+                    pct = float(row.get('change_pct'))
+                except (TypeError, ValueError):
+                    continue
+                seen.add(code)
+                if pct > 10 and _trajectory_board_of_code(code) != '主':
+                    live_map[code] = {'name': str(row.get('stock_name') or ''), 'change_pct': pct}
+            # 实时快照覆盖的个股完全以现价为准，避免保留日线里的盘中旧大涨
+            kept = {c: v for c, v in out.get(today_fmt, {}).items() if c not in seen}
+            kept.update(live_map)
+            out[today_fmt] = kept
+    result = {}
+    for d, m in out.items():
+        skip = limit_codes_by_date.get(d, set())
+        for code, info in m.items():
+            board = _trajectory_board_of_code(code)
+            if board == '主' or code in skip:
+                continue
+            if info['change_pct'] >= (29.5 if board == '北' else 19.5):
+                continue   # 已达涨停价，按涨停处理
+            result.setdefault(d, {})[code] = {
+                'name': (info['name'] or names.get(code) or (_kpl_stock_index.get(code, {}) or {}).get('stock_name') or
+                     (_kph_industry_reverse.get(code, {}) or {}).get('name') or
+                     getattr(finder, 'stock_name_map', {}).get(code) or code),
+                'change_pct': round(info['change_pct'], 2),
+            }
+    return result
+
+
+def _trajectory_stock_row_tags(code, universe):
+    """股票 → 轨迹题材行：KPL 最新涨停标签 ∪ 开盘红 ∪ 同花顺本地库（均须与轨迹已有行名完全同名）。"""
+    tags = set()
+    latest = (_kpl_stock_latest_tag.get(code) or {})
+    raw = (latest.get('tag') or '').strip()
+    if raw:
+        tags.update(t for t in _traj_valid_tags(raw, latest.get('reason_brief') or '') if t in universe)
+    try:
+        tags |= _tws_matrix_extra_themes(code, universe)
+    except Exception:
+        pass
+    return tags
+
+
+def _trajectory_decline_board(date_fmt, prev_limit_codes, threshold=-5.0):
+    """跌幅榜数据：{'date','threshold','live','total','themes':[{name,count,avg_pct,stocks:[{code,name,board,pct,prev_limit}]}]}。"""
+    board = {'date': date_fmt, 'threshold': threshold, 'live': False, 'total': 0, 'themes': []}
+    if not date_fmt:
+        return board
+    rows = {}
+    live = date_fmt == _bj_now().strftime('%Y-%m-%d') and _is_trading_hours()
+    if live:
+        live_rows = _get_cached('attention_live_market_rows', ttl=20)
+        if live_rows is None:
+            try:
+                live_rows = _auction_fetch_all_market_rows() or []
+            except Exception as exc:
+                print('[涨停原因标签轨迹] 盘中全市场行情获取失败: %s' % exc)
+                live_rows = []
+            _set_cache('attention_live_market_rows', live_rows)
+        for row in live_rows or []:
+            code = str((row or {}).get('stock_code') or '').strip().zfill(6)
+            try:
+                rows[code] = (str(row.get('stock_name') or ''), float(row.get('change_pct')))
+            except (TypeError, ValueError):
+                continue
+    board['live'] = bool(live and rows)
+    if not rows:
+        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
+        try:
+            conn = sqlite3.connect(db_path, timeout=5)
+            names = {str(c).zfill(6): str(n or '').strip() for c, n in conn.execute('SELECT stock_code, stock_name FROM stocks').fetchall()}
+            for code, pct in conn.execute('SELECT stock_code, change_pct FROM kline_daily WHERE trade_date=? AND change_pct < ?', (date_fmt, threshold)).fetchall():
+                code = str(code).zfill(6)
+                rows[code] = (names.get(code, ''), float(pct))
+            conn.close()
+        except Exception as exc:
+            print('[涨停原因标签轨迹] 跌幅股读取失败: %s' % exc)
+    themes = {}
+    total = 0
+    for code, (name, pct) in rows.items():
+        if len(code) != 6 or not code.isdigit() or not (pct < threshold):
+            continue
+        name = name or (_kpl_stock_index.get(code, {}) or {}).get('stock_name') or (_kph_industry_reverse.get(code, {}) or {}).get('name') or \
+            getattr(finder, 'stock_name_map', {}).get(code) or code
+        if name[:1] in ('N', 'C'):
+            continue   # 新股首日不设涨跌幅限制，不计入
+        latest = _kpl_stock_latest_tag.get(code) or {}
+        raw = (latest.get('tag') or '').strip()
+        tags = _traj_valid_tags(raw, latest.get('reason_brief') or '') if raw else []
+        item = {'code': code, 'name': name, 'board': _trajectory_board_of_code(code), 'pct': round(pct, 2),
+                'prev_limit': code in prev_limit_codes}
+        total += 1
+        for tag in (tags or ['未归类']):
+            themes.setdefault(tag, {})[code] = item
+    out = []
+    for tag, m in themes.items():
+        stocks = sorted(m.values(), key=lambda x: (x['pct'], x['name']))
+        total_pct = sum(x['pct'] for x in stocks)
+        out.append({'name': tag, 'count': len(stocks), 'avg_pct': round(total_pct / len(stocks), 2),
+                    'sum_pct': round(total_pct, 2), 'stocks': stocks})
+    out.sort(key=lambda x: (x['name'] == '未归类', x['sum_pct'], x['name']))   # 累计跌幅越大越靠前
+    board['themes'] = out
+    board['total'] = total
+    return board
+
+
+def _trajectory_attach_surge(date_codes, tag_totals, price_by_date, live_date_fmt, close_pending, kind='surge', per_tag_cap=0):
+    """把大涨(kind=surge)/未涨停涨幅>2%(kind=rise)的股票挂到轨迹已有题材行：按行总涨停次数取前 2 个行，无匹配则不展示。
+    返回 {date: {tag: [stock]}}，stock 字段与涨停股一致，另带 is_surge/is_rise/change_pct/board。"""
+    out = {}
+    tag_cache = {}
+    universe = set(tag_totals)
+    for d, m in date_codes.items():
+        for code, info in m.items():
+            if code not in tag_cache:
+                cand = sorted(_trajectory_stock_row_tags(code, universe), key=lambda t: (-tag_totals.get(t, 0), t))
+                tag_cache[code] = cand[:2]
+            tags = tag_cache[code]
+            if not tags:
+                continue
+            prices = (price_by_date.get(d) or {}).get(code, {})
+            pending = bool(close_pending and d == live_date_fmt)
+            stock = {
+                'code': code, 'name': info['name'], 'lianban': 0, 'is_restart': False,
+                'is_surge': kind == 'surge', 'is_rise': kind == 'rise',
+                'is_gem': _trajectory_board_of_code(code) in ('创', '科'),
+                'board': _trajectory_board_of_code(code), 'change_pct': info['change_pct'],
+                'tags': tags, 'first_time': 999999,
+                'open_pct': prices.get('open_pct'),
+                'close_pct': None if pending else prices.get('close_pct'),
+                'close_pending': pending,
+            }
+            if kind == 'rise':
+                if info.get('open_pct') is not None:
+                    stock['open_pct'] = info['open_pct']
+                stock['price'] = info.get('price')
+                stock['open_px'] = info.get('open_px')
+            for tag in tags:
+                out.setdefault(d, {}).setdefault(tag, []).append(stock)
+    for tags in out.values():
+        for lst in tags.values():
+            lst.sort(key=lambda x: (-(x.get('change_pct') or 0), x['name']))
+            if per_tag_cap and len(lst) > per_tag_cap:
+                del lst[per_tag_cap:]
+    return out
+
+
+def _trajectory_rise_candidates(date_fmt, skip_codes):
+    """最新日「未涨停但涨幅>2%」的股票 {code: {'name','change_pct'}}（主/创/科/北，剔除 ST）。
+    创/科/北 涨幅>10% 归「大涨」，主板达涨停价归涨停，均不在此列。盘中取全市场实时行情，否则读本地日线。"""
+    rows = {}
+    live = date_fmt == _bj_now().strftime('%Y-%m-%d') and _is_trading_hours()
+    if live:
+        live_rows = _get_cached('attention_live_market_rows', ttl=20)
+        if live_rows is None:
+            try:
+                live_rows = _auction_fetch_all_market_rows() or []
+            except Exception as exc:
+                print('[涨停原因标签轨迹] 盘中全市场行情获取失败: %s' % exc)
+                live_rows = []
+            _set_cache('attention_live_market_rows', live_rows)
+        for row in live_rows or []:
+            code = str((row or {}).get('stock_code') or '').strip().zfill(6)
+            try:
+                pct = float(row.get('change_pct'))
+            except (TypeError, ValueError):
+                continue
+            price, op, pc = _traj_num(row.get('price')), _traj_num(row.get('open')), _traj_num(row.get('pre_close'))
+            open_pct = round((op / pc - 1) * 100, 2) if op and pc and op > 0 and pc > 0 else None
+            rows[code] = (str(row.get('stock_name') or ''), pct, open_pct, price, op)
+    if not rows:
+        db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
+        try:
+            conn = sqlite3.connect(db_path, timeout=5)
+            names = {str(c).zfill(6): str(n or '').strip() for c, n in conn.execute('SELECT stock_code, stock_name FROM stocks').fetchall()}
+            for code, pct, op, cl, pc in conn.execute(
+                    'SELECT stock_code, change_pct, open, close, prev_close FROM kline_daily WHERE trade_date=? AND change_pct > 2', (date_fmt,)).fetchall():
+                code = str(code).zfill(6)
+                op, cl, pc = _traj_num(op), _traj_num(cl), _traj_num(pc)
+                open_pct = round((op / pc - 1) * 100, 2) if op and pc and op > 0 and pc > 0 else None
+                rows[code] = (names.get(code, ''), float(pct), open_pct, cl, op)
+            conn.close()
+        except Exception as exc:
+            print('[涨停原因标签轨迹] 涨幅>2%%股票读取失败: %s' % exc)
+    out = {}
+    for code, (name, pct, open_pct, price, open_px) in rows.items():
+        if len(code) != 6 or not code.isdigit() or code in skip_codes or not (2 < pct):
+            continue
+        board = _trajectory_board_of_code(code)
+        if 'ST' in name.upper():
+            continue
+        if board == '主':
+            if pct >= 9.8:
+                continue
+        elif pct > 10:
+            continue
+        out[code] = {'name': name or (_kpl_stock_index.get(code, {}) or {}).get('stock_name') or
+                     (_kph_industry_reverse.get(code, {}) or {}).get('name') or
+                     getattr(finder, 'stock_name_map', {}).get(code) or code,
+                     'change_pct': round(pct, 2), 'open_pct': open_pct, 'price': price, 'open_px': open_px}
+    return out
 
 
 def _kpl_first_zt_db_is_synced(date_ymd):
@@ -23485,7 +23766,7 @@ function loadThemeWind() {
 
         // Section 1: 🔥 连板股涨停原因标签轨迹
         html += '<div class="rt-section lt-trajectory-section" id="twLtTrajectoryLbSection">';
-        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ff8a65;">\U0001F525 连板股涨停原因标签轨迹 <span class="count-badge" id="twLtTrajectoryLbBadge">近20日</span> <span class="rt-refresh-icon" onclick="manualRefreshTrajectory()" title="刷新轨迹数据">\u21bb</span><button class="rt-auto-refresh-btn" id="twLbTrajectoryAutoBtn" onclick="toggleThemeTrajectoryAutoRefresh()">\u23f1 自动刷新 1分钟</button></h3>';
+        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ff8a65;">\U0001F525 连板股涨停原因标签轨迹 <span class="count-badge" id="twLtTrajectoryLbBadge">近20日</span> <span class="rt-refresh-icon" onclick="manualRefreshTrajectory()" title="刷新轨迹数据">\u21bb</span><button class="rt-auto-refresh-btn" id="twLbTrajectoryAutoBtn" onclick="toggleThemeTrajectoryAutoRefresh()">\u23f1 自动刷新 30秒</button></h3>';
         html += '<div class="date-group" style="margin:0 0 6px 0;">';
         html += '<label>开始</label><input type="date" id="twTrajDateStart">';
         html += '<label>结束</label><input type="date" id="twTrajDateEnd">';
@@ -24554,7 +24835,7 @@ function renderLadderLianbanTagTrajectory(data, bodyId) {
     if (bodyId) {
         _ltTrajNavById[bodyId] = _ltTrajectoryStockNavs;
     }
-    if (!_ltTrajectoryLivePctTimer) _ltTrajectoryLivePctTimer = setInterval(_ltTrajectoryPollLivePct, 60000);
+    if (!_ltTrajectoryLivePctTimer) _ltTrajectoryLivePctTimer = setInterval(_ltTrajectoryPollLivePct, 30000);
     setTimeout(_ltTrajectoryPollLivePct, 0);
     return html;
 }
@@ -28518,7 +28799,7 @@ var _themeTrajAutoTimer = null;
 var _themeTrajAutoCountdown = null;
 var _themeTrajAutoRemaining = 0;
 var _themeTrajAutoActive = false;
-var _THEME_TRAJ_AUTO_INTERVAL = 60;   // 秒，可调
+var _THEME_TRAJ_AUTO_INTERVAL = 30;   // 秒，可调
 
 function toggleThemeTrajectoryAutoRefresh() {
     var btn = document.getElementById('twLbTrajectoryAutoBtn');
@@ -28526,7 +28807,7 @@ function toggleThemeTrajectoryAutoRefresh() {
     if (_themeTrajAutoActive) {
         clearInterval(_themeTrajAutoTimer); clearInterval(_themeTrajAutoCountdown);
         _themeTrajAutoActive = false; _themeTrajAutoTimer = null; _themeTrajAutoCountdown = null;
-        btn.innerHTML = '\u23f1 \u81ea\u52a8\u5237\u65b0 1\u5206\u949f';
+        btn.innerHTML = '\u23f1 \u81ea\u52a8\u5237\u65b0 30\u79d2';
         btn.classList.remove('active');
         showToast('\u5df2\u505c\u6b62\u8fde\u677f\u8f68\u8ff9\u81ea\u52a8\u5237\u65b0', 'info');
         return;
@@ -28556,7 +28837,7 @@ function toggleThemeTrajectoryAutoRefresh() {
             if (tot < 565 || tot >= 900) {   // 过交易时段自动停
                 clearInterval(_themeTrajAutoTimer); clearInterval(_themeTrajAutoCountdown);
                 _themeTrajAutoActive = false; _themeTrajAutoTimer = null; _themeTrajAutoCountdown = null;
-                btn.innerHTML = '\u23f1 \u81ea\u52a8\u5237\u65b0 1\u5206\u949f';
+                btn.innerHTML = '\u23f1 \u81ea\u52a8\u5237\u65b0 30\u79d2';
                 btn.classList.remove('active');
                 showToast('\u23f0 \u5df2\u8fc7\u4ea4\u6613\u65f6\u6bb5\uff0c\u81ea\u52a8\u5237\u65b0\u5df2\u505c\u6b62', 'info');
                 return;
@@ -28567,7 +28848,7 @@ function toggleThemeTrajectoryAutoRefresh() {
                 return;
             }
             _themeTrajAutoRemaining = _THEME_TRAJ_AUTO_INTERVAL;
-            manualRefreshTrajectory();   // 盘中自动触发（走缓存 120s TTL）
+            manualRefreshTrajectory();   // 盘中自动触发（走缓存 30s TTL）
         }
         updateTrajBtn();
     }, 1000);
@@ -40530,8 +40811,8 @@ def _limit_pct_for(code, name):
     return 10.0
 
 
-def _spot_quotes_for_codes(codes):
-    """实时行情批量获取（30s 内存缓存）。
+def _spot_quotes_for_codes(codes, ttl=30):
+    """实时行情批量获取（默认 30s 内存缓存，ttl 可调）。
     Sina 为主源（云主机 IP 被 Sina 403 时自动回退腾讯 qt.gtimg.cn）。
     返回 {code: {'name','price','prev_close','change_pct','limit_pct','limit_up','board'}}。
     非交易时段也返回（前端自行控制轮询）；失败静默跳过。"""
@@ -40541,7 +40822,7 @@ def _spot_quotes_for_codes(codes):
     if not codes:
         return {}
     key = 'spot_quotes:' + ','.join(codes)
-    cached = _get_cached(key, ttl=30)
+    cached = _get_cached(key, ttl=ttl)
     if cached is not None:
         return cached
     import requests as _req
@@ -41117,7 +41398,7 @@ class Handler(BaseHTTPRequestHandler):
             live = bool(date_fmt == today_fmt and _is_trading_hours())
             quotes = {}
             if codes and live:
-                for code, quote in _spot_quotes_for_codes(codes).items():
+                for code, quote in _spot_quotes_for_codes(codes, ttl=15).items():   # 前端 30s 轮询，缓存取半周期，保证每轮取到新行情
                     try:
                         current_pct = float(quote.get('change_pct'))
                     except (TypeError, ValueError):
@@ -41518,8 +41799,9 @@ class Handler(BaseHTTPRequestHandler):
             date_end = query.get('date_end', [''])[0].strip() or None
             ds = date_start.replace('-', '') if date_start else None
             de = date_end.replace('-', '') if date_end else None
-            cache_key = 'ladder_trajectory_%s_%s_%s' % (n, ds or '', de or '')
-            result = _get_cached(cache_key, ttl=120)
+            want_surge = query.get('surge', ['0'])[0] == '1'   # 实时盯盘页专用：附带创/科/北大涨股（>10%，未涨停）
+            cache_key = 'ladder_trajectory_%s_%s_%s%s' % (n, ds or '', de or '', '_surge' if want_surge else '')
+            result = _get_cached(cache_key, ttl=(15 if want_surge else 30) if _is_trading_hours() else 120)
             if result is None:
                 _kpl_ensure_loaded()
                 today_ymd = _traj_anchor_ymd()   # 非交易日/未开盘回退上一交易日，防 0908 假未来列=昨日拷贝
@@ -41686,6 +41968,39 @@ class Handler(BaseHTTPRequestHandler):
                                 reference_stocks_by_tag.setdefault(stock_tag, []).append(stock)
                         for ref_tag, ref_list in reference_stocks_by_tag.items():
                             ref_list.sort(key=lambda s: (s.get('first_time', 999999), -s.get('lianban', 1), s.get('name', '')))
+                surge_by_tag = {}
+                reference_surge_by_tag = {}
+                if want_surge:
+                    # 当日涨停池（含只带泛概念、未进轨迹的涨停股）用于剔除，避免把涨停误标成大涨
+                    limit_codes = {d_fmt: set(info) for d_fmt, info in all_entries.items()}
+                    if live_date_fmt in limit_codes:
+                        limit_codes[live_date_fmt] |= set(_kpl_today_zt_snapshot().keys())
+                        for date_map in primary_stocks.values():
+                            limit_codes[live_date_fmt] |= {x.get('code') for x in date_map.get(live_date_fmt, [])}
+                    if reference_date:
+                        limit_codes[reference_date] = {str(r.get('stock_code') or '').zfill(6)
+                                                       for r in _kpl_rows_by_date.get(reference_date, [])}
+                    candidates = _trajectory_surge_candidates(list(recent_fmt), limit_codes)
+                    price_by_date = _trajectory_daily_change_pct({d: list(m.keys()) for d, m in candidates.items()})
+                    attached = _trajectory_attach_surge(candidates, tag_totals, price_by_date,
+                                                        live_date_fmt, close_pending)
+                    for d_fmt, tag_map in attached.items():
+                        for tag, lst in tag_map.items():
+                            surge_by_tag.setdefault(tag, {})[d_fmt] = lst
+                    if reference_date and candidates.get(reference_date):
+                        # 参考列：昨日大涨股，价格按最新交易日（锚点日）更新
+                        ref_prices = _trajectory_daily_change_pct(
+                            {anchor_fmt: list(candidates[reference_date].keys())}).get(anchor_fmt, {})
+                        ref_live = bool(close_pending and anchor_fmt == live_date_fmt)
+                        ref_attached = _trajectory_attach_surge(
+                            {reference_date: candidates[reference_date]}, tag_totals,
+                            {reference_date: ref_prices}, '', False)
+                        for tag, lst in (ref_attached.get(reference_date) or {}).items():
+                            for stock in lst:
+                                stock['close_pending'] = ref_live
+                                if ref_live:
+                                    stock['close_pct'] = None
+                            reference_surge_by_tag[tag] = lst
                 result = {
                     'dates': recent_fmt,
                     'freq_by_tag': sorted_freq,
@@ -41695,6 +42010,48 @@ class Handler(BaseHTTPRequestHandler):
                     'reference_date': reference_date,
                     'reference_stocks_by_tag': reference_stocks_by_tag,
                 }
+                if want_surge:
+                    result['surge_by_tag'] = surge_by_tag
+                    result['reference_surge_by_tag'] = reference_surge_by_tag
+                    # 最新日右栏：未涨停但涨幅>2%（题材匹配含 KPL/开盘红/同花顺），每题材取涨幅前 30 只
+                    rise_by_tag = {}
+                    if recent_fmt:
+                        latest_fmt = recent_fmt[-1]
+                        skip = set(limit_codes.get(latest_fmt, set()))
+                        for lst in (surge_by_tag or {}).values():
+                            skip |= {x['code'] for x in lst.get(latest_fmt, [])}
+                        rise_cand = _trajectory_rise_candidates(latest_fmt, skip)
+                        if rise_cand:
+                            rise_prices = _trajectory_daily_change_pct({latest_fmt: list(rise_cand.keys())})
+                            rise_attached = _trajectory_attach_surge(
+                                {latest_fmt: rise_cand}, tag_totals, rise_prices, live_date_fmt, close_pending,
+                                kind='rise', per_tag_cap=30)
+                            rise_by_tag = rise_attached.get(latest_fmt, {})
+                    result['rise_by_tag'] = rise_by_tag
+                    # 参考列股票：cur_pct=最新日当前涨跌幅（盘中全市场实时，否则收盘），供前端按 晋级/阳线 | 阴线 分栏排序
+                    if reference_date:
+                        live_ref = {}
+                        if close_pending and anchor_fmt == live_date_fmt:
+                            for row in (_trajectory_live_market_rows() or []):
+                                code6 = str((row or {}).get('stock_code') or '').strip().zfill(6)
+                                pct = _traj_num(row.get('change_pct'))
+                                op, pc = _traj_num(row.get('open')), _traj_num(row.get('pre_close'))
+                                if pct is not None:
+                                    live_ref[code6] = (pct, round((op / pc - 1) * 100, 2) if op and pc and op > 0 and pc > 0 else None)
+                        for src in (reference_stocks_by_tag, reference_surge_by_tag):
+                            for lst in src.values():
+                                for st in lst:
+                                    live = live_ref.get(st['code'])
+                                    if live:
+                                        st['cur_pct'] = live[0]
+                                        if st.get('open_pct') is None:
+                                            st['open_pct'] = live[1]
+                                    else:
+                                        st['cur_pct'] = st.get('close_pct')
+                    # 跌幅榜：最新日全市场跌幅超过 5% 的股票，按 KPL 题材（最新涨停标签）归类，全部列出；
+                    # 题材按平均跌幅从大到小排，无 KPL 题材的归入末尾「未归类」。盘中取全市场实时涨幅，否则读本地日线。
+                    result['decline'] = _trajectory_decline_board(
+                        recent_fmt[-1] if recent_fmt else '', limit_codes.get(reference_date, set()) if reference_date else set())
                 _set_cache(cache_key, result)
             self._respond_json(result, cors_headers)
 
@@ -41705,7 +42062,7 @@ class Handler(BaseHTTPRequestHandler):
             ds = date_start.replace('-', '') if date_start else None
             de = date_end.replace('-', '') if date_end else None
             cache_key = 'ladder_trajectory_lianban_%s_%s_%s' % (n, ds or '', de or '')
-            result = _get_cached(cache_key, ttl=60 if _is_trading_hours() else 300)
+            result = _get_cached(cache_key, ttl=30 if _is_trading_hours() else 300)
             if result is None:
                 _kpl_ensure_loaded()   # 最近200文件，保证连板回溯精度
                 if ds or de:
@@ -41923,6 +42280,11 @@ class Handler(BaseHTTPRequestHandler):
                 result = None
                 if not no_cache:
                     ttl = 30 if live_session else 300   # 盘中30s / 非盘300s
+                    try:   # 实时盯盘页传 max_age（5~60s）以更短缓存换取 30s 刷新
+                        if live_session and query.get('max_age'):
+                            ttl = max(5, min(60, int(query.get('max_age')[0])))
+                    except (ValueError, TypeError):
+                        pass
                     result = _get_cached(cache_key, ttl=ttl)
                 if result is None:
                     # 题材风向和盯盘会在启动/切页时同时请求；二次请求直接复用
@@ -42285,7 +42647,11 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/sector_ranking':
             try:
                 refresh = query.get('refresh', [''])[0]
-                result = _get_sector_ranking(refresh=bool(refresh))
+                try:   # 实时盯盘页传 max_age（5~300s）
+                    sr_ttl = max(5, min(300, int(query.get('max_age', ['300'])[0])))
+                except (ValueError, TypeError):
+                    sr_ttl = 300
+                result = _get_sector_ranking(refresh=bool(refresh), ttl=sr_ttl)
                 self._respond_json(result or [], cors_headers)
             except Exception as e:
                 import traceback

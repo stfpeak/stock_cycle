@@ -1,0 +1,222 @@
+/* 实时盯盘：隐藏主页面的标题/页签/各页签内容，只保留 #watchRoot */
+.container > h1,
+.container > .tabs,
+.container > p.sub,
+.container > .tab-content { display: none !important; }
+
+#watchRoot { padding: 0 4px 40px; }
+.watch-err { padding: 14px; color: #ff8a80; }
+.watch-err button { margin-left: 10px; }
+
+/* ===== 轨迹表：最新列 / 参考列加宽 ===== */
+.lt-trajectory-matrix td.lt-col-latest, .lt-trajectory-matrix th.lt-col-latest,
+.lt-trajectory-matrix td.lt-col-ref, .lt-trajectory-matrix th.lt-col-ref { min-width: 270px; }
+.lt-trajectory-matrix th.lt-col-latest { color: #ffd700; font-size: 0.9em; }
+.lt-trajectory-matrix td.lt-col-latest { background: rgba(255,215,0,0.05); }
+
+/* ===== 涨跌幅：红涨绿跌（深色底衬，保证压在彩色板块 chip 上仍清晰） ===== */
+.lt-cell-stock-ohlc .lt-change-up { color: #ff4d4f !important; background: rgba(0,0,0,0.58) !important; border-color: rgba(255,77,79,0.65) !important; }
+.lt-cell-stock-ohlc .lt-change-down { color: #2ee66b !important; background: rgba(0,0,0,0.58) !important; border-color: rgba(46,230,107,0.6) !important; }
+
+/* ===== 主/创/科/北 标识 ===== */
+.lt-trajectory-matrix .lt-board { font-style: normal; font-size: 0.78em; font-weight: 800; line-height: 1.3; padding: 0 4px;
+                                  border-radius: 3px; color: #fff; border: 1px solid rgba(255,255,255,0.45); margin-right: 1px; }
+.lt-board-main { background: #475569; }
+.lt-board-gem  { background: #0e7490; }
+.lt-board-star { background: #be185d; }
+.lt-board-bj   { background: #0f766e; }
+
+/* ===== 涨停 / 大涨 分区：同格内上为涨停，下为大涨，虚线上下分隔 ===== */
+.lt-trajectory-matrix .lt-surge-sep { flex: 0 0 100%; margin: 4px 0 2px; padding: 1px 0; text-align: center;
+    border-top: 1px dashed rgba(203,213,235,0.55); border-bottom: 1px dashed rgba(203,213,235,0.55);
+    color: #b6c2d9; font-size: 0.72em; font-weight: 700; }
+.lt-trajectory-matrix .lt-surge-sep-top { margin-top: 2px; }
+.lt-trajectory-matrix .lt-cell-stock.lt-cell-stock-surge { background: rgba(203,213,235,0.12); border: 1px solid rgba(203,213,235,0.4); color: #e8eef8; }
+.lt-trajectory-matrix .lt-surge-b { color: #dbe5f5; }
+.lt-trajectory-matrix td.lt-surge-only { background: rgba(203,213,235,0.05); }
+
+/* ===== 首列「题材」：加宽、题材名加粗上色，下方为昨日票→最新日表现 + 最新日新增 ===== */
+.lt-trajectory-matrix th.lt-col-theme { min-width: 250px; color: #ffd24d; font-size: 0.9em; }
+.lt-trajectory-matrix td.lt-th-cell { min-width: 250px; max-width: 300px; white-space: normal !important; overflow: visible !important;
+    text-overflow: clip !important; vertical-align: top; text-align: left; }
+.lt-th-name { font-size: 1.18em; font-weight: 800; color: #ffd24d; line-height: 1.35; }
+.lt-th-name .lt-tag-link { color: #ffd24d; border-bottom-color: rgba(255,210,77,0.5); }
+.lt-th-total { color: #6f7a8a; font-size: 0.7em; font-weight: 400; }
+.lt-th-sec { margin-top: 5px; padding-top: 4px; border-top: 1px dashed rgba(255,255,255,0.16); font-size: 0.8em; font-weight: 400; }
+.lt-th-sec-title { color: #7f8da3; font-size: 0.88em; margin-bottom: 2px; }
+.lt-th-row { display: block; padding-left: 44px; text-indent: -44px; margin: 2px 0; line-height: 1.55; }   /* 悬挂缩进：换行后与首个股票名对齐 */
+.lt-th-lv { display: inline-block; width: 38px; text-indent: 0; font-weight: 800; }
+.lt-th-lv-lb { color: #ff7043; }
+.lt-th-lv-first { color: #facc15; }
+.lt-th-lv-surge { color: #b6c2d9; }
+.lt-th-stk { display: inline-block; text-indent: 0; margin-right: 8px; cursor: pointer; color: #d6e4ff; white-space: nowrap; }
+.lt-th-stk:hover { color: #fff; text-decoration: underline; }
+.lt-th-stk b, .lt-th-stk em { font-style: normal; font-weight: 700; margin-left: 2px; }
+.lt-th-cell .lt-change-up { color: #ff4d4f; }
+.lt-th-cell .lt-change-down { color: #2ee66b; }
+.lt-th-cell .lt-change-flat, .lt-th-cell .lt-change-pending { color: #9aa4b2; }
+.lt-th-up { color: #ff4d4f; background: rgba(255,77,79,0.16); border-radius: 3px; padding: 0 3px; }
+.lt-th-time { color: #ffd700; font-style: normal; font-size: 0.85em; margin-left: 2px; }
+.lt-th-restart { color: #22d3ee; font-style: normal; font-size: 0.82em; margin-left: 2px; }
+
+/* ===== 题材导航 / 回到导航悬浮按钮 ===== */
+.lt-theme-nav { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; padding: 8px 10px; border-radius: 8px;
+                background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); }
+.lt-theme-nav-title { align-self: center; margin-right: 6px; color: #ffd700; font-weight: 800; font-size: 0.85em; }
+.lt-theme-nav-btn { cursor: pointer; padding: 3px 10px; border-radius: 14px; font-size: 0.8em; font-weight: 700;
+    color: hsl(var(--th-h) 90% 86%); background: hsl(var(--th-h) 55% 24%); border: 1px solid hsl(var(--th-h) 65% 48%); }
+.lt-theme-nav-btn:hover { background: hsl(var(--th-h) 60% 33%); }
+.lt-theme-nav-btn i { font-style: normal; color: #ffd700; font-size: 0.85em; margin-left: 2px; }
+#watchBackNav { position: fixed; right: 18px; bottom: 22px; z-index: 90; cursor: pointer; padding: 9px 16px; border-radius: 22px;
+    font-size: 0.9em; font-weight: 800; color: #1a1a2e; background: #ffd700; border: 0; box-shadow: 0 4px 14px rgba(0,0,0,0.5); }
+#watchBackNav:hover { background: #ffe34d; }
+
+/* ===== 题材行：标题居中 + 配色背景，同时作为行与行的分隔 ===== */
+.lt-trajectory-matrix tr.lt-theme-row > td { border-top: 3px solid hsl(var(--th-h) 65% 52%); }
+.lt-th-name { text-align: center; padding: 5px 6px; border-radius: 6px; color: hsl(var(--th-h) 95% 88%);
+    background: linear-gradient(135deg, hsl(var(--th-h) 62% 34%), hsl(var(--th-h) 58% 21%)); border: 1px solid hsl(var(--th-h) 65% 50%); }
+.lt-th-name .lt-tag-link { color: inherit; border-bottom-color: hsla(var(--th-h), 90%, 85%, 0.5); }
+.lt-th-total { color: hsl(var(--th-h) 40% 70%); }
+.lt-row-flash { outline: 2px solid #ffd700; outline-offset: -2px; animation: ltRowFlash 1.8s ease-out forwards; }
+@keyframes ltRowFlash { 0% { outline-color: #ffd700; } 100% { outline-color: transparent; } }
+
+/* ===== 最新日列：左（涨停/大涨）右（未涨停 >2%）两栏，虚线隔开 ===== */
+.lt-trajectory-matrix td.lt-col-latest, .lt-trajectory-matrix th.lt-col-latest { min-width: 520px; }
+.lt-latest-split { display: flex; align-items: stretch; }
+.lt-latest-left { flex: 0 0 276px; min-width: 0; }
+.lt-latest-right { flex: 1 1 200px; min-width: 190px; margin-left: 8px; padding-left: 8px; border-left: 1px dashed rgba(255,255,255,0.4); }
+.lt-latest-left small, .lt-latest-right small { color: #9aa4b2; font-weight: 400; font-size: 0.85em; }
+.lt-rise-head { color: #9aa4b2; font-size: 0.72em; margin: 2px 0 3px; }
+.lt-rise-stk { display: flex; align-items: center; gap: 4px; padding: 1px 3px; cursor: pointer; font-size: 0.78em;
+    border-bottom: 1px solid rgba(255,255,255,0.06); }
+.lt-rise-stk:hover { background: rgba(255,255,255,0.08); }
+.lt-rise-name { color: #d6e4ff; white-space: nowrap; }
+.lt-rise-stk b { margin-left: auto; font-weight: 700; }
+.lt-rise-stk .lt-change-up { color: #ff4d4f; }
+.lt-rise-stk .lt-change-down { color: #2ee66b; }
+.lt-rise-stk .lt-change-flat { color: #9aa4b2; }
+.lt-rise-empty { color: #4b5563; text-align: center; }
+
+/* ===== 「跌幅」卡片（复用主页面 .tmm-today-top10 / .tmm-t10-* 版式，仅覆盖配色） ===== */
+.lt-decl { margin: 0 0 10px; }
+.lt-decl .tmm-today-top10-head { color: #86efac; border-color: rgba(46,230,107,0.35);
+    background: linear-gradient(135deg, rgba(6,60,40,0.6), rgba(22,35,60,0.8)); }
+.lt-decl-card .tmm-t10-title em { background: rgba(0,0,0,0.35); font-weight: 800; font-size: 0.8em; }
+.lt-decl-sub { color: #7f8da3; font-size: 0.7em; margin-bottom: 2px; }
+.lt-decl-list { max-height: 260px; overflow-y: auto; }
+.lt-decl-card .tmm-t10-stock > b { margin-left: auto; font-weight: 700; }
+.lt-decl-card .lt-change-down { color: #2ee66b; }
+.lt-decl-prev { font-style: normal; font-size: 0.82em; color: #ffb74d; border: 1px solid rgba(255,183,77,0.5); border-radius: 3px; padding: 0 3px; white-space: nowrap; }
+.lt-decl-rest { margin-top: 8px; }
+.lt-decl-rest > summary { cursor: pointer; color: #9aa4b2; font-size: 0.82em; padding: 5px 8px; border-radius: 6px; background: rgba(255,255,255,0.04); }
+.lt-decl-rest[open] > summary { margin-bottom: 6px; }
+
+/* 题材名下方的 K线 按钮 */
+.lt-th-kline { text-align: center; margin: 5px 0 1px; }
+
+/* ===== 参考列：加宽、左右分栏（晋级/阳线 | 阴线），与右侧日期之间留间隔列 ===== */
+.lt-trajectory-matrix td.lt-col-ref, .lt-trajectory-matrix th.lt-col-ref { min-width: 470px; }
+.lt-ref-right { flex: 1 1 200px; min-width: 190px; }
+.lt-col-ref .lt-latest-left { flex: 0 0 240px; }
+
+/* 右栏：未涨停>2%，开盘涨幅 + 现价涨幅 */
+.lt-trajectory-matrix td.lt-col-latest, .lt-trajectory-matrix th.lt-col-latest { min-width: 590px; }
+.lt-latest-right { flex: 1 1 250px; min-width: 250px; }
+.lt-rise-px { margin-left: auto; display: inline-flex; align-items: baseline; gap: 3px; white-space: nowrap; }
+.lt-rise-px em { color: #7f8da3; font-style: normal; font-size: 0.85em; }
+.lt-rise-px b { font-weight: 700; margin-right: 4px; }
+.lt-rise-px b:last-child { margin-right: 0; }
+.lt-rise-stk b.lt-change-up, .lt-rise-px .lt-change-up { color: #ff4d4f; }
+.lt-rise-stk b.lt-change-down, .lt-rise-px .lt-change-down { color: #2ee66b; }
+.lt-rise-px .lt-change-flat { color: #9aa4b2; }
+
+/* ===== 页面 Banner：品牌标题 + 时钟/状态 + 四个盯盘问题 ===== */
+.wb { position: relative; overflow: hidden; margin: 14px 0 12px; padding: 24px 28px 16px; border-radius: 16px;
+      background: radial-gradient(900px 260px at 88% -30%, rgba(255,210,77,0.20), transparent 62%),
+                  radial-gradient(760px 240px at -5% 125%, rgba(64,140,255,0.26), transparent 60%),
+                  linear-gradient(135deg, #0a1229 0%, #0f1f45 55%, #091129 100%);
+      border: 1px solid rgba(255,210,77,0.28); box-shadow: 0 14px 44px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.07); }
+.wb::before { content: ''; position: absolute; inset: 0; pointer-events: none; opacity: 0.55;
+      background-image: linear-gradient(rgba(255,255,255,0.045) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.045) 1px, transparent 1px);
+      background-size: 34px 34px; -webkit-mask-image: radial-gradient(ellipse at 30% 40%, #000 0%, transparent 72%); mask-image: radial-gradient(ellipse at 30% 40%, #000 0%, transparent 72%); }
+.wb::after { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 2px;
+      background: linear-gradient(90deg, transparent, #ffd24d 30%, #ffefb0 50%, #ffd24d 70%, transparent); opacity: 0.9; }
+.wb > * { position: relative; z-index: 1; }
+.wb-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+.wb-eyebrow { display: block; font-size: 0.68em; letter-spacing: 0.46em; color: #7fb2ff; font-weight: 700; margin-bottom: 4px; }
+.wb h1 { margin: 0; text-align: left; font-size: 2.9em; line-height: 1.05; font-weight: 800; letter-spacing: 0.3em; text-indent: 0.02em;
+      background: linear-gradient(180deg, #fff8dc 0%, #ffd24d 55%, #d9a21b 100%); -webkit-background-clip: text; background-clip: text;
+      color: transparent; -webkit-text-fill-color: transparent; text-shadow: 0 6px 30px rgba(255,210,77,0.25); }
+.wb-sub { display: block; margin-top: 8px; font-size: 0.82em; color: #9fb0cc; letter-spacing: 0.08em; }
+.wb-meta { text-align: right; }
+.wb-clock { font-size: 2.3em; font-weight: 300; line-height: 1; color: #f4f7ff; letter-spacing: 0.06em;
+      font-family: "SF Mono", Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; text-shadow: 0 0 22px rgba(127,178,255,0.45); }
+.wb-meta-row { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 8px; }
+.wb-tz { font-size: 0.74em; letter-spacing: 0.2em; color: #7f8da3; }
+.watch-state { display: inline-flex; align-items: center; gap: 6px; padding: 2px 11px; border-radius: 999px; font-size: 0.78em; font-weight: 700;
+      color: #9aa4b2; background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.12); }
+.watch-state::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: #6b7686; }
+.watch-state.live { color: #ff9c92; background: rgba(244,67,54,0.16); border-color: rgba(255,107,95,0.5); }
+.watch-state.live::before { background: #ff4d4f; box-shadow: 0 0 0 0 rgba(255,77,79,0.7); animation: wbPulse 1.6s infinite; }
+@keyframes wbPulse { 0% { box-shadow: 0 0 0 0 rgba(255,77,79,0.65); } 70% { box-shadow: 0 0 0 9px rgba(255,77,79,0); } 100% { box-shadow: 0 0 0 0 rgba(255,77,79,0); } }
+.wb-questions { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin-top: 20px; }
+.wb-q { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 12px;
+      background: linear-gradient(135deg, rgba(255,255,255,0.07), rgba(255,255,255,0.025)); border: 1px solid rgba(255,255,255,0.1);
+      border-left: 3px solid #ffd24d; transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease; }
+.wb-q:hover { transform: translateY(-2px); border-color: rgba(255,210,77,0.55); box-shadow: 0 8px 22px rgba(0,0,0,0.4), 0 0 18px rgba(255,210,77,0.12); }
+.wb-qn { font-size: 1.9em; font-weight: 200; line-height: 1; color: rgba(255,210,77,0.8); font-family: "SF Mono", Menlo, Consolas, monospace; letter-spacing: -0.02em; }
+.wb-q b { display: block; color: #f1f5ff; font-size: 1.02em; font-weight: 700; letter-spacing: 0.02em; }
+.wb-q small { display: block; margin-top: 3px; color: #7f8da3; font-size: 0.7em; letter-spacing: 0.12em; }
+.wb-foot { display: flex; flex-wrap: wrap; gap: 6px 22px; margin-top: 16px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.08);
+      font-size: 0.74em; color: #7f8da3; }
+.wb-foot b { color: #cdd8ee; font-weight: 600; font-family: "SF Mono", Menlo, Consolas, monospace; }
+.wb-foot-note { margin-left: auto; color: #5f6b7d; }
+
+/* ===== R1~R5：最新日涨停数 TOP5 ===== */
+.lt-r-badge { display: inline-block; padding: 0 5px; margin-right: 5px; border-radius: 4px; font-size: 0.72em; font-weight: 900; font-style: normal;
+      line-height: 1.5; vertical-align: middle; color: #1a1a2e; box-shadow: 0 0 8px rgba(255,230,0,0.55); }
+.lt-r-1, .lt-r-2, .lt-r-3, .lt-r-4, .lt-r-5 { background: #ffe600; }
+.lt-theme-nav-btn.lt-nav-top { border-width: 2px; box-shadow: 0 0 12px hsla(var(--th-h), 85%, 60%, 0.4); }
+.lt-theme-nav-title small { margin-left: 8px; color: #7f8da3; font-weight: 400; font-size: 0.82em; }
+
+/* ===== 首列题材标题条：更精致的质感 ===== */
+.lt-th-name { position: relative; padding: 7px 10px; letter-spacing: 0.04em;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.2), inset 0 -1px 0 rgba(0,0,0,0.3), 0 3px 10px rgba(0,0,0,0.35); }
+.lt-th-name::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; border-radius: 6px 0 0 6px; background: hsl(var(--th-h) 85% 62%); }
+
+/* ===== 参考列 / 最新列：参考连板联动题材卡片「今日」的柔和金色底 + 虚线分栏（取代原先的亮金外框与双线） ===== */
+.lt-trajectory-matrix td.lt-col-ref { background: rgba(196,173,121,0.08); border-left: 1px solid rgba(196,173,121,0.5); border-right: 1px solid rgba(196,173,121,0.5); }
+.lt-trajectory-matrix th.lt-reference-header.lt-col-ref { color: #d9c48f; background: #222b3f; border-left: 1px solid rgba(196,173,121,0.5); border-right: 1px solid rgba(196,173,121,0.5); border-top: 2px solid rgba(196,173,121,0.7); }
+.lt-trajectory-matrix tr:last-child td.lt-col-ref { border-bottom: 2px solid rgba(196,173,121,0.55); }
+.lt-trajectory-matrix .lt-col-gap { min-width: 14px; width: 14px; padding: 0 !important; border: 0 !important;
+    background: linear-gradient(to right, transparent calc(50% - 1px), rgba(196,173,121,0.38) calc(50% - 1px), rgba(196,173,121,0.38) calc(50% + 1px), transparent calc(50% + 1px)) !important; }
+.lt-trajectory-matrix td.lt-col-latest { background: rgba(196,173,121,0.05); }
+.lt-latest-right { border-left: 1px dashed rgba(196,173,121,0.42); background: rgba(196,173,121,0.03); }
+.lt-latest-left, .lt-latest-right { padding-bottom: 2px; }
+
+/* 层次：表头 日期/参考列 → 子栏标题；单元格 题材标题条（跨两栏）→ 栏小标题 → 股票 */
+.lt-th-top { font-weight: 800; letter-spacing: 0.04em; padding-bottom: 3px; margin-bottom: 3px; border-bottom: 1px solid rgba(196,173,121,0.3); }
+.lt-trajectory-col-header .lt-latest-split small { display: block; text-align: center; font-weight: 500; font-size: 0.85em; color: #8d99a8; }
+.lt-cell-title { margin: -2px -4px 5px; padding: 3px 8px; font-size: 0.95em; font-weight: 800; color: #4fc3f7;
+    background: rgba(255,255,255,0.045); border-bottom: 1px solid rgba(196,173,121,0.3); }
+.lt-sub-title { display: flex; justify-content: space-between; align-items: baseline; margin: 0 0 4px; padding-bottom: 2px;
+    font-size: 0.7em; font-weight: 700; color: #a7b3c4; border-bottom: 1px dotted rgba(145,174,186,0.25); }
+.lt-sub-cap { font-weight: 400; color: #6f7a8a; }
+.lt-latest-split .lt-latest-left { padding-right: 2px; }
+.lt-ref-spacer { flex: 0 0 100%; height: 12px; }          /* 参考列：昨日涨停 与 昨日大涨 之间的空行 */
+
+/* 未涨停>2%：去掉「开/现」文字，价格加底色并按列对齐（第 1 列 开盘，第 2 列 现价） */
+.lt-trajectory-matrix .lt-rise-stk { display: grid; grid-template-columns: 22px minmax(0, 1fr) 62px 62px; align-items: center; gap: 4px; padding: 1px 3px; }
+.lt-rise-stk > b { display: block; text-align: center; padding: 0 4px; border-radius: 4px; border: 1px solid transparent;
+    font-weight: 700; font-variant-numeric: tabular-nums; }
+.lt-rise-stk > b.lt-change-up { color: #ff6b6b; background: rgba(255,77,79,0.14); border-color: rgba(255,77,79,0.35); }
+.lt-rise-stk > b.lt-change-down { color: #4ade80; background: rgba(46,230,107,0.12); border-color: rgba(46,230,107,0.32); }
+.lt-rise-stk > b.lt-change-flat, .lt-rise-stk > b.lt-change-pending { color: #9aa4b2; background: rgba(255,255,255,0.06); }
+.lt-rise-stk > b:nth-of-type(1) { opacity: 0.8; }
+
+/* ===== 最新日标签：晋级 / NEW（小而醒目，贴在股票卡右上角） ===== */
+.lt-col-latest .lt-cell-stocks { padding-top: 5px; }
+.lt-trajectory-matrix .lt-flag { position: absolute; top: -7px; right: -3px; z-index: 4; padding: 0 4px; border-radius: 4px;
+    font-style: normal; font-size: 0.62em; font-weight: 900; line-height: 1.5; letter-spacing: 0.04em; border: 1px solid rgba(255,255,255,0.85); }
+.lt-trajectory-matrix .lt-flag-up { color: #fff; background: #ff2d55; box-shadow: 0 0 9px rgba(255,45,85,0.85); }
+.lt-trajectory-matrix .lt-flag-new { color: #04232b; background: #00e5ff; box-shadow: 0 0 9px rgba(0,229,255,0.85); }

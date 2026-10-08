@@ -50,6 +50,10 @@ do_sync() {
         --include="data/trading_days.csv" \
         --include="data/kpl_first_zt_times.db" \
         --include="data/industry_chain_data.json" \
+        --include="watch/" \
+        --include="watch/static/" \
+        --include="watch/static/*.js" \
+        --include="watch/static/*.css" \
         --include="invest_logic/" \
         --include="invest_logic/**" \
         --exclude="invest_logic/.git/" \
@@ -116,9 +120,17 @@ do_restart() {
             echo '  服务启动失败'
             tail -3 /tmp/stock_service.log
         fi
+        # 实时盯盘页（9999，反向代理本机 6688）
+        if [ -f watch/watch_server.py ]; then
+            WPID=\$(pgrep -f 'watch/watch_server.py' || true)
+            if [ -n \"\$WPID\" ]; then kill \$WPID 2>/dev/null; sleep 1; fi
+            nohup \$PYTHON_BIN -u watch/watch_server.py > /tmp/watch_service.log 2>&1 &
+            sleep 2
+            if pgrep -f 'watch/watch_server.py' >/dev/null; then echo '  实时盯盘已启动 (9999)'; else echo '  实时盯盘启动失败'; tail -3 /tmp/watch_service.log; fi
+        fi
     "
     echo "✅ 服务已重启"
-    echo "   远程访问: http://$HOST:6688"
+    echo "   远程访问: http://$HOST:6688  实时盯盘: http://$HOST:9999"
 }
 
 do_status() {
@@ -131,6 +143,7 @@ do_status() {
         echo ''
         echo '=== 端口 ==='
         ss -tlnp | grep 6688 2>/dev/null || echo '  6688 未监听'
+        ss -tlnp | grep 9999 2>/dev/null || echo '  9999 未监听'
         echo ''
         echo '=== 最近日志 ==='
         tail -5 /tmp/stock_service.log 2>/dev/null || echo '  无日志'
