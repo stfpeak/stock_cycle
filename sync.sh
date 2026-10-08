@@ -130,7 +130,7 @@ do_restart() {
         fi
     "
     echo "✅ 服务已重启"
-    echo "   远程访问: http://$HOST:6688  实时盯盘: https://$HOST:9999（自签名证书，首次需在浏览器里选择继续访问）"
+    echo "   远程访问: http://$HOST:6688  实时盯盘: http://$HOST:9999"
 }
 
 do_status() {
