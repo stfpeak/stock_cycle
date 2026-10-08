@@ -236,3 +236,14 @@
 .wd-arrow { display: inline-block; width: 1em; font-size: 0.8em; color: #9aa4b2; }
 .wd-count { color: #9aa4b2; font-size: 0.82em; font-weight: 400; }
 .wd-head .rt-refresh-icon { margin-left: auto; }
+
+/* ===== 题材列底部：龙头 / 补涨 / 切换 / 套利 思考标记（默认全灭，点击点亮） ===== */
+.lt-th-marks { display: flex; gap: 5px; margin-top: 9px; padding-top: 7px; border-top: 1px dashed rgba(255,255,255,0.16); }
+.lt-mk { flex: 1 1 0; cursor: pointer; padding: 3px 0; border-radius: 6px; font-size: 0.8em; font-weight: 700; letter-spacing: 0.06em;
+    color: #8d99a8; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.2); transition: all .15s ease; }
+.lt-mk:hover { color: #d6e0f0; border-color: rgba(255,255,255,0.45); }
+.lt-mk.on { color: #fff; }
+.lt-mk-leader.on { background: #e5484d; border-color: #ff7b7f; box-shadow: 0 0 9px rgba(229,72,77,0.6); }
+.lt-mk-follow.on { background: #e8912d; border-color: #ffc069; box-shadow: 0 0 9px rgba(232,145,45,0.6); }
+.lt-mk-switch.on { background: #2f8fd8; border-color: #7cc4ff; box-shadow: 0 0 9px rgba(47,143,216,0.6); }
+.lt-mk-arb.on    { background: #c2549d; border-color: #f08ccb; box-shadow: 0 0 9px rgba(194,84,157,0.6); }

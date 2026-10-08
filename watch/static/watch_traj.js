@@ -173,6 +173,38 @@ function watchThemeKlineBtn(tag, c) {
         '\x27)" title="查看 ' + _kplEsc(c.latest.slice(5)) + ' 涨停 / 大涨 / 涨幅>2% 股票的K线走势（' + hits.length + ' 只）">📈 K线走势</button></div>';
 }
 
+/* 题材操作思考标记：龙头 / 补涨 / 切换 / 套利。默认都不亮，点击点亮（可多选、可全不选），用来逼自己对每个题材想清楚怎么做。
+ * 状态按「最新交易日」存在浏览器 localStorage：当天内刷新页面、每 30s 重绘都不丢；换到下一个交易日自动清空重新思考。 */
+var _WATCH_MARK_KEY = 'watch_theme_marks_v1';
+var _WATCH_MARK_DEFS = [['leader', '龙头'], ['follow', '补涨'], ['switch', '切换'], ['arb', '套利']];
+var _watchMarks = {date: '', marks: {}};
+function watchMarksLoad(date) {
+    var marks = {};
+    try {
+        var o = JSON.parse(localStorage.getItem(_WATCH_MARK_KEY) || 'null');
+        if (o && o.date === date && o.marks) marks = o.marks;
+    } catch (e) {}
+    _watchMarks = {date: date, marks: marks};
+    return marks;
+}
+function watchThemeMarks(tag) {
+    var cur = _watchMarks.marks[tag] || [];
+    var h = '<div class="lt-th-marks" title="龙头 / 补涨 / 切换 / 套利：点击点亮，可多选或都不选 —— 先想清楚这个题材怎么做">';
+    _WATCH_MARK_DEFS.forEach(function(d) {
+        h += '<button type="button" class="lt-mk lt-mk-' + d[0] + (cur.indexOf(d[0]) >= 0 ? ' on' : '') + '" data-theme="' + _kplEsc(tag) + '" data-k="' + d[0] + '" onclick="event.stopPropagation();watchToggleMark(this)">' + d[1] + '</button>';
+    });
+    return h + '</div>';
+}
+function watchToggleMark(btn) {
+    var theme = btn.getAttribute('data-theme'), k = btn.getAttribute('data-k');
+    var list = _watchMarks.marks[theme] || [];
+    var i = list.indexOf(k);
+    if (i >= 0) list.splice(i, 1); else list.push(k);
+    if (list.length) _watchMarks.marks[theme] = list; else delete _watchMarks.marks[theme];
+    btn.classList.toggle('on', i < 0);
+    try { localStorage.setItem(_WATCH_MARK_KEY, JSON.stringify(_watchMarks)); } catch (e) {}
+}
+
 function watchJumpTheme(i) {
     var el = document.getElementById('wt-row-' + i);
     if (!el) return;
@@ -325,6 +357,7 @@ function watchRenderTrajectory(data, bodyId) {
     });
     if (sortedTags.length > 60) sortedTags = sortedTags.slice(0, 60);
 
+    watchMarksLoad(dates[0]);
     var sumCtx = {latest: dates[0], refDate: referenceDate, referenceByTag: referenceByTag, refSurgeByTag: refSurgeByTag,
                   stocksByTag: stocksByTag, surgeByTag: surgeByTag, riseByTag: riseByTag, todayLimit: {}, refLimit: {}, refAll: {}};
     Object.keys(referenceByTag).forEach(function(t) { (referenceByTag[t] || []).forEach(function(x) { sumCtx.refLimit[x.code] = 1; sumCtx.refAll[x.code] = 1; }); });
@@ -368,7 +401,7 @@ function watchRenderTrajectory(data, bodyId) {
         var total = tagTotals[tag] || 0;
         var dateCounts = freqByTag[tag] || {};
         html += '<tr class="lt-theme-row" id="wt-row-' + tagIdx + '" style="--th-h:' + HUES[tagIdx % HUES.length] + '">';
-        html += '<td class="lt-trajectory-row-header lt-th-cell" title="' + _kplEsc(tag) + ' (共' + total + '次)"><div class="lt-th-name">' + rBadge(tag) + '<span class="lt-tag-link" onclick="event.stopPropagation();switchTab(\x27kplsearch\x27);setTimeout(function(){doKplSearch(\x27' + (tag||'').replace(/'/g,'') + '\x27)},100)">' + _kplEsc(tag) + '</span> <span class="lt-th-total">' + total + '</span></div>' + watchThemeKlineBtn(tag, sumCtx) + watchThemeSummary(tag, sumCtx, bodyId) + '</td>';
+        html += '<td class="lt-trajectory-row-header lt-th-cell" title="' + _kplEsc(tag) + ' (共' + total + '次)"><div class="lt-th-name">' + rBadge(tag) + '<span class="lt-tag-link" onclick="event.stopPropagation();switchTab(\x27kplsearch\x27);setTimeout(function(){doKplSearch(\x27' + (tag||'').replace(/'/g,'') + '\x27)},100)">' + _kplEsc(tag) + '</span> <span class="lt-th-total">' + total + '</span></div>' + watchThemeKlineBtn(tag, sumCtx) + watchThemeSummary(tag, sumCtx, bodyId) + watchThemeMarks(tag) + '</td>';
         // 连板序号逻辑: 从最右（最旧）到最左（最新），连续出现则递增，断板则重置为1
         var counter = 0;
         var seqMap = {};  // date → counter value
