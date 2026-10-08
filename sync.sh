@@ -120,13 +120,13 @@ do_restart() {
             echo '  服务启动失败'
             tail -3 /tmp/stock_service.log
         fi
-        # 实时盯盘页（9999，反向代理本机 6688）
+        # 实时盯盘页（9999，反向代理本机 6688）。按进程名(python)过滤再匹配脚本名，避免误杀执行本脚本的 shell。
         if [ -f watch/watch_server.py ]; then
-            WPID=\$(pgrep -f 'watch/watch_server.py' || true)
+            WPID=\$(ps -eo pid,comm,args | awk '\$2 ~ /^python/ && /watch\\/watch_server\\.py/ {print \$1}')
             if [ -n \"\$WPID\" ]; then kill \$WPID 2>/dev/null; sleep 1; fi
             nohup \$PYTHON_BIN -u watch/watch_server.py > /tmp/watch_service.log 2>&1 &
             sleep 2
-            if pgrep -f 'watch/watch_server.py' >/dev/null; then echo '  实时盯盘已启动 (9999)'; else echo '  实时盯盘启动失败'; tail -3 /tmp/watch_service.log; fi
+            if ps -eo comm,args | awk '\$1 ~ /^python/ && /watch\\/watch_server\\.py/ {f=1} END {exit !f}'; then echo '  实时盯盘已启动 (9999)'; else echo '  实时盯盘启动失败'; tail -3 /tmp/watch_service.log; fi
         fi
     "
     echo "✅ 服务已重启"
