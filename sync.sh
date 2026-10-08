@@ -5,6 +5,7 @@
 #   ./sync.sh --norestart  # 只同步不重启
 #   ./sync.sh --status     # 查看远程服务状态
 #   ./sync.sh --reclaim    # 回收远程数据库空间（去重+VACUUM）
+#   ./sync.sh --safe-sync  # 同步主程序；舆情归档仅补传云端不存在的文件，再重启服务
 # =============================
 
 set -e
@@ -22,8 +23,9 @@ remote() {
 
 # Helper: rsync同步
 rsync_to() {
-    sshpass -p "$PASS" rsync -avz --progress \
-        -e "ssh -o StrictHostKeyChecking=no" "$@"
+    # rsync starts ssh as a child process; authenticate that ssh directly.
+    SSHPASS="$PASS" rsync -avz --progress \
+        -e "sshpass -e ssh -o StrictHostKeyChecking=no" "$@"
 }
 
 do_sync() {
@@ -74,6 +76,20 @@ do_sync() {
     echo "  (已同步: .py/.json/.sh + 概念数据, 跳过: stocks_kline.db)"
 }
 
+# 舆情缓存可能在云端比本地更完整：更新代码，但只补传云端不存在的归档文件。
+do_safe_sync() {
+    echo "同步主程序到 $HOST:$REMOTE_DIR（舆情归档采用仅新增模式）"
+    remote "mkdir -p '$REMOTE_DIR/data/cls_telegraph'"
+    rsync_to "$LOCAL_DIR/stock_linkage_simple.py" "$USER@$HOST:$REMOTE_DIR/stock_linkage_simple.py"
+    rsync_to --ignore-existing "$LOCAL_DIR/data/cls_telegraph/" "$USER@$HOST:$REMOTE_DIR/data/cls_telegraph/"
+    for file in "$LOCAL_DIR"/data/cls_telegraph_*.csv; do
+        [ -f "$file" ] || continue
+        rsync_to --ignore-existing "$file" "$USER@$HOST:$REMOTE_DIR/data/"
+    done
+    echo "舆情归档补传完成（云端同名文件未覆盖）"
+    do_restart
+}
+
 do_restart() {
     echo "> 重启远程服务..."
     remote "
@@ -121,10 +137,27 @@ do_status() {
     "
 }
 
+do_safe_status() {
+    remote "
+        cd '$REMOTE_DIR'
+        echo '=== 主程序 SHA256 ==='
+        sha256sum stock_linkage_simple.py
+        echo '=== 舆情归档数量 ==='
+        find data/cls_telegraph -maxdepth 1 -type f -name '*.json' | wc -l
+        echo '=== 2026-09-28 归档 ==='
+        ls -l data/cls_telegraph/20260928.json data/cls_telegraph_20260928.csv
+        echo '=== 服务 HTTP ==='
+        curl -sS -o /dev/null -w '%{http_code}\n' --max-time 10 http://127.0.0.1:6688/
+    "
+}
+
 # === Main ===
 case "${1:-}" in
     --status)
         do_status
+        ;;
+    --safe-status)
+        do_safe_status
         ;;
     --norestart)
         do_sync
@@ -152,6 +185,9 @@ c.execute("VACUUM"); conn.commit(); conn.close()
 after = os.path.getsize(db_path)
 print(f"回收后: {after/1024/1024:.0f}M 节省: {(before-after)/1024/1024:.0f}M")'
         remote "cd $REMOTE_DIR && python3 -c \"$py_script\""
+        ;;
+    --safe-sync)
+        do_safe_sync
         ;;
     *)
         do_sync

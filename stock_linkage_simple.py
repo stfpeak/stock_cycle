@@ -6795,6 +6795,91 @@ def _kpl_first_zt_db_get(date_ymd):
         return {}
 
 
+def _trajectory_daily_change_pct(codes_by_date):
+    """读取轨迹股票当日开盘/收盘相对昨收的涨跌幅，返回 {date: {code: {open_pct, close_pct}}}。"""
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
+    if not os.path.exists(db_path):
+        return {}
+    result = {}
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path, timeout=5)
+        cur = conn.cursor()
+        for trade_date, day_codes in (codes_by_date or {}).items():
+            codes = sorted(set(str(code).zfill(6) for code in day_codes if code))
+            if not codes:
+                continue
+            date_prices = {}
+            # 分批避免旧版 SQLite 的 SQL 参数上限；轨迹单日通常只有数十只股票。
+            for offset in range(0, len(codes), 500):
+                batch = codes[offset:offset + 500]
+                placeholders = ','.join('?' for _ in batch)
+                cur.execute(
+                    'SELECT stock_code, open, close, prev_close, change_pct FROM kline_daily '
+                    'WHERE trade_date=? AND stock_code IN (%s)' % placeholders,
+                    [trade_date] + batch,
+                )
+                rows = cur.fetchall()
+                fallback_close = {}
+                missing_prev = []
+                for code, open_px, close_px, prev_close, change_pct in rows:
+                    try:
+                        pc = float(prev_close) if prev_close is not None else 0
+                    except (TypeError, ValueError):
+                        pc = 0
+                    if pc <= 0:
+                        missing_prev.append(str(code).zfill(6))
+                if missing_prev:
+                    day_ymd = str(trade_date).replace('-', '')
+                    day_idx = bisect.bisect_left(_trading_days, day_ymd)
+                    prev_ymd = _trading_days[day_idx - 1] if day_idx < len(_trading_days) and _trading_days[day_idx] == day_ymd and day_idx > 0 else ''
+                    if prev_ymd:
+                        prev_fmt = '%s-%s-%s' % (prev_ymd[:4], prev_ymd[4:6], prev_ymd[6:])
+                        for prev_offset in range(0, len(missing_prev), 500):
+                            prev_batch = missing_prev[prev_offset:prev_offset + 500]
+                            prev_ph = ','.join('?' for _ in prev_batch)
+                            cur.execute(
+                                'SELECT stock_code, close FROM kline_daily WHERE trade_date=? AND stock_code IN (%s)' % prev_ph,
+                                [prev_fmt] + prev_batch,
+                            )
+                            fallback_close.update({str(code).zfill(6): value for code, value in cur.fetchall()})
+                for code, open_px, close_px, prev_close, change_pct in rows:
+                    code = str(code).zfill(6)
+                    try:
+                        op = float(open_px) if open_px is not None else 0
+                    except (TypeError, ValueError):
+                        op = 0
+                    try:
+                        cp = float(close_px) if close_px is not None else 0
+                    except (TypeError, ValueError):
+                        cp = 0
+                    try:
+                        pc = float(prev_close) if prev_close is not None else 0
+                    except (TypeError, ValueError):
+                        pc = 0
+                    if pc <= 0:
+                        try:
+                            pc = float(fallback_close.get(code) or 0)
+                        except (TypeError, ValueError):
+                            pc = 0
+                    open_pct = round((op / pc - 1) * 100, 2) if op > 0 and pc > 0 else None
+                    close_pct = round((cp / pc - 1) * 100, 2) if cp > 0 and pc > 0 else None
+                    if close_pct is None:
+                        try:
+                            close_pct = float(change_pct) if change_pct is not None else None
+                        except (TypeError, ValueError):
+                            close_pct = None
+                    date_prices[code] = {'open_pct': open_pct, 'close_pct': close_pct}
+            if date_prices:
+                result[trade_date] = date_prices
+    except Exception as exc:
+        print('[涨停原因标签轨迹] 本地日线开收盘价读取失败: %s' % exc)
+    finally:
+        if conn is not None:
+            conn.close()
+    return result
+
+
 def _kpl_first_zt_db_is_synced(date_ymd):
     try:
         _kpl_first_zt_db_init()
@@ -14428,6 +14513,30 @@ td.lt-trajectory-cell {
 .lt-trajectory-cell .lt-count { opacity: 0.7; font-size: 0.85em; margin-left: 1px; }
 /* 格子内连板股票 chips */
 .lt-cell-stocks { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 3px; }
+.lt-trajectory-matrix .lt-cell-stock { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 1px; max-width: 190px; white-space: normal; vertical-align: top; }
+.lt-cell-stock-main { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 2px; }
+.lt-cell-stock-ohlc { display: inline-flex; align-items: center; gap: 4px; width: 100%; box-sizing: border-box; padding-top: 2px; border-top: 1px solid rgba(255,255,255,0.2); color: rgba(235,245,255,0.86); font-size: 0.68em; line-height: 1.35; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lt-cell-stock-ohlc em { color: rgba(218,234,248,0.68); font-style: normal; }
+.lt-cell-stock-ohlc b { color: #fff1c2; font-size: 1em; font-weight: 650; }
+.lt-cell-stock-ohlc .lt-change-up,
+.lt-cell-stock-ohlc .lt-change-down,
+.lt-cell-stock-ohlc .lt-change-flat,
+.lt-cell-stock-ohlc .lt-change-pending {
+    display: inline-block; padding: 0 4px; border: 1px solid transparent;
+    border-radius: 4px; line-height: 1.45; font-weight: 750;
+}
+.lt-cell-stock-ohlc .lt-change-up { color: #ff7777; background: rgba(127,29,29,0.78); border-color: rgba(248,113,113,0.72); }
+.lt-cell-stock-ohlc .lt-change-down { color: #63e6a6; background: rgba(6,78,59,0.82); border-color: rgba(52,211,153,0.68); }
+.lt-cell-stock-ohlc .lt-change-flat, .lt-cell-stock-ohlc .lt-change-pending { color: #e2e8f0; background: rgba(30,41,59,0.78); border-color: rgba(203,213,225,0.3); }
+.lt-cell-stock-ohlc .lt-ohlc-divider { color: rgba(255,255,255,0.35); }
+.lt-trajectory-matrix .lt-tag-mini { font-size: 0.58em; padding: 0 2px; margin-left: 1px; }
+.lt-trajectory-matrix td.lt-reference-cell { background: rgba(250,204,21,0.07); border-left: 2px solid rgba(250,204,21,0.62); }
+.lt-trajectory-matrix th.lt-reference-header { color: #facc15; background: #253047; border-left: 2px solid rgba(250,204,21,0.62); }
+.lt-trajectory-matrix .lt-cell-stock.lt-reference-stock.lt-reference-down {
+    background: linear-gradient(135deg, rgba(6,78,59,0.96), rgba(20,92,64,0.94)) !important;
+    border-color: rgba(74,222,128,0.72) !important;
+    color: #dcfce7 !important;
+}
 .lt-cell-stock {
     display: inline-block; padding: 1px 5px; margin: 0;
     background: rgba(6,182,212,0.18); color: #a5f3fc;
@@ -17153,11 +17262,11 @@ td.lt-trajectory-cell {
             <button class="np-sidebar-showbtn" id="twSidebarShow" onclick="toggleTabSidebar('twSidebar','twSidebarShow')" style="display:none;" title="显示导航">☰</button>
             <nav class="np-sidebar" id="twSidebar">
                 <a class="np-sidebar-item" data-np-section="twWindStrengthSection" onclick="scrollToNpSection('twWindStrengthSection')">⚡ 精选板块强度</a>
+                <a class="np-sidebar-item" data-np-section="twThemeStrengthMatrixSection" onclick="scrollToNpSection('twThemeStrengthMatrixSection')">🧩 题材强弱矩阵</a>
                 <a class="np-sidebar-item" data-np-section="twLtTrajectoryLbSection" onclick="scrollToNpSection('twLtTrajectoryLbSection')">🔥 连板股轨迹</a>
                 <a class="np-sidebar-item" data-np-section="twLtTrajectorySection" onclick="scrollToNpSection('twLtTrajectorySection')">🌐 涨停标签轨迹</a>
                 <a class="np-sidebar-item" data-np-section="twTopThemeSection" onclick="scrollToNpSection('twTopThemeSection')">🏆 TOP题材风向</a>
                 <a class="np-sidebar-item" data-np-section="twTodayTopicReviewSection" onclick="scrollToNpSection('twTodayTopicReviewSection')">📝 今日题材复盘</a>
-                <a class="np-sidebar-item" data-np-section="twThemeStrengthMatrixSection" onclick="scrollToNpSection('twThemeStrengthMatrixSection')">🧩 题材强弱矩阵</a>
                 <a class="np-sidebar-item" data-np-section="twReviewSection" onclick="scrollToNpSection('twReviewSection')">🧭 注意力/预期机制</a>
                 <div style="border-top:1px solid rgba(255,255,255,0.06);margin:6px 0;"></div>
                 <div class="np-sidebar-hide" onclick="toggleTabSidebar('twSidebar','twSidebarShow')" title="隐藏导航">✖ 隐藏</div>
@@ -23427,14 +23536,7 @@ function loadThemeWind() {
         html += '<div id="twTodayTopicReviewBody">' + renderTodayThemeReview(twsData ? twsData.today_theme_review : null) + '</div>';
         html += '</div>';
 
-        // Section 5: 题材强弱矩阵（与连板涨停表现 / 竞价快照同源）
-        html += '<div class="rt-section lt-trajectory-section" id="twThemeStrengthMatrixSection">';
-        html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ffd700;">🧩 题材强弱矩阵 <span class="count-badge">' + _kplEsc((twsData && twsData.theme_strength_matrix && twsData.theme_strength_matrix.date) || '最新交易日') + '</span></h3>';
-        if (twsData && twsData.theme_strength_matrix) _tsmLiveMatrixData = twsData.theme_strength_matrix;
-        html += '<div id="twThemeStrengthMatrixBody">' + renderThemeStrengthMatrix(twsData ? twsData.theme_strength_matrix : null) + '</div>';
-        html += '</div>';
-
-        // Section 6: 注意力/预期机制（Attention Is All You Need）
+        // 注意力/预期机制（Attention Is All You Need）
         html += '<div class="rt-section lt-trajectory-section" id="twReviewSection">';
         html += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ffd700;">注意力/预期机制 + 决策 <span class="count-badge">Attention Is All You Need · 近15个交易日</span> <span class="rt-refresh-icon" onclick="manualRefreshReview(true)" title="刷新">\u21bb</span><button class="rt-auto-refresh-btn" id="reviewAutoBtn" onclick="toggleReviewAutoRefresh()">\u23f1 自动刷新 1分钟</button></h3>';
         html += '<section class="attn-methodology"><h4>注意力 + 预期强度：用四个问题读懂题材</h4>' +
@@ -23452,7 +23554,7 @@ function loadThemeWind() {
         container.innerHTML = html;
         _fillTrajDefaultDates('tw');
         updateTrajLbBadge('tw');
-        initTabSidebarScroll('twSidebar', ['twWindStrengthSection','twLtTrajectoryLbSection','twLtTrajectorySection','twTopThemeSection','twTodayTopicReviewSection','twThemeStrengthMatrixSection','twReviewSection']);
+        initTabSidebarScroll('twSidebar', ['twWindStrengthSection','twThemeStrengthMatrixSection','twLtTrajectoryLbSection','twLtTrajectorySection','twTopThemeSection','twTodayTopicReviewSection','twReviewSection']);
         loadAttentionBoard(false);
         updateReviewNavSel();   // 导航渲染在 _reviewSelDate 赋值之前，需手动补选中态
         _twsStartPoll();        // 精选板块强度细分卡片 30s 实时行情轮询
@@ -23472,6 +23574,58 @@ function loadThemeWind() {
 // 连板轨迹日期窗口（实时/题材风向各自独立，null 或 {start,end}，YYYY-MM-DD）
 var _rtTrajWindow = null;
 var _twTrajWindow = null;
+var _ltTrajectoryLivePctTimer = null;
+var _ltTrajectoryLivePctBusy = false;
+
+// 只更新最新交易日卡片中的“收盘涨跌幅”；开盘涨跌幅及历史日期始终直接使用本地日线数据。
+function _ltTrajectoryPollLivePct() {
+    if (_ltTrajectoryLivePctBusy) return;
+    if (typeof currentTab !== 'undefined' && currentTab !== 'themewind' && currentTab !== 'realtime') return;
+    var cells = document.querySelectorAll('.lt-trajectory-live-close[data-code][data-date], .lt-trajectory-live-open[data-code][data-date]');
+    if (!cells.length) return;
+    var date = cells[0].getAttribute('data-date') || '';
+    var codes = [];
+    for (var i = 0; i < cells.length; i++) {
+        if (cells[i].getAttribute('data-date') !== date) continue;
+        var code = cells[i].getAttribute('data-code') || '';
+        if (code && codes.indexOf(code) < 0) codes.push(code);
+    }
+    if (!date || !codes.length) return;
+    _ltTrajectoryLivePctBusy = true;
+    fetch('/api/trajectory_live_pct?date=' + encodeURIComponent(date) + '&codes=' + encodeURIComponent(codes.join(',')) + '&_t=' + Date.now())
+        .then(function(r) { return r.json(); })
+        .then(function(result) {
+            var quotes = (result && result.quotes) || {};
+            for (var i = 0; i < cells.length; i++) {
+                var el = cells[i];
+                if (el.getAttribute('data-date') !== date) continue;
+                var q = quotes[el.getAttribute('data-code') || ''];
+                if (!q) continue;
+                if (el.classList.contains('lt-trajectory-live-open') && q.open_pct !== null && q.open_pct !== undefined && isFinite(Number(q.open_pct))) {
+                    var openPct = Number(q.open_pct);
+                    el.textContent = (openPct > 0 ? '+' : '') + openPct.toFixed(2) + '%';
+                    el.className = openPct > 0 ? 'lt-change-up' : (openPct < 0 ? 'lt-change-down' : 'lt-change-flat');
+                    el.removeAttribute('data-code');
+                    el.removeAttribute('data-date');
+                } else if (el.classList.contains('lt-trajectory-live-close') && q.change_pct !== null && q.change_pct !== undefined && isFinite(Number(q.change_pct))) {
+                    var pct = Number(q.change_pct);
+                    el.textContent = (pct > 0 ? '+' : '') + pct.toFixed(2) + '%';
+                    el.className = pct > 0 ? 'lt-change-up' : (pct < 0 ? 'lt-change-down' : 'lt-change-flat');
+                    var referenceCard = el.closest('.lt-reference-stock');
+                    if (referenceCard) referenceCard.classList.toggle('lt-reference-down', pct < 0);
+                    if (result.trading) {
+                        el.classList.add('lt-trajectory-live-close');
+                    } else {
+                        // 收盘后采用落盘日线收盘涨跌幅，移除实时标记，不再重复轮询已完成的股票。
+                        el.removeAttribute('data-code');
+                        el.removeAttribute('data-date');
+                    }
+                }
+            }
+        })
+        .catch(function() {})
+        .then(function() { _ltTrajectoryLivePctBusy = false; });
+}
 
 // 北京时间 YYYY-MM-DD（不依赖客户端时区）
 function _bjTodayStr() {
@@ -24257,7 +24411,11 @@ function renderLadderLianbanTagTrajectory(data, bodyId) {
     var freqByTag = data.freq_by_tag || {};
     var tagTotals = data.tag_totals || {};
     var stocksByTag = data.stocks_by_tag || {};
-    var sortedTags = Object.keys(tagTotals).filter(function(t) {
+    var referenceDate = data.reference_enabled ? (data.reference_date || '') : '';
+    var referenceByTag = data.reference_stocks_by_tag || {};
+    var displayCols = dates.map(function(d, i) { return {date: d, isReference: false, latest: i === 0}; });
+    if (referenceDate && dates.length) displayCols.splice(1, 0, {date: referenceDate, isReference: true, latest: false});
+    var sortedTags = Array.from(new Set(Object.keys(tagTotals).concat(Object.keys(referenceByTag)))).filter(function(t) {
         return !shouldExclude(t);
     });
     // 需求3：标签按「最近活跃优先」排序——(最近有连板的日期↓, 当天最高连板↓, 总数↓)
@@ -24286,8 +24444,12 @@ function renderLadderLianbanTagTrajectory(data, bodyId) {
 
     var html = '<div class="lt-trajectory-wrapper"><table class="lt-trajectory-matrix">';
     html += '<tr><th class="lt-trajectory-col-header" style="min-width:80px;">标签</th>';
-    dates.forEach(function(d) {
-        html += '<th class="lt-trajectory-col-header" title="' + d + '">' + d.slice(5) + '</th>';
+    displayCols.forEach(function(col) {
+        if (col.isReference) {
+            html += '<th class="lt-trajectory-col-header lt-reference-header" title="复制 ' + _kplEsc(col.date) + ' 股票清单，价格字段按最新交易日更新">参考列</th>';
+        } else {
+            html += '<th class="lt-trajectory-col-header" title="' + col.date + '">' + col.date.slice(5) + '</th>';
+        }
     });
     html += '</tr>';
 
@@ -24309,10 +24471,12 @@ function renderLadderLianbanTagTrajectory(data, bodyId) {
                 seqMap[d] = 0;
             }
         }
-        dates.forEach(function(d) {
-            var cnt = dateCounts[d] || 0;
+        displayCols.forEach(function(col) {
+            var d = col.date;
+            var cellStocks = col.isReference ? ((referenceByTag[tag] || []).slice()) : ((stocksByTag[tag] && stocksByTag[tag][d]) || []);
+            var cnt = col.isReference ? cellStocks.length : (dateCounts[d] || 0);
             if (cnt > 0) {
-                var seq = seqMap[d] || 0;
+                var seq = col.isReference ? (seqMap[d] || 1) : (seqMap[d] || 0);
                 var cls = '';
                 var marker = '';
                 if (seq === 1) { cls = 'lt-first'; marker = '\u2460'; }
@@ -24320,12 +24484,11 @@ function renderLadderLianbanTagTrajectory(data, bodyId) {
                 else if (seq === 3) { cls = 'lt-third'; marker = '\u2462'; }
                 else if (seq === 4) { cls = 'lt-fourth'; marker = '\u2463'; }
                 else { cls = 'lt-fifth'; marker = seq; }
-                html += '<td class="lt-trajectory-cell ' + cls + '">';
+                html += '<td class="lt-trajectory-cell ' + cls + (col.isReference ? ' lt-reference-cell' : '') + '">';
                 html += '<span class="lt-marker">' + marker + '</span>';
                 var tagLabel = cnt > 1 ? tag.slice(0, 4) + '(+' + cnt + ')' : tag.slice(0, 4);
                 html += _kplEsc(tagLabel);
                 // 格子内列出该题材当日的连板股票（服务端已按连板数降序）
-                var cellStocks = (stocksByTag[tag] && stocksByTag[tag][d]) || [];
                 if (cellStocks.length > 0) {
                     var navIdx = _ltTrajectoryStockNavs.length;
                     var navList = [];
@@ -24339,11 +24502,12 @@ function renderLadderLianbanTagTrajectory(data, bodyId) {
                         var sName = (s.name || '').replace(/'/g, '');
                         var sCode = s.code || '';
                         if (!sName || !sCode) continue;
-                        var latestCol = (d === dates[0]);   // dates 已 reverse，[0] 即最新交易日
+                        var latestCol = !col.isReference && (d === dates[0]);   // dates 已 reverse，[0] 即最新交易日
+                        var referenceDown = col.isReference && s.close_pct !== null && s.close_pct !== undefined && Number(s.close_pct) < 0;
                         var lbCls = s.is_restart ? 'lt-cell-stock-restart'
                                  : (s.lianban >= 5 ? 'lt-lb-high'
                                  : 'lt-lb-' + (s.lianban >= 2 ? s.lianban : 1));
-                        var chipCls = 'lt-cell-stock ' + lbCls + (latestCol ? ' lt-latest' : '');
+                        var chipCls = 'lt-cell-stock ' + lbCls + (latestCol ? ' lt-latest' : '') + (col.isReference ? ' lt-reference-stock' : '') + (referenceDown ? ' lt-reference-down' : '');
                         var restartMark = s.is_restart ? ' <i class="lt-restart-mark">重启</i>' : '';
                         var miniTags = '';
                         if (s.tags && s.tags.length) {
@@ -24353,13 +24517,33 @@ function renderLadderLianbanTagTrajectory(data, bodyId) {
                         }
                         var navRef = bodyId ? ('_ltTrajNavById[\\x27' + bodyId + '\\x27]') : '_ltTrajectoryStockNavs';
                         var cellTm = (s.first_time && s.first_time < 999999) ? '<span class="lt-cell-time">' + _kplLevelFormatTime(s.first_time) + '</span>' : '';
-                        html += '<span class="' + chipCls + '" title="' + _kplEsc(sName) + '" onclick="event.stopPropagation();openDsStockFromRhythm(\\x27' + sName + '\\x27, \\x27' + sCode + '\\x27, \\x27\\x27, ' + navRef + '[' + navIdx + '], ' + si + ')">' + _kplEsc(sName) + cellTm + ' <b>' + s.lianban + '板</b>' + miniTags + restartMark + '</span>';
+                        var fmtPct = function(value) {
+                            if (value === null || value === undefined || value === '') return '--';
+                            var n = Number(value);
+                            return isFinite(n) ? (n > 0 ? '+' : '') + n.toFixed(2) + '%' : '--';
+                        };
+                        var pctClass = function(value) {
+                            if (value === null || value === undefined || value === '') return 'lt-change-flat';
+                            var n = Number(value);
+                            return n > 0 ? 'lt-change-up' : (n < 0 ? 'lt-change-down' : 'lt-change-flat');
+                        };
+                        var openText = fmtPct(s.open_pct);
+                        var closeText = s.close_pending ? '待收盘' : fmtPct(s.close_pct);
+                        var closeClass = s.close_pending ? 'lt-change-pending' : pctClass(s.close_pct);
+                        var priceDate = col.isReference ? dates[0] : d;
+                        var openPending = s.close_pending && (s.open_pct === null || s.open_pct === undefined);
+                        var liveOpenAttrs = openPending ? ' lt-trajectory-live-open" data-code="' + _kplEsc(sCode) + '" data-date="' + _kplEsc(priceDate) : '';
+                        var liveCloseAttrs = s.close_pending ? ' lt-trajectory-live-close" data-code="' + _kplEsc(sCode) + '" data-date="' + _kplEsc(priceDate) : '';
+                        var priceLine = '<span class="lt-cell-stock-ohlc" title="' + _kplEsc(priceDate) + ' 开盘涨跌幅 / 收盘涨跌幅">' +
+                            '<em>开</em><b class="' + pctClass(s.open_pct) + liveOpenAttrs + '">' + openText + '</b><i class="lt-ohlc-divider">·</i><em>收</em><b class="' + closeClass + liveCloseAttrs + '">' + closeText + '</b></span>';
+                        html += '<span class="' + chipCls + '" title="' + _kplEsc(sName + ' · 开 ' + openText + ' · 收 ' + closeText) + '" onclick="event.stopPropagation();openDsStockFromRhythm(\\x27' + sName + '\\x27, \\x27' + sCode + '\\x27, \\x27\\x27, ' + navRef + '[' + navIdx + '], ' + si + ')">' +
+                            '<span class="lt-cell-stock-main">' + _kplEsc(sName) + cellTm + ' <b>' + s.lianban + '板</b>' + miniTags + restartMark + '</span>' + priceLine + '</span>';
                     }
                     html += '</div>';
                 }
                 html += '</td>';
             } else {
-                html += '<td class="lt-trajectory-cell-empty">-</td>';
+                html += '<td class="lt-trajectory-cell-empty' + (col.isReference ? ' lt-reference-cell' : '') + '">-</td>';
             }
         });
         html += '</tr>';
@@ -24370,6 +24554,8 @@ function renderLadderLianbanTagTrajectory(data, bodyId) {
     if (bodyId) {
         _ltTrajNavById[bodyId] = _ltTrajectoryStockNavs;
     }
+    if (!_ltTrajectoryLivePctTimer) _ltTrajectoryLivePctTimer = setInterval(_ltTrajectoryPollLivePct, 60000);
+    setTimeout(_ltTrajectoryPollLivePct, 0);
     return html;
 }
 
@@ -25439,6 +25625,12 @@ function _twsRenderBoardSummary(twsData) {
     if (!twsData || !twsData.plates || !twsData.plates.length) return '';
     var h = '<div class="tws-summary">';
     h += _twsRenderTimeline(twsData);
+    // 题材强弱矩阵紧跟今日涨停时间轴，沿用独立 body ID，历史日期切换与实时刷新逻辑不变。
+    if (twsData.theme_strength_matrix) _tsmLiveMatrixData = twsData.theme_strength_matrix;
+    h += '<section class="rt-section lt-trajectory-section" id="twThemeStrengthMatrixSection">';
+    h += '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ffd700;">🧩 题材强弱矩阵 <span class="count-badge">' + _kplEsc((twsData.theme_strength_matrix && twsData.theme_strength_matrix.date) || '最新交易日') + '</span></h3>';
+    h += '<div id="twThemeStrengthMatrixBody">' + renderThemeStrengthMatrix(twsData.theme_strength_matrix || null) + '</div>';
+    h += '</section>';
     h += _twsRenderCorePoolRecs(twsData);   // 核心池联动推荐（今日涨停 → 老龙头核心标的）置于时间轴下方、细分题材晋级上方
     h += _twsRenderLadder(twsData);            // 连板涨停表现
     // ---- 连板速览：遍历 plates→themes(max_lianban>=2)，取每题材最高档股票，按 code 合并 ----
@@ -40915,6 +41107,34 @@ class Handler(BaseHTTPRequestHandler):
             result['ts'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             self._respond_json(result, cors_headers)
 
+        elif path == '/api/trajectory_live_pct':
+            # 轨迹卡片仅需实时更新最新日的收盘涨跌幅；盘中复用现有带缓存行情源，
+            # 收盘后只读已落盘日线，不再访问外部行情。
+            date_fmt = query.get('date', [''])[0].strip()
+            codes = sorted(set(c.strip() for c in query.get('codes', [''])[0].split(',')
+                               if len(c.strip()) == 6 and c.strip().isdigit()))
+            today_fmt = _bj_now().strftime('%Y-%m-%d')
+            live = bool(date_fmt == today_fmt and _is_trading_hours())
+            quotes = {}
+            if codes and live:
+                for code, quote in _spot_quotes_for_codes(codes).items():
+                    try:
+                        current_pct = float(quote.get('change_pct'))
+                    except (TypeError, ValueError):
+                        continue
+                    try:
+                        open_px = float(quote.get('open') or 0)
+                        prev_close = float(quote.get('prev_close') or 0)
+                        open_pct = round((open_px / prev_close - 1) * 100, 2) if open_px > 0 and prev_close > 0 else None
+                    except (TypeError, ValueError):
+                        open_pct = None
+                    quotes[code] = {'open_pct': open_pct, 'change_pct': current_pct}
+            elif codes and len(date_fmt) == 10:
+                saved = _trajectory_daily_change_pct({date_fmt: codes}).get(date_fmt, {})
+                for code, values in saved.items():
+                    quotes[code] = {'open_pct': values.get('open_pct'), 'change_pct': values.get('close_pct')}
+            self._respond_json({'date': date_fmt, 'trading': live, 'quotes': quotes}, cors_headers)
+
         elif path == '/api/kpl_first_zt_times':
             # 题材复盘股票卡：只读本地 SQLite；levistock 网络请求仅由启动后的后台预取任务执行。
             raw_dates = query.get('dates', [''])[0].split(',')
@@ -41313,6 +41533,9 @@ class Handler(BaseHTTPRequestHandler):
                 all_entries = {}
                 for d_fmt in recent_fmt:
                     code_info = {}
+                    # 历史涨停时间优先读本地 levistock 首封时间库；不在请求过程中联网，
+                    # 并保留 KPL 日记录的时间作为本地库尚未覆盖时的兜底。
+                    day_first_times = _kpl_first_zt_db_get(d_fmt)
                     for r in _kpl_rows_by_date.get(d_fmt, []):
                         sc = r.get('stock_code', '')
                         if not sc or sc in code_info:
@@ -41321,15 +41544,31 @@ class Handler(BaseHTTPRequestHandler):
                         if not tag:
                             continue
                         lb = _kpl_compute_lianban(sc, d_fmt)
+                        first_time = day_first_times.get(sc)
+                        if not first_time:
+                            first_time = int(r.get('first_time') or 0) or 999999
                         code_info[sc] = {
                             'tag': tag,
                             'lb': lb,
                             'name': r.get('stock_name', '') or '',
                             'is_restart': (lb < 2 and _kpl_is_restart(sc, d_fmt)),
                             'brief': r.get('reason_brief', '') or '',
-                            'first_time': int(r.get('first_time') or 0) or 999999,
+                            'first_time': first_time,
                         }
                     all_entries[d_fmt] = code_info
+                daily_change_pct = _trajectory_daily_change_pct({
+                    d_fmt: list(code_info.keys()) for d_fmt, code_info in all_entries.items()
+                })
+                live_date_fmt = _bj_now().strftime('%Y-%m-%d')
+                close_pending = _is_trading_hours()
+                for d_fmt, code_info in all_entries.items():
+                    day_prices = daily_change_pct.get(d_fmt, {})
+                    for sc, info in code_info.items():
+                        prices = day_prices.get(sc, {})
+                        info['open_pct'] = prices.get('open_pct')
+                        # 盘中不把数据库中可能尚未更新的前收误标成今日收盘涨跌幅。
+                        info['close_pct'] = None if (close_pending and d_fmt == live_date_fmt) else prices.get('close_pct')
+                        info['close_pending'] = bool(close_pending and d_fmt == live_date_fmt)
                 # 主标签聚合（primary：一 (tag,date) 一股票只归主标签）
                 primary_freq = {}
                 primary_stocks = {}
@@ -41351,10 +41590,33 @@ class Handler(BaseHTTPRequestHandler):
                             'is_restart': info['is_restart'],
                             'is_gem': (sc[:3] in ('300', '301') or sc[:3] in ('688', '689')),
                             'tags': valid,
-                            'first_time': (int(info.get('first_time') or 0) or 999999) if d_fmt == recent_fmt[-1] else 999999,
+                            'first_time': int(info.get('first_time') or 0) or 999999,
+                            'open_pct': info.get('open_pct'),
+                            'close_pct': info.get('close_pct'),
+                            'close_pending': info.get('close_pending', False),
                         })
                 # 盘中补充今日实时涨停数据（含首板，写入股票明细）
                 _inject_today_zt_to_trajectory(recent_fmt, primary_freq, min_lianban=0, stocks_by_tag=primary_stocks)
+                # 盘中注入名单可能含有 KPL 日文件未收录的股票，补查这些代码的本地日线开收盘价。
+                late_codes = {}
+                for date_map in primary_stocks.values():
+                    for d_fmt, slist in date_map.items():
+                        known = daily_change_pct.get(d_fmt, {})
+                        missing = [s.get('code', '') for s in slist if s.get('code') and s.get('code') not in known]
+                        if missing:
+                            late_codes.setdefault(d_fmt, set()).update(missing)
+                if late_codes:
+                    for d_fmt, change_map in _trajectory_daily_change_pct(late_codes).items():
+                        daily_change_pct.setdefault(d_fmt, {}).update(change_map)
+                # 实时注入的股票也复用本地当日开盘数据；收盘前明确显示“待收盘”。
+                for tag, date_map in primary_stocks.items():
+                    for d_fmt, slist in date_map.items():
+                        day_prices = daily_change_pct.get(d_fmt, {})
+                        for stock in slist:
+                            prices = day_prices.get(stock.get('code', ''), {})
+                            stock['open_pct'] = prices.get('open_pct')
+                            stock['close_pending'] = bool(close_pending and d_fmt == live_date_fmt)
+                            stock['close_pct'] = None if stock['close_pending'] else prices.get('close_pct')
                 # 拆分扩展（A+B 同时出现在 A、B 两行）
                 split_stocks = {}
                 for tag, date_map in primary_stocks.items():
@@ -41364,7 +41626,7 @@ class Handler(BaseHTTPRequestHandler):
                                 split_stocks.setdefault(st, {}).setdefault(d_fmt, []).append(s)
                 for tag, date_map in split_stocks.items():
                     for d_fmt, slist in date_map.items():
-                        # 有涨停时间（仅今日注入行）按时间升序在前，无时间的历史行沉底；同时间按连板降序
+                        # 每个交易日均按涨停时间升序；缺少时间的历史记录沉底，同时间按连板降序
                         slist.sort(key=lambda s: (s.get('first_time', 999999), -s['lianban'], s['name']))
                 split_freq = {}
                 for tag, date_map in split_stocks.items():
@@ -41381,11 +41643,57 @@ class Handler(BaseHTTPRequestHandler):
                     sorted_freq[tag] = split_freq[tag]
                     if tag in split_stocks:
                         sorted_stocks[tag] = split_stocks[tag]
+                # 参考列：复用最新列前一交易日的题材/股票/板数信息，但价格字段对齐最新交易日。
+                # 只在所选窗口包含当前锚点时出现，查看历史日期时不会引入之后的数据。
+                reference_date = ''
+                reference_stocks_by_tag = {}
+                anchor_fmt = '%s-%s-%s' % (today_ymd[:4], today_ymd[4:6], today_ymd[6:])
+                if anchor_fmt in recent_fmt:
+                    anchor_idx = bisect.bisect_left(_trading_days, today_ymd)
+                    prev_ymd = _trading_days[anchor_idx - 1] if anchor_idx > 0 and anchor_idx < len(_trading_days) and _trading_days[anchor_idx] == today_ymd else ''
+                    if prev_ymd:
+                        reference_date = '%s-%s-%s' % (prev_ymd[:4], prev_ymd[4:6], prev_ymd[6:])
+                        _kpl_ensure_loaded(prev_ymd, prev_ymd)
+                        prev_first_times = _kpl_first_zt_db_get(reference_date)
+                        prev_by_code = {}
+                        for row in _kpl_rows_by_date.get(reference_date, []):
+                            code = str(row.get('stock_code') or '').zfill(6)
+                            if not code or code in prev_by_code:
+                                continue
+                            raw_tag = (row.get('reason_tag') or '').strip()
+                            brief = row.get('reason_brief') or ''
+                            valid_tags = _traj_valid_tags(raw_tag, brief)
+                            if not valid_tags:
+                                continue
+                            first_time = prev_first_times.get(code) or int(row.get('first_time') or 0) or 999999
+                            prev_by_code[code] = {
+                                'code': code,
+                                'name': row.get('stock_name') or '',
+                                'lianban': _kpl_compute_lianban(code, reference_date),
+                                'is_restart': bool(_kpl_is_restart(code, reference_date)),
+                                'is_gem': code[:3] in ('300', '301', '688', '689'),
+                                'tags': valid_tags,
+                                'first_time': int(first_time),
+                            }
+                        latest_day_prices = _trajectory_daily_change_pct({anchor_fmt: list(prev_by_code.keys())}).get(anchor_fmt, {})
+                        reference_live = bool(close_pending and anchor_fmt == live_date_fmt)
+                        for stock in prev_by_code.values():
+                            prices = latest_day_prices.get(stock['code'], {})
+                            stock['open_pct'] = prices.get('open_pct')
+                            stock['close_pct'] = None if reference_live else prices.get('close_pct')
+                            stock['close_pending'] = reference_live
+                            for stock_tag in stock['tags']:
+                                reference_stocks_by_tag.setdefault(stock_tag, []).append(stock)
+                        for ref_tag, ref_list in reference_stocks_by_tag.items():
+                            ref_list.sort(key=lambda s: (s.get('first_time', 999999), -s.get('lianban', 1), s.get('name', '')))
                 result = {
                     'dates': recent_fmt,
                     'freq_by_tag': sorted_freq,
                     'tag_totals': tag_totals,
                     'stocks_by_tag': sorted_stocks,
+                    'reference_enabled': bool(reference_date),
+                    'reference_date': reference_date,
+                    'reference_stocks_by_tag': reference_stocks_by_tag,
                 }
                 _set_cache(cache_key, result)
             self._respond_json(result, cors_headers)
