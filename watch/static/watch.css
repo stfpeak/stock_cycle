@@ -225,3 +225,14 @@
 .tws-tl-axis .tws-tl-lunch { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; justify-content: center;
     font-size: 0.62em; letter-spacing: 0.15em; color: #6f7a8a; pointer-events: none;
     background: repeating-linear-gradient(135deg, rgba(255,255,255,0.05) 0 4px, transparent 4px 8px); border-left: 1px dashed rgba(255,255,255,0.18); border-right: 1px dashed rgba(255,255,255,0.18); }
+
+/* 首列：今日涨停股的 涨停时间 + 涨幅 */
+.lt-th-stk .lt-th-time { margin: 0 2px 0 3px; }
+.lt-th-stk b { margin-left: 3px; }
+
+/* ===== 「跌幅」卡片：可折叠标题（默认折叠） ===== */
+.wd-head { margin: 6px 0 8px 0; font-size: 0.9em; color: #2ee66b; cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
+.wd-head:hover { color: #6dffa0; }
+.wd-arrow { display: inline-block; width: 1em; font-size: 0.8em; color: #9aa4b2; }
+.wd-count { color: #9aa4b2; font-size: 0.82em; font-weight: 400; }
+.wd-head .rt-refresh-icon { margin-left: auto; }

@@ -72,9 +72,11 @@
             '<div id="twWindStrengthBody"><div class="loading">加载中...</div></div></div>' +
 
             '<div class="rt-section lt-trajectory-section" id="watchDeclineSection">' +
-            '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#2ee66b;">🔻 跌幅 <span class="count-badge">跌幅 &gt; 5%</span> ' +
-            '<span class="rt-refresh-icon" onclick="watchRefreshTrajectory()" title="刷新">↻</span></h3>' +
-            '<div id="watchDeclineBody"><div class="lt-trajectory-loading">加载中...</div></div></div>' +
+            '<h3 id="watchDeclineHead" class="wd-head" onclick="watchToggleDecline()" title="点击展开 / 折叠">' +
+            '<span class="wd-arrow" id="watchDeclineArrow">▶</span>🔻 跌幅 <span class="count-badge">跌幅 &gt; 5%</span> ' +
+            '<span class="wd-count" id="watchDeclineCount"></span>' +
+            '<span class="rt-refresh-icon" onclick="event.stopPropagation();watchRefreshTrajectory()" title="刷新">↻</span></h3>' +
+            '<div id="watchDeclineBody" style="display:none"><div class="lt-trajectory-loading">加载中...</div></div></div>' +
 
             '<div class="rt-section lt-trajectory-section" id="twLtTrajectorySection">' +
             '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#4fc3f7;">🌐 涨停原因标签轨迹 <span class="count-badge">近20日</span> ' +
@@ -102,7 +104,9 @@
                 var body = document.getElementById('twLtTrajectoryBody');
                 if (body && d && d.dates && d.dates.length) {
                     var decl = document.getElementById('watchDeclineBody');
-                    if (decl) decl.innerHTML = watchRenderDecline(d);
+                    if (decl) decl.innerHTML = watchRenderDecline(d);   // 只替换内容，展开/折叠状态保留在容器上，30s 刷新不会被重置
+                    var dc = document.getElementById('watchDeclineCount');
+                    if (dc && d.decline) dc.textContent = d.decline.total + ' 只 · ' + d.decline.themes.length + ' 个题材';
                     body.innerHTML = watchRenderTrajectory(d, 'twLtTrajectoryBody');
                     var ts = document.getElementById('watchTrajTs');
                     if (ts) ts.textContent = lastTraj = fmtClock(bjNow());
@@ -134,6 +138,14 @@
             else console.error('刷新板块强度失败:', e);
         });
     }
+    // 「跌幅」卡片默认折叠，点标题展开；折叠时标题上仍显示股票数/题材数
+    window.watchToggleDecline = function () {
+        var body = document.getElementById('watchDeclineBody'), arrow = document.getElementById('watchDeclineArrow');
+        if (!body) return;
+        var open = body.style.display === 'none';
+        body.style.display = open ? '' : 'none';
+        if (arrow) arrow.textContent = open ? '▼' : '▶';
+    };
     window.watchRefreshStrength = function () { return refreshStrength(false); };
     window.manualRefreshTws = window.watchRefreshStrength;      // 标题上的 ↻ 沿用同一条刷新链
 

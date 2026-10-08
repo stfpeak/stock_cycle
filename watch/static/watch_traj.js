@@ -170,7 +170,7 @@ function watchThemeKlineBtn(tag, c) {
     var key = 'wt-' + safe;
     _tmmThemeKlineOrder[key] = hits;
     return '<div class="lt-th-kline"><button type="button" class="ms-tp-kline-btn" onclick="event.stopPropagation();_tmmOpenThemeKline(\x27' + safe + '\x27,\x27' + key +
-        '\x27)" title="查看 ' + _kplEsc(c.latest.slice(5)) + ' 涨停 / 大涨 / 涨幅>2% 股票的K线走势（' + hits.length + ' 只）">📈 K线</button></div>';
+        '\x27)" title="查看 ' + _kplEsc(c.latest.slice(5)) + ' 涨停 / 大涨 / 涨幅>2% 股票的K线走势（' + hits.length + ' 只）">📈 K线走势</button></div>';
 }
 
 function watchJumpTheme(i) {
@@ -205,9 +205,18 @@ function watchThemeSummary(tag, c, bodyId) {
     }
     function liveAttrs(code) { return ' lt-trajectory-live-close" data-code="' + _kplEsc(code) + '" data-date="' + _kplEsc(latest); }
     // 基准的结果：最新日涨停 → 晋级；否则最新日涨跌幅
+    // 今日涨停股的「涨停时间 + 涨幅」（盘中涨幅随 30s 轮询更新，收盘后取日线）
+    function limitInfo(code) {
+        var tl = c.todayLimit[code];
+        if (!tl) return '';
+        var tm = (tl.first_time && tl.first_time < 999999) ? '<i class="lt-th-time">' + _kplLevelFormatTime(tl.first_time) + '</i>' : '';
+        var pct = tl.close_pending ? '<b class="lt-change-pending' + liveAttrs(code) + '">待收盘</b>'
+            : (tl.close_pct === null || tl.close_pct === undefined ? '' : '<b class="' + pcls(tl.close_pct) + '">' + fmt(tl.close_pct) + '</b>');
+        return tm + pct;
+    }
     function baseResult(s) {
         var tl = c.todayLimit[s.code];
-        if (tl) return '<em class="lt-th-up">' + (s.is_surge ? '涨停' : '晋级' + (tl.lianban >= 2 ? tl.lianban + '板' : '')) + '</em>';
+        if (tl) return limitInfo(s.code) + '<em class="lt-th-up">' + (s.is_surge ? '涨停' : '晋级' + (tl.lianban >= 2 ? tl.lianban + '板' : '')) + '</em>';
         if (s.close_pending) return '<b class="lt-change-pending' + liveAttrs(s.code) + '">待收盘</b>';
         return '<b class="' + pcls(s.close_pct) + '">' + fmt(s.close_pct) + '</b>';
     }
@@ -242,14 +251,13 @@ function watchThemeSummary(tag, c, bodyId) {
         html += '<div class="lt-th-sec"><div class="lt-th-sec-title">' + _kplEsc(latest.slice(5)) + ' 新增</div>';
         if (newLb.length) {
             html += '<div class="lt-th-row"><span class="lt-th-lv lt-th-lv-lb">连板</span>';
-            newLb.forEach(function(s) { html += stk(s, '<em class="lt-th-up">' + s.lianban + '板</em>'); });
+            newLb.forEach(function(s) { html += stk(s, limitInfo(s.code) + '<em class="lt-th-up">' + (c.refLimit[s.code] ? '晋级' : '') + s.lianban + '板</em>'); });
             html += '</div>';
         }
         if (newFirst.length) {
             html += '<div class="lt-th-row"><span class="lt-th-lv lt-th-lv-first">新首板</span>';
             newFirst.forEach(function(s) {
-                var tm = (s.first_time && s.first_time < 999999) ? '<i class="lt-th-time">' + _kplLevelFormatTime(s.first_time) + '</i>' : '';
-                html += stk(s, tm + (s.is_restart ? '<i class="lt-th-restart">重启</i>' : ''));
+                html += stk(s, limitInfo(s.code) + (s.is_restart ? '<i class="lt-th-restart">重启</i>' : ''));
             });
             html += '</div>';
         }
@@ -322,7 +330,7 @@ function watchRenderTrajectory(data, bodyId) {
     Object.keys(referenceByTag).forEach(function(t) { (referenceByTag[t] || []).forEach(function(x) { sumCtx.refLimit[x.code] = 1; sumCtx.refAll[x.code] = 1; }); });
     Object.keys(refSurgeByTag).forEach(function(t) { (refSurgeByTag[t] || []).forEach(function(x) { sumCtx.refAll[x.code] = 1; }); });
     Object.keys(stocksByTag).forEach(function(t) {
-        ((stocksByTag[t] && stocksByTag[t][dates[0]]) || []).forEach(function(x) { sumCtx.todayLimit[x.code] = {lianban: x.lianban || 1}; });
+        ((stocksByTag[t] && stocksByTag[t][dates[0]]) || []).forEach(function(x) { sumCtx.todayLimit[x.code] = {lianban: x.lianban || 1, first_time: x.first_time, close_pct: x.close_pct, close_pending: x.close_pending}; });
     });
     var HUES = [212, 350, 38, 138, 270, 18, 178, 320];     // 莫兰迪色相循环（雾蓝/豆沙/沙驼/灰绿/藕紫/陶土/灰青/紫灰），低饱和由 CSS 控制；导航按钮与行标题同色
     // 最新日涨停数 TOP5 → R1~R5（同数量时保持表格顺序）
