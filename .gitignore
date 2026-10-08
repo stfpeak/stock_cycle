@@ -29,3 +29,7 @@ reports/dashboard.html
 .DS_Store
 data/.DS_Store
 reports/.DS_Store
+
+# 实时盯盘：TLS 私钥/证书与日志不进仓库
+watch/certs/
+watch/watch.log

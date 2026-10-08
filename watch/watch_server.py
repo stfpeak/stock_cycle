@@ -14,10 +14,12 @@
   - 把 /api/* 等其余请求原样反向代理到主服务（数据、缓存、盘中刷新都沿用主服务）。
 所以页面本身在 watch/static/ 下独立开发；数据口径变化仍在主服务里改。
 
-环境变量：WATCH_PORT（默认 9999）、WATCH_UPSTREAM（默认 http://127.0.0.1:6688）。
+环境变量：WATCH_PORT（默认 9999）、WATCH_UPSTREAM（默认 http://127.0.0.1:6688）、
+WATCH_CERT / WATCH_KEY（TLS 证书与私钥；默认找 watch/certs/server.crt 与 server.key，两者都存在则自动启用 HTTPS）。
 """
 import os
 import re
+import ssl
 import sys
 import time
 import threading
@@ -30,6 +32,9 @@ PORT = int(os.environ.get('WATCH_PORT', '9999'))
 UPSTREAM = os.environ.get('WATCH_UPSTREAM', 'http://127.0.0.1:6688').rstrip('/')
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
 STATIC_PREFIX = '/watch/static/'
+_CERT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'certs')
+CERT_FILE = os.environ.get('WATCH_CERT') or os.path.join(_CERT_DIR, 'server.crt')
+KEY_FILE = os.environ.get('WATCH_KEY') or os.path.join(_CERT_DIR, 'server.key')
 PAGE_TTL = 30          # 主页面 HTML 缓存秒数（页面是静态模板，数据走 /api）
 
 _session = requests.Session()
@@ -140,10 +145,27 @@ class Handler(BaseHTTPRequestHandler):
     do_GET = do_POST = do_HEAD = _handle
 
 
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        # 扫描器/明文 HTTP 请求打到 HTTPS 端口会触发握手失败，属正常噪声，不打印堆栈
+        if isinstance(sys.exc_info()[1], (ssl.SSLError, ConnectionError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def main():
-    server = ThreadingHTTPServer(('0.0.0.0', PORT), Handler)
-    server.daemon_threads = True
-    _log('实时盯盘服务已启动 0.0.0.0:%d  上游=%s' % (PORT, UPSTREAM))
+    server = _Server(('0.0.0.0', PORT), Handler)
+    scheme = 'http'
+    if os.path.isfile(CERT_FILE) and os.path.isfile(KEY_FILE):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.load_cert_chain(CERT_FILE, KEY_FILE)
+        # 握手放到处理线程里做，避免慢客户端/扫描器卡住 accept 循环
+        server.socket = ctx.wrap_socket(server.socket, server_side=True, do_handshake_on_connect=False)
+        scheme = 'https'
+    _log('实时盯盘服务已启动 %s://0.0.0.0:%d  上游=%s' % (scheme, PORT, UPSTREAM))
     try:
         server.serve_forever()
     except KeyboardInterrupt:
