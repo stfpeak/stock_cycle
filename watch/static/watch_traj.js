@@ -373,12 +373,22 @@ function watchRenderTrajectory(data, bodyId) {
         .filter(function(x) { return x.n > 0; })
         .sort(function(a, b) { return b.n - a.n || a.i - b.i; })
         .slice(0, 5).forEach(function(x, r) { rankOf[x.t] = r + 1; });
+    // 新题材：前一交易日该题材没有出现（无涨停、无大涨），最新日出现（有涨停或大涨）
+    var prevDay = dates[1] || '';
+    var appeared = function(tag, d) {
+        return !!d && (((freqByTag[tag] || {})[d] || 0) > 0 || (((surgeByTag[tag] || {})[d] || []).length > 0));
+    };
+    var isNewTheme = {};
+    sortedTags.forEach(function(t) { if (prevDay && appeared(t, dates[0]) && !appeared(t, prevDay)) isNewTheme[t] = 1; });
+    var newTitle = '新题材：' + prevDay.slice(5) + ' 没有出现，' + dates[0].slice(5) + ' 新出现';
+    var newBadge = function(tag) { return isNewTheme[tag] ? '<span class="lt-new-badge" title="' + newTitle + '">NEW</span>' : ''; };
+    var newMini = function(tag) { return isNewTheme[tag] ? '<span class="lt-new-mini" title="' + newTitle + '"></span>' : ''; };
     var rBadge = function(tag) { return rankOf[tag] ? '<span class="lt-r-badge lt-r-' + rankOf[tag] + '" title="最新日涨停数第 ' + rankOf[tag] + '（' + limitCnt(tag) + ' 只）">R' + rankOf[tag] + '</span>' : ''; };
-    var html = '<div class="lt-theme-nav" id="wtThemeNav"><span class="lt-theme-nav-title">题材导航<small>R1~R5 = 涨停数 TOP5</small></span>';
+    var html = '<div class="lt-theme-nav" id="wtThemeNav"><span class="lt-theme-nav-title">题材导航<small>R1~R5 = 涨停数 TOP5 · 红点 = 新题材</small></span>';
     sortedTags.forEach(function(tag, i) {
         var n = limitCnt(tag);
         html += '<button class="lt-theme-nav-btn' + (rankOf[tag] ? ' lt-nav-top' : '') + '" style="--th-h:' + HUES[i % HUES.length] + '" onclick="watchJumpTheme(' + i + ')" title="跳转到 ' + _kplEsc(tag) + '">' +
-            rBadge(tag) + _kplEsc(tag) + (n ? ' <i>' + n + '</i>' : '') + '</button>';
+            rBadge(tag) + newMini(tag) + _kplEsc(tag) + (n ? ' <i>' + n + '</i>' : '') + '</button>';
     });
     html += '</div>';
     html += '<div class="lt-trajectory-wrapper"><table class="lt-trajectory-matrix">';
@@ -401,7 +411,7 @@ function watchRenderTrajectory(data, bodyId) {
         var total = tagTotals[tag] || 0;
         var dateCounts = freqByTag[tag] || {};
         html += '<tr class="lt-theme-row" id="wt-row-' + tagIdx + '" style="--th-h:' + HUES[tagIdx % HUES.length] + '">';
-        html += '<td class="lt-trajectory-row-header lt-th-cell" title="' + _kplEsc(tag) + ' (共' + total + '次)"><div class="lt-th-name">' + rBadge(tag) + '<span class="lt-tag-link" onclick="event.stopPropagation();switchTab(\x27kplsearch\x27);setTimeout(function(){doKplSearch(\x27' + (tag||'').replace(/'/g,'') + '\x27)},100)">' + _kplEsc(tag) + '</span> <span class="lt-th-total">' + total + '</span></div>' + watchThemeKlineBtn(tag, sumCtx) + watchThemeSummary(tag, sumCtx, bodyId) + watchThemeMarks(tag) + '</td>';
+        html += '<td class="lt-trajectory-row-header lt-th-cell" title="' + _kplEsc(tag) + ' (共' + total + '次)"><div class="lt-th-name">' + newBadge(tag) + rBadge(tag) + '<span class="lt-tag-link" onclick="event.stopPropagation();switchTab(\x27kplsearch\x27);setTimeout(function(){doKplSearch(\x27' + (tag||'').replace(/'/g,'') + '\x27)},100)">' + _kplEsc(tag) + '</span> <span class="lt-th-total">' + total + '</span></div>' + watchThemeKlineBtn(tag, sumCtx) + watchThemeSummary(tag, sumCtx, bodyId) + watchThemeMarks(tag) + '</td>';
         // 连板序号逻辑: 从最右（最旧）到最左（最新），连续出现则递增，断板则重置为1
         var counter = 0;
         var seqMap = {};  // date → counter value
@@ -548,9 +558,13 @@ function watchRenderTrajectory(data, bodyId) {
                             var attr = function(kind) { return ' lt-trajectory-live-' + kind + '" data-code="' + _kplEsc(x.code) + '" data-date="' + _kplEsc(dates[0]); };
                             var liveCur = x.close_pending ? attr('close') : '';
                             var liveOpen = (x.close_pending && ov === null) ? attr('open') : '';
+                            // 近15个交易日内最近一次涨停/大涨：M(+N)，M=当时连板数（大涨记 1），N=断板天数；名称后空一格
+                            var hist = (x.prev_m !== undefined && x.prev_m !== null)
+                                ? '<i class="lt-rise-hist' + (x.prev_m >= 3 ? ' hot' : '') + '" title="' + _kplEsc(x.prev_date.slice(5)) + ' ' + (x.prev_m >= 2 ? x.prev_m + '连板' : '首板/大涨') + '，已断板 ' + x.prev_n + ' 天">' + x.prev_m + '(+' + x.prev_n + ')</i>'
+                                : '<i class="lt-rise-hist"></i>';
                             var px = (x.open_px ? '开盘价 ' + Number(x.open_px).toFixed(2) : '') + (x.price ? ' · 现价 ' + Number(x.price).toFixed(2) : '');
                             html += '<div class="lt-rise-stk" title="' + _kplEsc(rn + ' ' + x.code + (px ? ' · ' + px : '')) + '" onclick="event.stopPropagation();openDsStockFromRhythm(\x27' + rn + '\x27, \x27' + x.code + '\x27, \x27\x27, ' + riseNavRef + '[' + riseNavIdx + '], ' + xi + ')">' +
-                                '<i class="lt-board lt-board-' + watchBoardKey(x.code) + '">' + watchBoardOf(x.code) + '</i><span class="lt-rise-name">' + _kplEsc(rn) + '</span>' +
+                                '<i class="lt-board lt-board-' + watchBoardKey(x.code) + '">' + watchBoardOf(x.code) + '</i><span class="lt-rise-name">' + _kplEsc(rn) + '</span>' + hist +
                                 '<b class="' + (ov === null ? 'lt-change-flat' : pc(ov)) + liveOpen + '">' + fp(ov) + '</b><b class="' + pc(rv) + liveCur + '">' + fp(rv) + '</b></div>';
                         });
                     } else {

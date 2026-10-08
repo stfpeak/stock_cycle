@@ -6913,6 +6913,77 @@ def _trajectory_board_of_code(code):
     return '主'
 
 
+_traj_hist_cache = {}
+_traj_hist_lock = threading.Lock()
+
+
+def _trajectory_hist_index(latest_fmt, window=15):
+    """近 window 个交易日（不含 latest 当日）内，每只股票最近一次涨停/大涨：
+    {code: {'m': 连板数（大涨记 1）, 'n': 断板天数（事件日到 latest 的交易日间隔，次日=1）, 'date': 事件日}}。
+    只用已收盘的历史数据，所以整个 latest 当日（含盘中）结果不变：按 latest 日期缓存一次，盘中不再计算；
+    服务启动后由后台线程提前算好（见 _trajectory_hist_warm_loop）。"""
+    with _traj_hist_lock:
+        got = _traj_hist_cache.get(latest_fmt)
+        if got is not None:
+            return got
+        latest_ymd = latest_fmt.replace('-', '')
+        pos = {d: i for i, d in enumerate(_trading_days)}
+        if latest_ymd not in pos:
+            return {}
+        days = [d for d in _trading_days if d < latest_ymd][-window:]
+        index = {}
+        if days:
+            fmt = lambda d: '%s-%s-%s' % (d[:4], d[4:6], d[6:])
+            _kpl_ensure_loaded(days[0], days[-1])
+            # 大涨：创/科/北 当日涨幅 >10% 且未到涨停价（历史日线）
+            surge_by_day = {}
+            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
+            try:
+                conn = sqlite3.connect(db_path, timeout=5)
+                ph = ','.join('?' * len(days))
+                for code, td, pct in conn.execute(
+                        "SELECT stock_code, trade_date, change_pct FROM kline_daily WHERE trade_date IN (%s) AND change_pct > 10 "
+                        "AND (stock_code LIKE '30%%' OR stock_code LIKE '68%%' OR stock_code LIKE '8%%' "
+                        "OR stock_code LIKE '4%%' OR stock_code LIKE '92%%')" % ph, [fmt(d) for d in days]).fetchall():
+                    code = str(code).zfill(6)
+                    board = _trajectory_board_of_code(code)
+                    if board != '主' and float(pct) < (29.5 if board == '北' else 19.5):
+                        surge_by_day.setdefault(td, set()).add(code)
+                conn.close()
+            except Exception as exc:
+                print('[涨停原因标签轨迹] 近15日大涨股读取失败: %s' % exc)
+            for d in days:          # 升序：越晚的事件越覆盖早的
+                d_fmt = fmt(d)
+                limit_codes = {}
+                for r in _kpl_rows_by_date.get(d_fmt, []):
+                    code = str(r.get('stock_code') or '').zfill(6)
+                    if code and code not in limit_codes:
+                        limit_codes[code] = max(1, int(_kpl_compute_lianban(code, d_fmt) or 1))
+                for code in surge_by_day.get(d_fmt, ()):
+                    if code not in limit_codes:
+                        index[code] = {'m': 1, 'n': pos[latest_ymd] - pos[d], 'date': d_fmt}
+                for code, lb in limit_codes.items():
+                    index[code] = {'m': lb, 'n': pos[latest_ymd] - pos[d], 'date': d_fmt}
+        for old in list(_traj_hist_cache)[:-2]:      # 只留最近几个交易日的结果
+            _traj_hist_cache.pop(old, None)
+        _traj_hist_cache[latest_fmt] = index
+        return index
+
+
+def _trajectory_hist_warm_loop():
+    """提前算好「近15日涨停/大涨」索引：启动后稍等 KPL 数据就绪即算一次，之后每 10 分钟检查是否换了交易日。"""
+    time.sleep(45)
+    while True:
+        try:
+            ymd = _traj_anchor_ymd()
+            idx = _trajectory_hist_index('%s-%s-%s' % (ymd[:4], ymd[4:6], ymd[6:]))
+            if idx:
+                print('[轨迹] 近15日涨停/大涨索引已就绪: %s 只股票' % len(idx))
+        except Exception as exc:
+            print('[轨迹] 近15日索引预计算失败: %s' % exc)
+        time.sleep(600)
+
+
 def _trajectory_surge_candidates(dates_fmt, limit_codes_by_date):
     """创业板/科创板/北交所 当日涨幅 >10% 且未涨停的「大涨」股，返回 {date: {code: {'name','change_pct'}}}。
     历史日读本地日线；今日盘中以全市场实时行情（与注意力看板共用 45s 缓存）为准。
@@ -7064,7 +7135,7 @@ def _trajectory_decline_board(date_fmt, prev_limit_codes, threshold=-5.0):
     return board
 
 
-def _trajectory_attach_surge(date_codes, tag_totals, price_by_date, live_date_fmt, close_pending, kind='surge', per_tag_cap=0):
+def _trajectory_attach_surge(date_codes, tag_totals, price_by_date, live_date_fmt, close_pending, kind='surge', per_tag_cap=0, hist=None):
     """把大涨(kind=surge)/未涨停涨幅>2%(kind=rise)的股票挂到轨迹已有题材行：按行总涨停次数取前 2 个行，无匹配则不展示。
     返回 {date: {tag: [stock]}}，stock 字段与涨停股一致，另带 is_surge/is_rise/change_pct/board。"""
     out = {}
@@ -7095,6 +7166,9 @@ def _trajectory_attach_surge(date_codes, tag_totals, price_by_date, live_date_fm
                     stock['open_pct'] = info['open_pct']
                 stock['price'] = info.get('price')
                 stock['open_px'] = info.get('open_px')
+                h = (hist or {}).get(code)
+                if h:   # 近15日内最近一次涨停/大涨：M=连板数(大涨=1)，N=断板天数
+                    stock['prev_m'], stock['prev_n'], stock['prev_date'] = h['m'], h['n'], h['date']
             for tag in tags:
                 out.setdefault(d, {}).setdefault(tag, []).append(stock)
     for tags in out.values():
@@ -42025,7 +42099,7 @@ class Handler(BaseHTTPRequestHandler):
                             rise_prices = _trajectory_daily_change_pct({latest_fmt: list(rise_cand.keys())})
                             rise_attached = _trajectory_attach_surge(
                                 {latest_fmt: rise_cand}, tag_totals, rise_prices, live_date_fmt, close_pending,
-                                kind='rise', per_tag_cap=30)
+                                kind='rise', per_tag_cap=30, hist=_trajectory_hist_index(latest_fmt))
                             rise_by_tag = rise_attached.get(latest_fmt, {})
                     result['rise_by_tag'] = rise_by_tag
                     # 参考列股票：cur_pct=最新日当前涨跌幅（盘中全市场实时，否则收盘），供前端按 晋级/阳线 | 阴线 分栏排序
@@ -44657,6 +44731,7 @@ def main():
         # 题材强弱矩阵独立维护：盘中每分钟覆盖当日日快照，后台补齐近20日历史。
         threading.Thread(target=_theme_strength_matrix_live_loop, daemon=True),
         threading.Thread(target=_theme_strength_matrix_backfill_loop, daemon=True),
+        threading.Thread(target=_trajectory_hist_warm_loop, daemon=True),   # 提前算好「近15日涨停/大涨」索引（盯盘页未涨停>2%的 M(+N)）
         # 市场结构/连板联动由前端在首屏完成后按 20日 → 30日 → 联动顺序预热。
         # 不在服务启动时与首屏高频任务并发，避免用户刚切页时排队等待同一把构建锁。
         # 旧版实时增量/收盘推送已取消；只保留“完整细分题材晋级快照”。
