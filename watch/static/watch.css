@@ -267,3 +267,15 @@
 .lt-rise-stk > b:nth-of-type(1) { grid-column: 5; }
 .lt-rise-stk > b:nth-of-type(2) { grid-column: 6; }
 .lt-trajectory-matrix .lt-rise-stk > b { margin: 0 !important; justify-self: stretch; }   /* 价格块撑满各自固定列，上下行完全对齐 */
+
+/* ===== 大盘指数卡片 ===== */
+.wi-ts { margin-left: 10px; font-size: 0.8em; font-weight: 400; color: #8b98b0; }
+.wi-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.wi-card { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border-radius: 10px; background: rgba(15,52,96,0.22); border: 1px solid rgba(255,255,255,0.1); }
+.wi-name { font-size: 0.82em; color: #b6c2d9; }
+.wi-pct { font-size: 1.35em; font-weight: 800; font-variant-numeric: tabular-nums; }
+.wi-px { font-size: 0.8em; color: #9fb0cc; font-variant-numeric: tabular-nums; }
+.wi-px i { font-style: normal; margin-left: 4px; }
+.wi-up { border-color: rgba(255,77,79,0.45); } .wi-up .wi-pct, .wi-up .wi-px i { color: #ff4d4f; }
+.wi-down { border-color: rgba(46,230,107,0.45); } .wi-down .wi-pct, .wi-down .wi-px i { color: #2ee66b; }
+.wi-flat .wi-pct { color: #cbd5e1; }

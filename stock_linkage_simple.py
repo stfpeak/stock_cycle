@@ -6877,6 +6877,17 @@ def _trajectory_daily_change_pct(codes_by_date):
     finally:
         if conn is not None:
             conn.close()
+    # 日线库还没补入的交易日（收盘后到次日补库前）：用收盘落盘快照兜底
+    for trade_date, day_codes in (codes_by_date or {}).items():
+        snap = _close_snapshot_get(trade_date)
+        if not snap:
+            continue
+        dp = result.setdefault(trade_date, {})
+        for code in set(str(c).zfill(6) for c in day_codes if c):
+            if code in dp or code not in snap:
+                continue
+            _n, op, cl, pc, pct = snap[code]
+            dp[code] = {'open_pct': round((op / pc - 1) * 100, 2) if op and pc and op > 0 and pc > 0 else None, 'close_pct': pct}
     return result
 
 
@@ -6984,6 +6995,71 @@ def _em_full_market():
     return list(rows.values())
 
 
+_CLOSE_SNAP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'live_close')
+_close_snap_mem = {}
+
+
+def _close_snapshot_get(date_fmt):
+    """读取某交易日收盘后落盘的全市场快照 {code: (name, open, close, pre_close, change_pct)}；
+    日线库(kline_daily)尚未补入该日时，盯盘页用它显示收盘状态。无文件返回 {}。"""
+    if not date_fmt:
+        return {}
+    got = _close_snap_mem.get(date_fmt)
+    if got is not None:
+        return got
+    path = os.path.join(_CLOSE_SNAP_DIR, date_fmt + '.json')
+    data = {}
+    try:
+        with open(path, 'r', encoding='utf-8') as fh:
+            data = {k: tuple(v) for k, v in json.load(fh).items()}
+    except (OSError, ValueError):
+        return {}
+    _close_snap_mem[date_fmt] = data
+    return data
+
+
+def _close_snapshot_save(date_fmt):
+    """把刚取到的全市场快照落盘为当日收盘状态（原子写）。快照必须是 15:00 之后取的才有效。"""
+    rows = _live_market['rows']
+    if not rows:
+        return False
+    snap_bj = datetime.fromtimestamp(_live_market['ts'], timezone(timedelta(hours=8)))
+    if snap_bj.strftime('%Y-%m-%d') != date_fmt or snap_bj.hour * 60 + snap_bj.minute < 902:
+        return False      # 快照不是当日 15:02 之后取的（可能是盘中旧快照），不落盘
+    data = {}
+    for r in rows:
+        pct, cl, pc = _traj_num(r.get('change_pct')), _traj_num(r.get('price')), _traj_num(r.get('pre_close'))
+        if pct is None or not cl or cl <= 0:
+            continue
+        data[r['stock_code']] = [r.get('stock_name') or '', _traj_num(r.get('open')), cl, pc, pct]
+    if len(data) < 4000:
+        return False
+    os.makedirs(_CLOSE_SNAP_DIR, exist_ok=True)
+    path = os.path.join(_CLOSE_SNAP_DIR, date_fmt + '.json')
+    with open(path + '.tmp', 'w', encoding='utf-8') as fh:
+        json.dump(data, fh, ensure_ascii=False)
+    os.replace(path + '.tmp', path)
+    _close_snap_mem.pop(date_fmt, None)
+    print('[收盘落盘] %s 全市场快照 %d 只 → %s' % (date_fmt, len(data), path))
+    return True
+
+
+def _live_rows_fill_auction(rows):
+    """集合竞价/刚开盘时数据源的 price、open 可能为 0：用竞价匹配价补 price（再用它补 open），并按昨收重算涨幅，
+    保证 9:15 起每只股票都有价格可显示（正式开盘价出现后自动以真实值为准）。"""
+    for r in rows:
+        pre = _traj_num(r.get('pre_close'))
+        if not pre or pre <= 0:
+            continue
+        price, op = _traj_num(r.get('price')), _traj_num(r.get('open'))
+        if (price is None or price <= 0) and op and op > 0:
+            r['price'] = price = op
+            r['change_pct'] = round((op / pre - 1) * 100, 2)
+        elif (op is None or op <= 0) and price and price > 0:
+            r['open'] = price
+    return rows
+
+
 def _trajectory_movers_refresh():
     """刷新一次全市场快照（新浪 → 东财镜像）；失败保留上一份快照，只记录错误。返回是否成功。"""
     if not _live_market_lock.acquire(blocking=False):
@@ -6993,7 +7069,7 @@ def _trajectory_movers_refresh():
         for name, fn in (('sina', _sina_full_market), ('eastmoney', _em_full_market)):
             try:
                 t0 = time.time()
-                rows = fn()
+                rows = _live_rows_fill_auction(fn())
                 _live_market.update(rows=rows, by_code={r['stock_code']: r for r in rows}, ts=time.time(), src=name, err='')
                 print('[盘中全市场] %s %d 只 %.1fs' % (name, len(rows), time.time() - t0))
                 return True
@@ -7036,14 +7112,23 @@ def _trajectory_movers_loop():
     time.sleep(10)
     while True:
         try:
-            if _is_trading_hours():
+            if _is_live_quote_hours():
                 t0 = time.time()
                 _trajectory_movers_refresh()
                 time.sleep(max(2.0, _LIVE_REFRESH_SEC - (time.time() - t0)))
                 continue
+            # 收盘后（交易日 15:03 起）取一次最终全市场快照并落盘；已落盘则不再联网，非交易日/盘前也不请求
+            n0 = _bj_now()
+            day_fmt = n0.strftime('%Y-%m-%d')
+            if (n0.strftime('%Y%m%d') in _trading_days and n0.hour * 60 + n0.minute >= 903
+                    and not os.path.exists(os.path.join(_CLOSE_SNAP_DIR, day_fmt + '.json'))):
+                _trajectory_movers_refresh()
+                if not _close_snapshot_save(day_fmt):
+                    print('[收盘落盘] 快照不完整，60s 后重试')
         except Exception as exc:
             print('[盘中全市场] 线程异常: %s' % exc)
-        time.sleep(60)
+        n = _bj_now()
+        time.sleep(10 if 9 * 60 + 10 <= n.hour * 60 + n.minute < 9 * 60 + 16 else 60)   # 临近 9:15 缩短检查间隔，竞价一开始就取数
 
 
 def _trajectory_board_of_code(code):
@@ -7216,7 +7301,7 @@ def _trajectory_decline_board(date_fmt, prev_limit_codes, threshold=-5.0):
     if not date_fmt:
         return board
     rows = {}
-    live = date_fmt == _bj_now().strftime('%Y-%m-%d') and _is_trading_hours()
+    live = date_fmt == _bj_now().strftime('%Y-%m-%d') and _is_live_quote_hours()
     if live:
         live_rows = _trajectory_live_market_rows()
         for row in live_rows or []:
@@ -7237,6 +7322,10 @@ def _trajectory_decline_board(date_fmt, prev_limit_codes, threshold=-5.0):
             conn.close()
         except Exception as exc:
             print('[涨停原因标签轨迹] 跌幅股读取失败: %s' % exc)
+        if not rows:
+            for code, v in _close_snapshot_get(date_fmt).items():
+                if v[4] < threshold:
+                    rows[code] = (v[0], float(v[4]))
     themes = {}
     total = 0
     for code, (name, pct) in rows.items():
@@ -7314,7 +7403,7 @@ def _trajectory_rise_candidates(date_fmt, skip_codes):
     """最新日「未涨停但涨幅>2%」的股票 {code: {'name','change_pct'}}（主/创/科/北，剔除 ST）。
     创/科/北 涨幅>10% 归「大涨」，主板达涨停价归涨停，均不在此列。盘中取全市场实时行情，否则读本地日线。"""
     rows = {}
-    live = date_fmt == _bj_now().strftime('%Y-%m-%d') and _is_trading_hours()
+    live = date_fmt == _bj_now().strftime('%Y-%m-%d') and _is_live_quote_hours()
     if live:
         live_rows = _trajectory_live_market_rows()
         for row in live_rows or []:
@@ -7340,6 +7429,10 @@ def _trajectory_rise_candidates(date_fmt, skip_codes):
             conn.close()
         except Exception as exc:
             print('[涨停原因标签轨迹] 涨幅>2%%股票读取失败: %s' % exc)
+        if not rows:
+            for code, (nm, op, cl, pc, pct) in _close_snapshot_get(date_fmt).items():
+                if pct > 2:
+                    rows[code] = (nm, float(pct), round((op / pc - 1) * 100, 2) if op and pc and op > 0 and pc > 0 else None, cl, op)
     out = {}
     for code, (name, pct, open_pct, price, open_px) in rows.items():
         if len(code) != 6 or not code.isdigit() or code in skip_codes or not (2 < pct):
@@ -11992,6 +12085,13 @@ def _is_trading_hours():
     now = datetime.now(timezone(timedelta(hours=8)))
     total = now.hour * 60 + now.minute
     return now.strftime('%Y%m%d') in _trading_days and 565 <= total < 900
+
+
+def _is_live_quote_hours():
+    """实时报价时段：北京交易日 9:15~15:00（含集合竞价，盯盘页从竞价起就要有价格）。"""
+    now = datetime.now(timezone(timedelta(hours=8)))
+    total = now.hour * 60 + now.minute
+    return now.strftime('%Y%m%d') in _trading_days and 555 <= total < 900
 
 
 def _bj_now():
@@ -41593,7 +41693,7 @@ class Handler(BaseHTTPRequestHandler):
             codes = sorted(set(c.strip() for c in query.get('codes', [''])[0].split(',')
                                if len(c.strip()) == 6 and c.strip().isdigit()))
             today_fmt = _bj_now().strftime('%Y-%m-%d')
-            live = bool(date_fmt == today_fmt and _is_trading_hours())
+            live = bool(date_fmt == today_fmt and _is_live_quote_hours())
             quotes = {}
             if codes and live:
                 for code, quote in _live_quotes_for_codes(codes).items():   # 全市场快照（30s 刷新），缺失的代码再走实时报价
@@ -41999,7 +42099,7 @@ class Handler(BaseHTTPRequestHandler):
             de = date_end.replace('-', '') if date_end else None
             want_surge = query.get('surge', ['0'])[0] == '1'   # 实时盯盘页专用：附带创/科/北大涨股（>10%，未涨停）
             cache_key = 'ladder_trajectory_%s_%s_%s%s' % (n, ds or '', de or '', '_surge' if want_surge else '')
-            result = _get_cached(cache_key, ttl=(15 if want_surge else 30) if _is_trading_hours() else 120)
+            result = _get_cached(cache_key, ttl=(15 if want_surge else 30) if _is_live_quote_hours() else 120)
             if result is None:
                 _kpl_ensure_loaded()
                 today_ymd = _traj_anchor_ymd()   # 非交易日/未开盘回退上一交易日，防 0908 假未来列=昨日拷贝
@@ -42040,7 +42140,7 @@ class Handler(BaseHTTPRequestHandler):
                     d_fmt: list(code_info.keys()) for d_fmt, code_info in all_entries.items()
                 })
                 live_date_fmt = _bj_now().strftime('%Y-%m-%d')
-                close_pending = _is_trading_hours()
+                close_pending = _is_live_quote_hours()
                 for d_fmt, code_info in all_entries.items():
                     day_prices = daily_change_pct.get(d_fmt, {})
                     for sc, info in code_info.items():
@@ -42226,6 +42326,22 @@ class Handler(BaseHTTPRequestHandler):
                                 kind='rise', per_tag_cap=30, hist=_trajectory_hist_index(latest_fmt))
                             rise_by_tag = rise_attached.get(latest_fmt, {})
                     result['rise_by_tag'] = rise_by_tag
+                    # 最新日涨停/大涨卡片：盘中直接带上实时涨幅 cur_pct（开盘涨幅缺失时用实时开盘补），前端首屏即显示，不再先出「待收盘」
+                    if recent_fmt and close_pending and recent_fmt[-1] == live_date_fmt:
+                        latest_chips = [st for src in (sorted_stocks, surge_by_tag) for lst in src.values()
+                                        for st in (lst.get(recent_fmt[-1]) or [])]
+                        if latest_chips:
+                            lq = _live_quotes_for_codes(sorted({st['code'] for st in latest_chips}))
+                            for st in latest_chips:
+                                q = lq.get(st['code'])
+                                pct = _traj_num(q.get('change_pct')) if q else None
+                                if pct is None:
+                                    continue
+                                st['cur_pct'] = pct
+                                if st.get('open_pct') is None:
+                                    op, pc = _traj_num(q.get('open')), _traj_num(q.get('prev_close'))
+                                    if op and pc and op > 0 and pc > 0:
+                                        st['open_pct'] = round((op / pc - 1) * 100, 2)
                     # 参考列股票：cur_pct=最新日当前涨跌幅（盘中全市场实时，否则收盘），供前端按 晋级/阳线 | 阴线 分栏排序
                     if reference_date:
                         live_ref = {}
@@ -42251,7 +42367,9 @@ class Handler(BaseHTTPRequestHandler):
                     # 题材按平均跌幅从大到小排，无 KPL 题材的归入末尾「未归类」。盘中取全市场实时涨幅，否则读本地日线。
                     result['decline'] = _trajectory_decline_board(
                         recent_fmt[-1] if recent_fmt else '', limit_codes.get(reference_date, set()) if reference_date else set())
-                _set_cache(cache_key, result)
+                # 最新日没有任何涨停记录（启动期 KPL 日文件还在补拉/重建）时不缓存，避免把「只剩大涨/涨幅>2%」的残缺结果缓存 2 分钟
+                if not (recent_fmt and not all_entries.get(recent_fmt[-1])):
+                    _set_cache(cache_key, result)
             self._respond_json(result, cors_headers)
 
         elif path == '/api/ladder_trajectory_lianban':

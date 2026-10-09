@@ -10,6 +10,26 @@
     var REFRESH_MS = 30000;          // 全页统一刷新周期
     var lastStrength = '--';
 
+    // —— 刷新窗口：仅「交易日 9:15~15:00」。非交易日 / 盘前 / 盘后不做任何定时请求，页面停在上一交易日收盘落盘状态 ——
+    // 交易日判断问主服务（/api/ladder_dates?n=1 在交易日 9:00 后返回今天），按日期缓存；问到之前按「非交易日」处理，不刷新。
+    var tradingDay = {date: '', ok: false, pending: false};
+    function bjDateStr() { var d = bjNow(); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+    function ensureTradingDay() {
+        var today = bjDateStr();
+        if (tradingDay.date === today || tradingDay.pending) return;
+        tradingDay.pending = true;
+        fetch('/api/ladder_dates?n=1&_t=' + Date.now()).then(function (r) { return r.json(); }).then(function (a) {
+            if (bjNow().getHours() >= 9) { tradingDay.date = today; tradingDay.ok = !!(a && a[a.length - 1] === today); }
+        }).catch(function () {}).then(function () { tradingDay.pending = false; });
+    }
+    window._twsRefreshGate = function () {
+        var n = new Date();
+        var t = ((n.getUTCHours() + 8) % 24) * 60 + n.getUTCMinutes();
+        if (t < 555 || t >= 900) return false;
+        ensureTradingDay();
+        return tradingDay.date === bjDateStr() && tradingDay.ok;
+    };
+
     // —— 关闭主页面自带的 60s 轮询（_twsRefreshBoardLive 有 55s 节流，且不刷新板块强度表）——
     window._twsStartPoll = function () {};
     window._twsPoll = function () {};
@@ -46,6 +66,7 @@
     function fmtClock(d) { return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }
 
     var lastTraj = '--';
+    var wasLive = false;
 
     function renderShell(root) {
         root.innerHTML =
@@ -64,8 +85,14 @@
               '</div>' +
               '<div class="wb-foot"><span>板块 / 时间轴 / 晋级 更新 <b id="watchStrengthTs">--</b></span>' +
                 '<span>跌幅 / 轨迹 更新 <b id="watchTrajTs">--</b></span>' +
-                '<span class="wb-foot-note">全页每 30s 刷新 · 仅 9:25~15:00 自动刷新</span></div>' +
+                '<span class="wb-foot-note">全页每 30s 刷新 · 仅 9:15~15:00 自动刷新</span></div>' +
             '</header>' +
+
+            '<div class="rt-section lt-trajectory-section" id="watchIndexSection">' +
+            '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ffd700;">📊 大盘指数 ' +
+            '<span class="rt-refresh-icon" onclick="watchRefreshIndices()" title="刷新">↻</span>' +
+            '<span class="wi-ts" id="watchIndexTs"></span></h3>' +
+            '<div id="watchIndexBody" class="wi-body"><div class="lt-trajectory-loading">加载中...</div></div></div>' +
 
             '<div class="rt-section lt-trajectory-section" id="twWindStrengthSection">' +
             '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#ffd700;">⚡ 精选板块强度 · Top10细分题材卡片 ' +
@@ -94,8 +121,10 @@
         c.textContent = fmtClock(bjNow());
         var live = _twsRefreshGate();
         var s = document.getElementById('watchState');
-        s.textContent = live ? '盘中 · 自动刷新中' : '非交易时段 · 暂停自动刷新';
+        s.textContent = live ? '盘中 · 自动刷新中' : '非交易时段 · 暂停刷新，显示最近交易日收盘状态';
         s.className = 'watch-state' + (live ? ' live' : '');
+        if (live && !wasLive) setTimeout(tick, 0);       // 刚进入盘中（9:15）立即刷新一次，不等下一个 30s
+        wasLive = live;
     }
 
     window.watchRefreshTrajectory = function () {
@@ -139,6 +168,28 @@
             else console.error('刷新板块强度失败:', e);
         });
     }
+    // 大盘指数卡片：/api/market_sentiment 的 indices（上证/深成/创业板/科创50/沪深300/中证500）；失败时保留上一次内容
+    window.watchRefreshIndices = function () {
+        return fetch('/api/market_sentiment?_t=' + Date.now())
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                var list = (d && d.indices) || [];
+                var body = document.getElementById('watchIndexBody');
+                if (!body || !list.length) return;
+                body.innerHTML = list.map(function (x) {
+                    var pct = Number(x.change_pct), amt = Number(x.change_amt);
+                    var cls = !isFinite(pct) || pct === 0 ? 'flat' : (pct > 0 ? 'up' : 'down');
+                    var sg = pct > 0 ? '+' : '';
+                    return '<div class="wi-card wi-' + cls + '"><span class="wi-name">' + _kplEsc(x.name) + '</span>' +
+                        '<b class="wi-pct">' + (isFinite(pct) ? sg + pct.toFixed(2) + '%' : '--') + '</b>' +
+                        '<span class="wi-px">' + (isFinite(Number(x.price)) ? Number(x.price).toFixed(2) : '--') +
+                        (isFinite(amt) ? ' <i>' + (amt > 0 ? '+' : '') + amt.toFixed(2) + '</i>' : '') + '</span></div>';
+                }).join('');
+                var ts = document.getElementById('watchIndexTs');
+                if (ts) ts.textContent = (d.data_date ? d.data_date + ' · ' : '') + '更新 ' + fmtClock(bjNow());
+            })
+            .catch(function (e) { console.error('刷新大盘指数失败:', e); });
+    };
     // 「跌幅」卡片默认折叠，点标题展开；折叠时标题上仍显示股票数/题材数
     window.watchToggleDecline = function () {
         var body = document.getElementById('watchDeclineBody'), arrow = document.getElementById('watchDeclineArrow');
@@ -155,6 +206,7 @@
         if (!_twsRefreshGate() || document.hidden) return;
         refreshStrength(false);
         watchRefreshTrajectory();
+        watchRefreshIndices();
         var modal = document.getElementById('tmmThemeKlineModal');
         if (modal && modal.classList.contains('active') && typeof refreshTmmThemeKlines === 'function') refreshTmmThemeKlines();
     }
@@ -178,6 +230,7 @@
         setInterval(tickBar, 1000);
         refreshStrength(true);
         watchRefreshTrajectory();
+        watchRefreshIndices();
         setInterval(tick, REFRESH_MS);
         document.addEventListener('visibilitychange', function () { if (!document.hidden) tick(); });
     }

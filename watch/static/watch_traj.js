@@ -285,6 +285,8 @@ function watchPollLivePct() {
                 if (el.getAttribute('data-date') !== date) continue;
                 var q = quotes[el.getAttribute('data-code') || ''];
                 if (!q) continue;
+                window._watchQuoteCache = window._watchQuoteCache || {};
+                window._watchQuoteCache[el.getAttribute('data-code')] = {open_pct: q.open_pct, change_pct: q.change_pct};
                 if (el.classList.contains('lt-trajectory-live-open') && q.open_pct !== null && q.open_pct !== undefined && isFinite(Number(q.open_pct))) {
                     var openPct = Number(q.open_pct);
                     el.textContent = (openPct > 0 ? '+' : '') + openPct.toFixed(2) + '%';
@@ -638,15 +640,20 @@ function watchRenderTrajectory(data, bodyId) {
                             var n = Number(value);
                             return n > 0 ? 'lt-change-up' : (n < 0 ? 'lt-change-down' : 'lt-change-flat');
                         };
-                        var openText = fmtPct(s.open_pct);
-                        var closeText = s.close_pending ? '待收盘' : fmtPct(s.close_pct);
-                        var closeClass = s.close_pending ? 'lt-change-pending' : pctClass(s.close_pct);
+                        // 盘中：服务端带的实时涨幅(cur_pct) → 本页上一轮轮询缓存，都没有才显示「待收盘」；新数据到达即替换，不出现空档
+                        var qc = (window._watchQuoteCache || {})[sCode] || {};
+                        var hasNum = function(v) { return v !== null && v !== undefined && v !== '' && isFinite(Number(v)); };
+                        var openVal = hasNum(s.open_pct) ? s.open_pct : (s.close_pending && hasNum(qc.open_pct) ? qc.open_pct : null);
+                        var liveVal = !s.close_pending ? s.close_pct : (hasNum(s.cur_pct) ? s.cur_pct : (hasNum(qc.change_pct) ? qc.change_pct : null));
+                        var openText = fmtPct(openVal);
+                        var closeText = (s.close_pending && !hasNum(liveVal)) ? '待收盘' : fmtPct(liveVal);
+                        var closeClass = (s.close_pending && !hasNum(liveVal)) ? 'lt-change-pending' : pctClass(liveVal);
                         var priceDate = col.isReference ? dates[0] : d;
-                        var openPending = s.close_pending && (s.open_pct === null || s.open_pct === undefined);
+                        var openPending = s.close_pending && !hasNum(s.open_pct);
                         var liveOpenAttrs = openPending ? ' lt-trajectory-live-open" data-code="' + _kplEsc(sCode) + '" data-date="' + _kplEsc(priceDate) : '';
                         var liveCloseAttrs = s.close_pending ? ' lt-trajectory-live-close" data-code="' + _kplEsc(sCode) + '" data-date="' + _kplEsc(priceDate) : '';
                         var priceLine = '<span class="lt-cell-stock-ohlc" title="' + _kplEsc(priceDate) + ' 开盘涨跌幅 / 收盘涨跌幅">' +
-                            '<em>开</em><b class="' + pctClass(s.open_pct) + liveOpenAttrs + '">' + openText + '</b><i class="lt-ohlc-divider">·</i><em>收</em><b class="' + closeClass + liveCloseAttrs + '">' + closeText + '</b></span>';
+                            '<em>开</em><b class="' + pctClass(openVal) + liveOpenAttrs + '">' + openText + '</b><i class="lt-ohlc-divider">·</i><em>收</em><b class="' + closeClass + liveCloseAttrs + '">' + closeText + '</b></span>';
                         html += '<span class="' + chipCls + '" data-code="' + _kplEsc(sCode) + '" data-surge="' + (s.is_surge ? 1 : 0) + '" data-pct="' + (refPctNow === null || refPctNow === undefined ? '' : refPctNow) + '" title="' + _kplEsc(sName + ' · 开 ' + openText + ' · 收 ' + closeText) + '" onclick="event.stopPropagation();openDsStockFromRhythm(\x27' + sName + '\x27, \x27' + sCode + '\x27, \x27\x27, ' + navRef + '[' + navIdx + '], ' + si + ')">' +
                             '<span class="lt-cell-stock-main">' + boardMark + _kplEsc(sName) + cellTm + (s.is_surge ? ' <b class="lt-surge-b">大涨</b>' : ' <b>' + s.lianban + '板</b>') + miniTags + restartMark + '</span>' + priceLine + flagHtml + '</span>';
                     }
@@ -660,8 +667,9 @@ function watchRenderTrajectory(data, bodyId) {
                         var riseNavRef = bodyId ? ('_ltTrajNavById[\x27' + bodyId + '\x27]') : '_ltTrajectoryStockNavs';
                         riseStocks.forEach(function(x, xi) {
                             var rn = (x.name || '').replace(/'/g, '');
+                            var xq = (window._watchQuoteCache || {})[x.code] || {};
                             var rv = Number(x.change_pct);
-                            var ov = (x.open_pct === null || x.open_pct === undefined) ? null : Number(x.open_pct);
+                            var ov = (x.open_pct === null || x.open_pct === undefined) ? (xq.open_pct === undefined || xq.open_pct === null ? null : Number(xq.open_pct)) : Number(x.open_pct);
                             var pc = function(v) { return v > 0 ? 'lt-change-up' : (v < 0 ? 'lt-change-down' : 'lt-change-flat'); };
                             var fp = function(v) { return (v === null || !isFinite(v)) ? '--' : (v > 0 ? '+' : '') + v.toFixed(2) + '%'; };
                             var attr = function(kind) { return ' lt-trajectory-live-' + kind + '" data-code="' + _kplEsc(x.code) + '" data-date="' + _kplEsc(dates[0]); };

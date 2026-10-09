@@ -92,13 +92,33 @@ def _is_text(ctype):
     return any((ctype or '').startswith(t) for t in _TEXT_TYPES)
 
 
+_trading_day_cache = {'date': None, 'ok': False}
+
+
+def _is_trading_day_today():
+    """今天是否 A 股交易日：问主服务（它有交易日历；/api/ladder_dates 在交易日 9:00 后返回今天）。每个日期只成功问一次；
+    问不到时按「工作日」兜底并在下次重试。"""
+    now = datetime.now(timezone(timedelta(hours=8)))
+    today = now.strftime('%Y-%m-%d')
+    if _trading_day_cache['date'] == today:
+        return _trading_day_cache['ok']
+    try:
+        r = _session.get(UPSTREAM + '/api/ladder_dates?n=1', timeout=5)
+        ok = r.status_code == 200 and r.json()[-1:] == [today]
+        if now.hour >= 9:             # 9:00 前主服务返回的是上一交易日，不能据此定论
+            _trading_day_cache.update(date=today, ok=ok)
+        return ok
+    except Exception:
+        return now.weekday() < 5
+
+
 def _bj_trading_now():
-    """北京时间工作日 9:15~15:05（不含节假日判断，仅用于决定是否主动刷新，误判无副作用）。"""
+    """北京时间交易日 9:15~15:05：仅用于决定是否主动刷新；非交易日（周末/节假日）一律 False，不做任何后台请求。"""
     now = datetime.now(timezone(timedelta(hours=8)))
     if now.weekday() >= 5:
         return False
     m = now.hour * 60 + now.minute
-    return 9 * 60 + 15 <= m <= 15 * 60 + 5
+    return 9 * 60 + 15 <= m <= 15 * 60 + 5 and _is_trading_day_today()
 
 
 # ============================== 主页面 ==============================
