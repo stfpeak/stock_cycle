@@ -205,6 +205,113 @@ function watchToggleMark(btn) {
     try { localStorage.setItem(_WATCH_MARK_KEY, JSON.stringify(_watchMarks)); } catch (e) {}
 }
 
+/* 参考列实时分栏：拿到实时涨幅后，卡片立刻在「晋级/阳线（左，涨幅高→低）」与「阴线（右，跌幅大→小）」之间换位，
+ * 不必等下一次 30s 整体重绘；每栏内昨日涨停与昨日大涨仍上下分开、中间空一行。口径与渲染器里的分栏完全一致。 */
+function watchRebalanceRef() {
+    var live = window._watchLiveQuotes || {}, limit = window._watchTodayLimit || {};
+    document.querySelectorAll('td.lt-col-ref').forEach(function(td) {
+        var left = td.querySelector('.lt-latest-left'), right = td.querySelector('.lt-latest-right');
+        if (!left || !right) return;
+        var chips = [].slice.call(td.querySelectorAll('.lt-cell-stock'));
+        if (!chips.length) return;
+        var val = function(c) {
+            var code = c.getAttribute('data-code');
+            if (live[code] !== undefined) return live[code];
+            var v = parseFloat(c.getAttribute('data-pct'));
+            return isFinite(v) ? v : null;
+        };
+        var promoted = function(c) { return !!limit[c.getAttribute('data-code')]; };
+        var keyL = function(c) { return promoted(c) ? 1000 + (val(c) || 0) : (val(c) === null ? -1000 : val(c)); };
+        var L1 = [], L2 = [], R1 = [], R2 = [];       // 左涨停/左大涨/右涨停/右大涨
+        chips.forEach(function(c) {
+            var v = val(c), toLeft = promoted(c) || v === null || v >= 0, sur = c.getAttribute('data-surge') === '1';
+            (toLeft ? (sur ? L2 : L1) : (sur ? R2 : R1)).push(c);
+        });
+        var byGain = function(a, b) { return keyL(b) - keyL(a); }, byDrop = function(a, b) { return val(a) - val(b); };
+        L1.sort(byGain); L2.sort(byGain); R1.sort(byDrop); R2.sort(byDrop);
+        var sig = [L1, L2, R1, R2].map(function(g) { return g.map(function(c) { return c.getAttribute('data-code'); }).join(','); }).join('|');
+        if (td._refSig === sig) return;               // 顺序没变，不动 DOM
+        td._refSig = sig;
+        var box = function(panel) {
+            var b = panel.querySelector('.lt-cell-stocks');
+            if (!b) {
+                var empty = panel.querySelector('.lt-rise-empty'); if (empty) empty.remove();
+                b = document.createElement('div'); b.className = 'lt-cell-stocks'; panel.appendChild(b);
+            }
+            b.textContent = '';
+            return b;
+        };
+        var fill = function(panel, g1, g2) {
+            var n = g1.length + g2.length;
+            if (!n) {
+                var old = panel.querySelector('.lt-cell-stocks'); if (old) old.remove();
+                if (!panel.querySelector('.lt-rise-empty')) { var e = document.createElement('div'); e.className = 'lt-rise-empty'; e.textContent = '—'; panel.appendChild(e); }
+                return 0;
+            }
+            var b = box(panel);
+            g1.forEach(function(c) { b.appendChild(c); });
+            if (g1.length && g2.length) { var sp = document.createElement('div'); sp.className = 'lt-ref-spacer'; b.appendChild(sp); }
+            g2.forEach(function(c) { b.appendChild(c); });
+            return n;
+        };
+        var nl = fill(left, L1, L2), nr = fill(right, R1, R2);
+        var lt = left.querySelector('.lt-sub-title'), rt = right.querySelector('.lt-sub-title');
+        if (lt) lt.textContent = '晋级 / 阳线 · ' + nl;
+        if (rt) rt.textContent = '阴线 · ' + nr;
+    });
+}
+
+/* 实时涨幅轮询（分叉自主页面 _ltTrajectoryPollLivePct）：逻辑不变，额外把拿到的实时涨幅记下并触发参考列重新分栏。 */
+function watchPollLivePct() {
+    if (_ltTrajectoryLivePctBusy) return;
+    var cells = document.querySelectorAll('.lt-trajectory-live-close[data-code][data-date], .lt-trajectory-live-open[data-code][data-date]');
+    if (!cells.length) return;
+    var date = cells[0].getAttribute('data-date') || '';
+    var codes = [];
+    for (var i = 0; i < cells.length; i++) {
+        if (cells[i].getAttribute('data-date') !== date) continue;
+        var code = cells[i].getAttribute('data-code') || '';
+        if (code && codes.indexOf(code) < 0) codes.push(code);
+    }
+    if (!date || !codes.length) return;
+    _ltTrajectoryLivePctBusy = true;
+    fetch('/api/trajectory_live_pct?date=' + encodeURIComponent(date) + '&codes=' + encodeURIComponent(codes.join(',')) + '&_t=' + Date.now())
+        .then(function(r) { return r.json(); })
+        .then(function(result) {
+            var quotes = (result && result.quotes) || {};
+            window._watchLiveQuotes = window._watchLiveQuotes || {};
+            for (var i = 0; i < cells.length; i++) {
+                var el = cells[i];
+                if (el.getAttribute('data-date') !== date) continue;
+                var q = quotes[el.getAttribute('data-code') || ''];
+                if (!q) continue;
+                if (el.classList.contains('lt-trajectory-live-open') && q.open_pct !== null && q.open_pct !== undefined && isFinite(Number(q.open_pct))) {
+                    var openPct = Number(q.open_pct);
+                    el.textContent = (openPct > 0 ? '+' : '') + openPct.toFixed(2) + '%';
+                    el.className = openPct > 0 ? 'lt-change-up' : (openPct < 0 ? 'lt-change-down' : 'lt-change-flat');
+                    el.removeAttribute('data-code');
+                    el.removeAttribute('data-date');
+                } else if (el.classList.contains('lt-trajectory-live-close') && q.change_pct !== null && q.change_pct !== undefined && isFinite(Number(q.change_pct))) {
+                    var pct = Number(q.change_pct);
+                    window._watchLiveQuotes[el.getAttribute('data-code')] = pct;
+                    el.textContent = (pct > 0 ? '+' : '') + pct.toFixed(2) + '%';
+                    el.className = pct > 0 ? 'lt-change-up' : (pct < 0 ? 'lt-change-down' : 'lt-change-flat');
+                    var referenceCard = el.closest('.lt-reference-stock');
+                    if (referenceCard) referenceCard.classList.toggle('lt-reference-down', pct < 0);
+                    if (result.trading) {
+                        el.classList.add('lt-trajectory-live-close');
+                    } else {
+                        el.removeAttribute('data-code');
+                        el.removeAttribute('data-date');
+                    }
+                }
+            }
+            watchRebalanceRef();
+        })
+        .catch(function() {})
+        .then(function() { _ltTrajectoryLivePctBusy = false; });
+}
+
 function watchJumpTheme(i) {
     var el = document.getElementById('wt-row-' + i);
     if (!el) return;
@@ -358,10 +465,12 @@ function watchRenderTrajectory(data, bodyId) {
     if (sortedTags.length > 60) sortedTags = sortedTags.slice(0, 60);
 
     watchMarksLoad(dates[0]);
+    window._watchLiveQuotes = {};      // 本轮渲染以服务端当前涨幅为准，之后由实时轮询覆盖
     var sumCtx = {latest: dates[0], refDate: referenceDate, referenceByTag: referenceByTag, refSurgeByTag: refSurgeByTag,
                   stocksByTag: stocksByTag, surgeByTag: surgeByTag, riseByTag: riseByTag, todayLimit: {}, refLimit: {}, refAll: {}};
     Object.keys(referenceByTag).forEach(function(t) { (referenceByTag[t] || []).forEach(function(x) { sumCtx.refLimit[x.code] = 1; sumCtx.refAll[x.code] = 1; }); });
     Object.keys(refSurgeByTag).forEach(function(t) { (refSurgeByTag[t] || []).forEach(function(x) { sumCtx.refAll[x.code] = 1; }); });
+    window._watchTodayLimit = sumCtx.todayLimit;
     Object.keys(stocksByTag).forEach(function(t) {
         ((stocksByTag[t] && stocksByTag[t][dates[0]]) || []).forEach(function(x) { sumCtx.todayLimit[x.code] = {lianban: x.lianban || 1, first_time: x.first_time, close_pct: x.close_pct, close_pending: x.close_pending}; });
     });
@@ -538,7 +647,7 @@ function watchRenderTrajectory(data, bodyId) {
                         var liveCloseAttrs = s.close_pending ? ' lt-trajectory-live-close" data-code="' + _kplEsc(sCode) + '" data-date="' + _kplEsc(priceDate) : '';
                         var priceLine = '<span class="lt-cell-stock-ohlc" title="' + _kplEsc(priceDate) + ' 开盘涨跌幅 / 收盘涨跌幅">' +
                             '<em>开</em><b class="' + pctClass(s.open_pct) + liveOpenAttrs + '">' + openText + '</b><i class="lt-ohlc-divider">·</i><em>收</em><b class="' + closeClass + liveCloseAttrs + '">' + closeText + '</b></span>';
-                        html += '<span class="' + chipCls + '" title="' + _kplEsc(sName + ' · 开 ' + openText + ' · 收 ' + closeText) + '" onclick="event.stopPropagation();openDsStockFromRhythm(\x27' + sName + '\x27, \x27' + sCode + '\x27, \x27\x27, ' + navRef + '[' + navIdx + '], ' + si + ')">' +
+                        html += '<span class="' + chipCls + '" data-code="' + _kplEsc(sCode) + '" data-surge="' + (s.is_surge ? 1 : 0) + '" data-pct="' + (refPctNow === null || refPctNow === undefined ? '' : refPctNow) + '" title="' + _kplEsc(sName + ' · 开 ' + openText + ' · 收 ' + closeText) + '" onclick="event.stopPropagation();openDsStockFromRhythm(\x27' + sName + '\x27, \x27' + sCode + '\x27, \x27\x27, ' + navRef + '[' + navIdx + '], ' + si + ')">' +
                             '<span class="lt-cell-stock-main">' + boardMark + _kplEsc(sName) + cellTm + (s.is_surge ? ' <b class="lt-surge-b">大涨</b>' : ' <b>' + s.lianban + '板</b>') + miniTags + restartMark + '</span>' + priceLine + flagHtml + '</span>';
                     }
                     html += '</div>';

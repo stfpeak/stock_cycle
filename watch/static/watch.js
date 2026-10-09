@@ -17,6 +17,7 @@
 
     // —— 覆盖：时间轴用压缩午休的版本；时间轴里的题材名点击 → 跳到下方「标签轨迹」表格中对应题材行 ——
     window._twsRenderTimeline = window.watchRenderTimeline;
+    window._ltTrajectoryPollLivePct = window.watchPollLivePct;   // 实时涨幅轮询：更新数字的同时按涨跌重新分栏
     window._twsJumpToTheme = function (el) {
         var theme = (el.getAttribute('data-jump-theme') || '').trim() || (el.getAttribute('data-jump-plate') || '').trim();
         if (!theme) return;

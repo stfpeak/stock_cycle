@@ -6888,17 +6888,162 @@ def _traj_num(v):
         return None
 
 
-def _trajectory_live_market_rows():
-    """全市场实时行情（东方财富，20s 缓存，与大涨/涨幅>2%/跌幅榜共用，保证 30s 轮询每次都能取到新数据）。"""
-    rows = _get_cached('attention_live_market_rows', ttl=20)
-    if rows is None:
+# ---- 盘中全市场实时快照（盯盘页「未涨停>2%」「跌幅」「大涨」「参考列/昨日票实时涨幅」共用）----
+# 后台线程盘中每 30s 取一次全市场（约 5600 只）：新浪行情中心 Market_Center 按「股票代码」排序分页（每页 100 条，约 56 页，
+# 并发 6 个，实测约 4s）。必须按代码排序：按涨幅排序时翻页期间股票互换位置，会漏/重约 150 只。
+# 备源：东方财富 clist 的编号镜像（fid=f12 按代码排序；push2/push2delay 主域名常 502，云主机 IP 还可能被整体屏蔽）。
+# 所有请求只读内存快照，不再各自联网。
+_SINA_MC_URL = 'http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData'
+_SINA_MC_COUNT_URL = 'http://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeStockCount'
+_SINA_MC_HEADERS = {'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120 Safari/537.36',
+                    'Referer': 'https://finance.sina.com.cn'}
+_EM_MIRRORS = ['28', '48', '72', '88', '1', '2', '3', '7', '11']
+_EM_CLIST_PARAMS = {'pz': 100, 'po': 0, 'np': 1, 'ut': 'bd1d9ddb04089700cf9c27f6f7426281', 'fltt': 2, 'invt': 2, 'fid': 'f12',
+                    'fs': 'm:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048', 'fields': 'f2,f3,f12,f14,f17,f18'}
+_LIVE_REFRESH_SEC = 30
+_live_market = {'rows': [], 'by_code': {}, 'ts': 0.0, 'src': '', 'err': ''}
+_live_market_lock = threading.Lock()
+_mc_session = requests.Session()
+
+
+def _sina_mc_page(page):
+    for attempt in range(3):
         try:
-            rows = _auction_fetch_all_market_rows() or []
+            r = _mc_session.get(_SINA_MC_URL, params={'page': page, 'num': 100, 'sort': 'symbol', 'asc': 1,
+                                                       'node': 'hs_a', 'symbol': '', '_s_r_a': 'page'},
+                                headers=_SINA_MC_HEADERS, timeout=(3, 8))
+            r.raise_for_status()
+            txt = r.text.strip()
+            if txt in ('', 'null', '[]'):
+                return []
+            try:
+                return json.loads(txt)
+            except ValueError:   # 个别时段返回键不带引号的 JS 对象
+                return json.loads(re.sub(r'([{,])\s*([A-Za-z_]\w*)\s*:', r'\1"\2":', txt))
+        except Exception:
+            if attempt == 2:
+                raise
+            time.sleep(0.4)
+
+
+def _em_clist_page(page):
+    last = None
+    for attempt in range(4):
+        host = _EM_MIRRORS[(page + attempt) % len(_EM_MIRRORS)]
+        try:
+            r = requests.get('http://%s.push2.eastmoney.com/api/qt/clist/get' % host, params=dict(_EM_CLIST_PARAMS, pn=page),
+                             headers={'User-Agent': _SINA_MC_HEADERS['User-Agent'], 'Referer': 'https://quote.eastmoney.com/'},
+                             timeout=(3, 6))
+            r.raise_for_status()
+            return (r.json().get('data') or {}).get('diff') or []
         except Exception as exc:
-            print('[涨停原因标签轨迹] 盘中全市场行情获取失败: %s' % exc)
-            rows = []
-        _set_cache('attention_live_market_rows', rows)
-    return rows
+            last = exc
+            time.sleep(0.25)
+    raise RuntimeError('东方财富镜像第%s页失败: %s' % (page, last))
+
+
+def _fetch_all_pages(fetch_page, total_hint):
+    """并发取全部分页；按已知总数估页数（多留 2 页余量），任何一页失败即整批失败，避免快照出现缺口。"""
+    pages = (total_hint + 99) // 100 + 2
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        results = list(ex.map(fetch_page, range(1, pages + 1)))
+    return [x for rows in results for x in (rows or [])]
+
+
+def _sina_full_market():
+    try:
+        total = int(_mc_session.get(_SINA_MC_COUNT_URL, params={'node': 'hs_a'}, headers=_SINA_MC_HEADERS, timeout=(3, 6))
+                    .text.strip().strip('"'))
+    except Exception:
+        total = 5800
+    raw = _fetch_all_pages(_sina_mc_page, total)
+    rows = {}
+    for x in raw:
+        code = str(x.get('code') or '').zfill(6)
+        if len(code) != 6 or not code.isdigit():
+            continue
+        rows[code] = {'stock_code': code, 'stock_name': str(x.get('name') or ''), 'price': _traj_num(x.get('trade')),
+                      'change_pct': _traj_num(x.get('changepercent')), 'open': _traj_num(x.get('open')),
+                      'pre_close': _traj_num(x.get('settlement'))}
+    if len(rows) < total * 0.9:
+        raise RuntimeError('新浪全市场不完整: %s/%s' % (len(rows), total))
+    return list(rows.values())
+
+
+def _em_full_market():
+    raw = _fetch_all_pages(_em_clist_page, 5800)
+    rows = {}
+    for x in raw:
+        code = str(x.get('f12') or '').zfill(6)
+        if len(code) != 6 or not code.isdigit():
+            continue
+        rows[code] = {'stock_code': code, 'stock_name': str(x.get('f14') or ''), 'price': _traj_num(x.get('f2')),
+                      'change_pct': _traj_num(x.get('f3')), 'open': _traj_num(x.get('f17')), 'pre_close': _traj_num(x.get('f18'))}
+    if len(rows) < 5000:
+        raise RuntimeError('东方财富全市场不完整: %s' % len(rows))
+    return list(rows.values())
+
+
+def _trajectory_movers_refresh():
+    """刷新一次全市场快照（新浪 → 东财镜像）；失败保留上一份快照，只记录错误。返回是否成功。"""
+    if not _live_market_lock.acquire(blocking=False):
+        return False            # 已有刷新在进行
+    try:
+        errs = []
+        for name, fn in (('sina', _sina_full_market), ('eastmoney', _em_full_market)):
+            try:
+                t0 = time.time()
+                rows = fn()
+                _live_market.update(rows=rows, by_code={r['stock_code']: r for r in rows}, ts=time.time(), src=name, err='')
+                print('[盘中全市场] %s %d 只 %.1fs' % (name, len(rows), time.time() - t0))
+                return True
+            except Exception as exc:
+                errs.append('%s: %s' % (name, str(exc)[:120]))
+        _live_market['err'] = '; '.join(errs)
+        print('[盘中全市场] 刷新失败，沿用上一份快照: %s' % _live_market['err'])
+        return False
+    finally:
+        _live_market_lock.release()
+
+
+def _trajectory_live_market_rows():
+    """盘中全市场实时快照（行格式：stock_code/stock_name/price/change_pct/open/pre_close）。读后台线程维护的内存快照；
+    快照过期(>75s)或为空时同步刷新一次；刷新失败仍可使用 10 分钟内的旧快照。"""
+    if _live_market['rows'] and time.time() - _live_market['ts'] < 75:
+        return _live_market['rows']
+    _trajectory_movers_refresh()
+    return _live_market['rows'] if (_live_market['rows'] and time.time() - _live_market['ts'] < 600) else []
+
+
+def _live_quotes_for_codes(codes):
+    """按代码取实时报价 {code: {'change_pct','open','prev_close'}}：优先读全市场快照（零联网），缺失的代码再走 _spot_quotes_for_codes。"""
+    out, missing = {}, []
+    snap = _live_market['by_code'] if (_live_market['rows'] and time.time() - _live_market['ts'] < 120) else {}
+    for code in codes:
+        r = snap.get(code)
+        if r and r.get('change_pct') is not None:
+            out[code] = {'change_pct': r['change_pct'], 'open': r.get('open'), 'prev_close': r.get('pre_close')}
+        else:
+            missing.append(code)
+    if missing:
+        for code, q in (_spot_quotes_for_codes(missing, ttl=15) or {}).items():
+            out[code] = {'change_pct': q.get('change_pct'), 'open': q.get('open'), 'prev_close': q.get('prev_close')}
+    return out
+
+
+def _trajectory_movers_loop():
+    """盘中每 30s 刷新一次全市场快照（取数约 4s，补足睡眠使周期≈30s）；非交易时段每分钟检查一次。"""
+    time.sleep(10)
+    while True:
+        try:
+            if _is_trading_hours():
+                t0 = time.time()
+                _trajectory_movers_refresh()
+                time.sleep(max(2.0, _LIVE_REFRESH_SEC - (time.time() - t0)))
+                continue
+        except Exception as exc:
+            print('[盘中全市场] 线程异常: %s' % exc)
+        time.sleep(60)
 
 
 def _trajectory_board_of_code(code):
@@ -7014,14 +7159,7 @@ def _trajectory_surge_candidates(dates_fmt, limit_codes_by_date):
         print('[涨停原因标签轨迹] 大涨股日线读取失败: %s' % exc)
     today_fmt = _bj_now().strftime('%Y-%m-%d')
     if today_fmt in dates_fmt and _is_trading_hours():
-        live_rows = _get_cached('attention_live_market_rows', ttl=20)
-        if live_rows is None:
-            try:
-                live_rows = _auction_fetch_all_market_rows() or []
-            except Exception as exc:
-                print('[涨停原因标签轨迹] 盘中全市场行情获取失败: %s' % exc)
-                live_rows = []
-            _set_cache('attention_live_market_rows', live_rows)
+        live_rows = _trajectory_live_market_rows()
         if live_rows:
             live_map = {}
             seen = set()
@@ -7080,14 +7218,7 @@ def _trajectory_decline_board(date_fmt, prev_limit_codes, threshold=-5.0):
     rows = {}
     live = date_fmt == _bj_now().strftime('%Y-%m-%d') and _is_trading_hours()
     if live:
-        live_rows = _get_cached('attention_live_market_rows', ttl=20)
-        if live_rows is None:
-            try:
-                live_rows = _auction_fetch_all_market_rows() or []
-            except Exception as exc:
-                print('[涨停原因标签轨迹] 盘中全市场行情获取失败: %s' % exc)
-                live_rows = []
-            _set_cache('attention_live_market_rows', live_rows)
+        live_rows = _trajectory_live_market_rows()
         for row in live_rows or []:
             code = str((row or {}).get('stock_code') or '').strip().zfill(6)
             try:
@@ -7185,14 +7316,7 @@ def _trajectory_rise_candidates(date_fmt, skip_codes):
     rows = {}
     live = date_fmt == _bj_now().strftime('%Y-%m-%d') and _is_trading_hours()
     if live:
-        live_rows = _get_cached('attention_live_market_rows', ttl=20)
-        if live_rows is None:
-            try:
-                live_rows = _auction_fetch_all_market_rows() or []
-            except Exception as exc:
-                print('[涨停原因标签轨迹] 盘中全市场行情获取失败: %s' % exc)
-                live_rows = []
-            _set_cache('attention_live_market_rows', live_rows)
+        live_rows = _trajectory_live_market_rows()
         for row in live_rows or []:
             code = str((row or {}).get('stock_code') or '').strip().zfill(6)
             try:
@@ -41472,7 +41596,7 @@ class Handler(BaseHTTPRequestHandler):
             live = bool(date_fmt == today_fmt and _is_trading_hours())
             quotes = {}
             if codes and live:
-                for code, quote in _spot_quotes_for_codes(codes, ttl=15).items():   # 前端 30s 轮询，缓存取半周期，保证每轮取到新行情
+                for code, quote in _live_quotes_for_codes(codes).items():   # 全市场快照（30s 刷新），缺失的代码再走实时报价
                     try:
                         current_pct = float(quote.get('change_pct'))
                     except (TypeError, ValueError):
@@ -42106,10 +42230,11 @@ class Handler(BaseHTTPRequestHandler):
                     if reference_date:
                         live_ref = {}
                         if close_pending and anchor_fmt == live_date_fmt:
-                            for row in (_trajectory_live_market_rows() or []):
-                                code6 = str((row or {}).get('stock_code') or '').strip().zfill(6)
-                                pct = _traj_num(row.get('change_pct'))
-                                op, pc = _traj_num(row.get('open')), _traj_num(row.get('pre_close'))
+                            ref_codes = sorted({st['code'] for src in (reference_stocks_by_tag, reference_surge_by_tag)
+                                                for lst in src.values() for st in lst})
+                            for code6, q in _live_quotes_for_codes(ref_codes).items():
+                                pct = _traj_num(q.get('change_pct'))
+                                op, pc = _traj_num(q.get('open')), _traj_num(q.get('prev_close'))
                                 if pct is not None:
                                     live_ref[code6] = (pct, round((op / pc - 1) * 100, 2) if op and pc and op > 0 and pc > 0 else None)
                         for src in (reference_stocks_by_tag, reference_surge_by_tag):
@@ -44731,7 +44856,8 @@ def main():
         # 题材强弱矩阵独立维护：盘中每分钟覆盖当日日快照，后台补齐近20日历史。
         threading.Thread(target=_theme_strength_matrix_live_loop, daemon=True),
         threading.Thread(target=_theme_strength_matrix_backfill_loop, daemon=True),
-        threading.Thread(target=_trajectory_hist_warm_loop, daemon=True),   # 提前算好「近15日涨停/大涨」索引（盯盘页未涨停>2%的 M(+N)）
+        threading.Thread(target=_trajectory_hist_warm_loop, daemon=True),
+        threading.Thread(target=_trajectory_movers_loop, daemon=True),   # 盘中每 ~15s 预取涨跌幅榜（新浪行情中心，东财镜像备用）   # 提前算好「近15日涨停/大涨」索引（盯盘页未涨停>2%的 M(+N)）
         # 市场结构/连板联动由前端在首屏完成后按 20日 → 30日 → 联动顺序预热。
         # 不在服务启动时与首屏高频任务并发，避免用户刚切页时排队等待同一把构建锁。
         # 旧版实时增量/收盘推送已取消；只保留“完整细分题材晋级快照”。
