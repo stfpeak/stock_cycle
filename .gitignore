@@ -33,3 +33,6 @@ reports/.DS_Store
 # 实时盯盘：TLS 私钥/证书与日志不进仓库
 watch/certs/
 watch/watch.log
+
+# 开盘红精选板块成分股原始 CSV（约100MB，由 data/kpl_selected/fetch_selected.py 生成；入库的是 sector_class.db）
+data/kpl_selected/stocks_*.csv

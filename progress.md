@@ -227,3 +227,75 @@
 ### 下次继续
 - 本地服务当前保持运行：`http://localhost:6688/`。
 - 继续前重点人工确认：实时页点击“今日涨停 → K线走势”后，筛选条首项应与表格第一只股票所属题材一致；多题材股票可同时出现在多个题材筛选结果中。
+
+## Session: 2026-10-08（题材轨迹参考列与涨跌幅配色）
+
+- “涨停原因标签轨迹”矩阵的涨幅明确显示红色、跌幅显示绿色；最新交易日右侧增加“参考列”。
+- 参考列复用前一交易日的股票清单、题材、板数、涨停时间，只将开盘涨跌幅与最新交易日盘中/收盘涨跌幅作为对比值；盘中复用 `/api/trajectory_live_pct` 分钟轮询，跌幅为负时股票卡片切换为绿色底。
+- 仅最新日期窗口显示参考列，查看历史日期不带入未来行情。验证接口：最新日 `2026-10-08`，来源日期 `2026-09-30`；58 个题材、55 只去重股票；盘中报价接口返回开盘及实时涨跌幅。
+- 已提交并推送 GitHub `main`：`53d2819 feat: improve theme trajectory reference comparison`；已用 `./sync.sh --safe-sync` 更新云端主程序、仅补传缺失舆情归档并重启。远端程序 SHA256 与本地一致，HTTP 返回 200。
+- 本地项目服务已按要求停止。下次运行 `python3 -u stock_linkage_simple.py` 或 `bash start_dev.sh` 启动 `http://localhost:6688/` 后继续。
+- 注意：仓库仍有未提交的运行时数据库/行情文件、截图和缓存，均未纳入本次提交；继续开发前先辨别与任务相关的改动，不要批量提交或清理。
+
+## Session: 2026-10-09（实时盯盘页 `watch/`，端口 9999）
+
+### 已完成并发布（GitHub `main` 最新 `743403f`，云主机已同步）
+- 新增独立页面 `watch/`：`watch_server.py`（9999，反向代理 6688 的 `/api/*`）+ `static/watch.js`（页面组装、30s 总时钟）+ `static/watch_traj.js`（轨迹/时间轴渲染器，由主页面函数一次性分叉）+ `static/watch.css`。启停 `watch/watch.sh start|stop|restart|status`。
+- 页面自上而下：Banner+四问 → 精选板块强度表 + 今日涨停时间轴（午休压缩为 15 分钟，题材名点击跳到轨迹表对应行）→ 「跌幅」卡片（跌幅>5% 全市场股票按 KPL 题材归类，默认折叠）→ 涨停原因标签轨迹 → 细分题材晋级。
+- 轨迹表：题材导航（R1~R5=最新日涨停数 TOP5；小红点=新题材）、莫兰迪配色、首列题材标题 + K线走势按钮（复用连板联动弹框）+ 「昨日的票→今日表现 / 今日新增」总结 + 龙头/补涨/切换/套利 思考按钮（localStorage，按最新交易日，换日清空）；最新列拆「涨停/大涨 | 未涨停>2%」，参考列拆「晋级/阳线 | 阴线」；晋级/NEW 角标；未涨停>2% 行显示开盘/现价涨幅，名称后 `M(+N)`（近15日最近一次涨停/大涨，M=连板数、大涨=1，N=断板天数）。
+- 后端（`stock_linkage_simple.py`）：`/api/ladder_trajectory?surge=1` 附带 surge_by_tag / reference_surge_by_tag / rise_by_tag / decline / 参考列 cur_pct；题材匹配=KPL ∪ 开盘红 ∪ 同花顺（与轨迹行名完全同名，每股最多挂2行）；`_trajectory_hist_index` 按最新交易日缓存、后台预算，盘中不重算；`theme_wind_strength`/`sector_ranking` 支持 `max_age`。
+- 性能：9999 层 gzip（页面 1.58MB→约374KB）、热点接口内存缓存+盘中后台刷新、资源内联、去掉本页不用的启动请求、ETag/304。全页统一 30s 刷新（9:25~15:00）。
+- 部署：`./sync.sh`（已加入 watch 同步与 9999 重启；注意重启块不能用 `pgrep -f` 匹配脚本名，会误杀自身 shell）。9999 当前为 **HTTP**（自签名 HTTPS 已回退；证书目录在云端 `watch/certs.off`，改回 `certs` 重启即恢复 HTTPS）。
+
+### 云主机状态（106.53.189.86）
+- 只保留 6688 与 9999（外加 sshd 22 与系统内部 DNS/NTP）。已停止并禁用开机自启：nginx、invest.service(8080)、CUPS、hermes-gateway、stock_dashboard.service（它曾对 6688 空转重启约88万次）；open-webui、hermes-web-ui 进程已退出；`stock_web/main.py` 报告进程已不在运行（疑为停 hermes-gateway 时连带结束，未核实）。
+- 注意：主机重启后 6688/9999 **不会自动拉起**（已禁用自启服务），需运行 `./sync.sh`；如需自启，可为两者建 systemd 服务并让 sync.sh 改用 systemctl。
+
+### 待办 / 待决定
+- **安全**：`sync.sh` 明文含云主机 SSH 密码且仓库公开，需尽快改密码并改为环境变量/密钥。
+- 可选优化：首屏数据内嵌进 HTML（省一次往返）；是否为 6688/9999 建 systemd 自启；是否放宽「每股最多挂2个题材行」或加近义词匹配；`stock_web` 报告进程是否恢复。
+- 本地服务已停止（6688/9999）。下次 `bash start_dev.sh`（或 `python3 -u stock_linkage_simple.py`）启动 6688，再 `watch/watch.sh start` 启动 9999，打开 `http://localhost:9999/` 继续。
+- 工作区仍有未提交的运行时数据库/行情文件、截图和缓存（非本次提交内容）；`progress.md` 本身本次未提交。
+
+## Session: 2026-10-09（盘中实时数据修复：跌幅 / 未涨停>2% 无数据）
+
+### 根因
+- 这两块依赖「全市场实时行情」，原先用东方财富 clist（levistock `stocks_all_em` 同源，`push2delay`）。本机主域名 `push2`/`push2delay` 大量 502（取30页失败22~28页）；云主机 IP 被东财整体屏蔽（所有域名 0.1s 内断连）。取不到实时行情就退回读日线，而当日日线盘中不存在 → 空。
+- 另有隐患：原函数按 200条/页、只取前 3000 只（按涨幅降序），跌幅最大的股票排在末尾会被整批漏掉；镜像域名每页实际最多 100 条。
+- 参考列盘中下跌绿卡没排到右栏：服务端 `cur_pct` 为空 → 全部默认进左栏，绿色是前端轮询染的。
+
+### 已完成并发布（GitHub `main` 最新 `6e56c7f`，云主机已同步并验证）
+- 新增盘中全市场快照（`stock_linkage_simple.py`：`_sina_full_market` / `_em_full_market` / `_trajectory_movers_refresh` / `_trajectory_live_market_rows` / `_live_quotes_for_codes` / `_trajectory_movers_loop`）：后台线程盘中每 30s 取一次全市场（约 5572 只），新浪行情中心 `Market_Center.getHQNodeData` **按股票代码排序**分页（100条/页、约56页、6并发；本机约4~6s，云主机约1.4~2s）。**必须按代码排序**：按涨幅排序翻页期间股票互换位置，会漏/重约150只。备源东财编号镜像（`28/48/72/88/1.push2.eastmoney.com`，`fid=f12`）。任一页失败整批作废、沿用旧快照。
+- 未涨停>2% / 跌幅榜 / 大涨 / 参考列实时涨幅 / `/api/trajectory_live_pct` 全部读这份内存快照（缺失代码才回退 `_spot_quotes_for_codes`）。6688 原有竞价/注意力看板的取数逻辑未动。
+- 前端：`watch_traj.js` 新增 `watchRebalanceRef`（拿到实时涨幅立即在参考列「晋级/阳线(左) | 阴线(右)」间换栏并更新栏标题数量）与 `watchPollLivePct`（分叉自主页面轮询），`watch.js` 里接管 `_ltTrajectoryPollLivePct`。
+- 验证（盘中）：本机/云主机均有数据；云端未涨停>2% 约142~145、跌幅榜 729~801 只，数值 30s 内变化；参考列 72 只 `cur_pct` 无缺失。
+
+### 实时数据来源速查
+- 全市场涨跌（本页）：新浪行情中心（主）→ 东财镜像（备，云主机被屏蔽）。
+- 按代码报价：新浪 `hq.sinajs.cn` → 腾讯 `qt.gtimg.cn`（6688 的 `_spot_quotes_for_codes`）。
+- 今日涨停池 + 首封时间：akshare `stock_zt_pool_em`（东财 push2ex），6688 盯盘页/时间轴/题材地图的核心来源；板块强度：levistock `sector_ranking_kph`（开盘红）。6688 盯盘页本身不拉全市场行情。
+
+### 待办 / 待决定
+- **安全**：`sync.sh` 明文含云主机 SSH 密码且仓库公开，需尽快改密码并改为环境变量/密钥（本日中途 SSH 曾短暂拒绝，后恢复，原因未明）。
+- 新浪全市场每 30s 约 56 个请求；若被限流可降到 45s 一轮。若云主机以后也被新浪屏蔽，需换取数出口。
+- 其余可选：为 6688/9999 建 systemd 自启（云主机重启后不会自动起来，需 `./sync.sh`）；首屏数据内嵌 HTML；是否放宽“每股最多挂2个题材行”；`stock_web` 报告进程是否恢复。
+- 本地服务已停止（6688/9999）；云主机服务仍在运行。下次 `bash start_dev.sh`（或 `python3 -u stock_linkage_simple.py`）+ `watch/watch.sh start` 后继续。
+
+## Session: 2026-10-10（开盘红精选板块库 + 涨停分类 + 个股查询页）
+
+### 数据与库（`data/kpl_selected/`）
+- `fetch_selected.py <日期...>`：levistock `sector_ranking_kph(zs_type=SECTOR_SELECTED, fetch_all=True)` 取 259~270 个精选板块 + `sector_stocks_his_kph` 取成分股（4 线程，约 4~5 分钟/日），落 `sectors_<日期>.csv` / `stocks_<日期>.csv`（已抓 2026-09-18~10-09 共 10 日；CSV 约 100MB 不入库）。
+- `build_sector_class.py`：10 日 CSV → `sector_class.db`（stock / stock_plate(含 cur=最新快照所属) / stock_tag(各期并集) / plate_info / tag_home(标签归属板块，如 固态电池→锂电池)）。**数据特点**：KPL 每只股票 tags 只有 1~2 个且 10 日基本不变；板块表 `amount` 字段其实是成分股数、成分股表 `chg_1d` 不可用。
+- 云主机需要 `sector_class.db`（`sync.sh` 已加入 include），CSV 不同步。
+
+### 涨停分类（9999 最后一章，默认折叠，只显示已收盘数据）
+- `/api/zt_classify?n=10`（`_zt_classify_build`）：近 10 日涨停+大涨（创/科/北>10% 未涨停）按精选板块 plate_name 归类。候选 = tags 同名板块 ∪ tags 归属板块，去泛概念（`_zt_class_generic`：并购重组/业绩/ST/国企/低价股/举牌/超跌/地域等，福建保留），得分 = 当日共用度，梯队股（连板≥2）权重 1+连板数，tags 关联再翻倍，并列取成分股少的。
+
+### 个股查询页（9999 独立视图，今日涨停时间轴右上角「🔍 个股查询」；K 线弹框「查询概念」右侧「个股查询」）
+- 接口：`/api/sq_suggest`（股票/板块/tags 联想）、`/api/sq_stock`、`/api/sq_members`、`/api/sq_ladder`（连板涨停表现：N板→2板+昨日断板+首板分组，首板默认折叠）、`/api/sq_theme`（板块/tag 成分股的 KPL 涨停行，复用 `_kpl_full_search(codes=…)`，不排除泛概念原因行；`only_tags=1` 为「仅 tags 口径」）。
+- 页面：连板涨停表现 → 搜索（股票/板块/tags，通栏）→ 板块+tags 平铺 → KPL 记录 → 日K+分时(白底) → 板块列/tags 列（近15日涨停/大涨，按 连板→涨幅→断板天数，不含 ST，泛概念隐藏，可「拓展」，点股票弹 K 线）→ 题材复盘（复用主页面 `_kplRenderRhythmGrid`，点任意板块/tags 展示并自动滚到；右上角「仅 tags 口径」开关）。
+
+### 待办
+- tags 太少：可并入近 10 日 KPL 涨停记录的所属概念/涨停原因标签。
+- 大板块（AI应用、医药）会吸走很多股票，可考虑给大板块降权。
+- 其余待办同上一节（sync.sh 明文密码等）。

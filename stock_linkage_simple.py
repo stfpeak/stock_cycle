@@ -3453,18 +3453,35 @@ def _build_trajectory_summary(recent_fmt, freq_by_tag, stocks_by_tag):
     }
 
 
-def _kpl_analyze_rows(q, date_start=None, date_end=None, no_st=None, strict=None, lianban_filter=None):
+def _kpl_search_rows_by_codes(codes, label=''):
+    """按股票代码集合取 KPL 涨停行（个股查询·题材复盘：板块/tag 的成分股），与 _kpl_search_rows 同结构、同去重。"""
+    codes = set(codes)
+    _source = list(_kpl_rows)
+    _source.extend(_kpl_today_live_rows())
+    seen, deduped = set(), []
+    for r in _source:
+        if r.get('stock_code', '') not in codes:
+            continue
+        key = r.get('date', '') + r.get('stock_code', '')
+        if key not in seen:
+            seen.add(key)
+            deduped.append(r)
+    return {'results': deduped, 'mode': 'single', 'query': label, 'total_hits': len(deduped), 'kw_results': {}, 'keywords': []}
+
+
+def _kpl_analyze_rows(q, date_start=None, date_end=None, no_st=None, strict=None, lianban_filter=None, codes=None):
     """KPL搜索+日期+ST+严格模式+连板过滤"""
     # 先确保数据已加载
     ds = date_start.replace('-', '') if date_start else None
     de = date_end.replace('-', '') if date_end else None
     print(f"[kpl_analyze_rows] q={q} date_start={date_start} date_end={date_end} ds={ds} de={de} no_st={no_st} strict={strict}")
     _kpl_ensure_loaded(ds, de)
-    result = _kpl_search_rows(q, strict=(strict == '1'))
+    result = _kpl_search_rows(q, strict=(strict == '1')) if codes is None else _kpl_search_rows_by_codes(codes, q)
     results = result.get('results', [])
     if no_st == '1':
         results = [r for r in results if not _kpl_is_st(r)]
-    results = [r for r in results if r.get('reason_tag', '') not in SNIPER_EXCLUDE_TAGS]
+    if codes is None:       # 按板块/tag 成分股取行（个股查询·题材复盘）时不再按涨停原因排除泛概念：该股属于此板块，涨停就算
+        results = [r for r in results if r.get('reason_tag', '') not in SNIPER_EXCLUDE_TAGS]
     # DEBUG: 过滤前日期范围
     _dates_before = [r.get('date', '') for r in results if r.get('date', '')]
     if _dates_before:
@@ -3633,12 +3650,12 @@ def _kpl_backfill_chain(results, q, date_start=None):
     return out
 
 
-def _kpl_full_search(q, date_start, date_end, no_st, strict, gem_extra=True, lianban_filter=None):
+def _kpl_full_search(q, date_start, date_end, no_st, strict, gem_extra=True, lianban_filter=None, codes=None):
     """全量计算KPL搜索，返回完整结果"""
-    result = _kpl_analyze_rows(q, date_start, date_end, no_st, strict, lianban_filter)
+    result = _kpl_analyze_rows(q, date_start, date_end, no_st, strict, lianban_filter, codes=codes)
     if gem_extra:
         result_codes = list(set(r.get('stock_code', '') for r in result.get('results', []) if r.get('stock_code')))
-        all_linked = _kpl_get_all_stock_codes_for_keyword(q)
+        all_linked = _kpl_get_all_stock_codes_for_keyword(q) if codes is None else [c for c in codes if not _sq_is_st((_sector_class_load().get('names') or {}).get(c, ''))]
         all_codes = list(set(result_codes + all_linked))
         strong_rise = _kpl_get_gem_strong_rise(all_codes, date_start=date_start, date_end=date_end) if all_codes else {}
         if strong_rise:
@@ -3649,7 +3666,7 @@ def _kpl_full_search(q, date_start, date_end, no_st, strict, gem_extra=True, lia
                 if not stock_name:
                     continue
                 latest_tag = latest.get('tag', '')
-                if latest_tag in SNIPER_EXCLUDE_TAGS:
+                if codes is None and latest_tag in SNIPER_EXCLUDE_TAGS:
                     continue
                 for sr in sr_entries:
                     already_exists = any(
@@ -7198,6 +7215,273 @@ def _trajectory_hist_index(latest_fmt, window=15):
             _traj_hist_cache.pop(old, None)
         _traj_hist_cache[latest_fmt] = index
         return index
+
+
+_sector_class_cache = {'mtime': None}
+
+
+def _sector_class_load():
+    """读 data/kpl_selected/sector_class.db（由 build_sector_class.py 从多日精选板块成分股 CSV 生成），按文件 mtime 缓存：
+    plates{code:[plate_name...]}（含历史所属，用于分类）、cur_plates{code:[...]}（最新快照所属）、tags{code:[tag...]}、
+    size{plate_name:成分股数}、names{code:name}、home{tag:归属板块}、plate_members{plate:[code]}、tag_members{tag:[code]}。"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'kpl_selected', 'sector_class.db')
+    try:
+        mtime = os.stat(path).st_mtime_ns
+    except OSError:
+        return _sector_class_cache
+    if _sector_class_cache.get('mtime') == mtime:
+        return _sector_class_cache
+    plates, cur_plates, tags, names, plate_members, tag_members = {}, {}, {}, {}, {}, {}
+    conn = sqlite3.connect(path, timeout=5)
+    try:
+        names = dict(conn.execute('SELECT code, name FROM stock').fetchall())
+        for code, pname, cur in conn.execute('SELECT code, plate_name, cur FROM stock_plate ORDER BY rowid'):
+            plates.setdefault(code, []).append(pname)
+            if cur:
+                cur_plates.setdefault(code, []).append(pname)
+                plate_members.setdefault(pname, []).append(code)
+        for code, tg in conn.execute('SELECT code, tag FROM stock_tag ORDER BY rowid'):
+            tags.setdefault(code, []).append(tg)
+            tag_members.setdefault(tg, []).append(code)
+        size = dict(conn.execute('SELECT plate_name, stock_count FROM plate_info').fetchall())
+        home = dict(conn.execute('SELECT tag, plate_name FROM tag_home').fetchall())
+    finally:
+        conn.close()
+    _sector_class_cache.update(mtime=mtime, plates=plates, cur_plates=cur_plates, tags=tags, size=size, names=names,
+                               home=home, plate_members=plate_members, tag_members=tag_members)
+    return _sector_class_cache
+
+
+_ZT_CLASS_GENERIC_EXTRA = {'业绩增长', '送转填权', '股权转让', '次新股', '专精特新', '科创板', '北交所', '创投', '一带一路', '新型工业化',
+                           '低价股', '国有企业', '举牌', '超跌', '振兴东北', '三季报增长', '年报预增', '实控人变更', 'ST板块', 'ST摘帽',
+                           # 地域概念
+                           '粤港澳', '深圳', '海南', '雄安新区', '新疆', '浙江', '武汉', '湖南', '成渝经济圈', '远东开发', '西部大开发',
+                           '海峡两岸', '黑龙江自贸区', '天津自贸区'}
+
+
+def _zt_class_generic(t):
+    """涨停分类 / 个股查询里的泛概念：不作为归类板块、不展示（并购重组、业绩、ST、国企、低价股、举牌、超跌、各类地域等）"""
+    t = (t or '').strip()
+    return (_tws_is_generic_tag(t) or t in _TRAJ_GENERIC_EXTRA or t in _ZT_CLASS_GENERIC_EXTRA
+            or (len(t) > 1 and (t.endswith('省') or t.endswith('市') or t.endswith('自治区'))))
+
+
+def _zt_classify_cached(n=10):
+    cache_key = 'zt_classify_%s_%s' % (n, _kpl_zt_fetch_anchor_ymd())
+    result = _get_cached(cache_key, ttl=600)
+    if result is None:
+        result = _zt_classify_build(n)
+        _set_cache(cache_key, result)
+    return result
+
+
+def _sq_ladder():
+    """最近一个已收盘交易日的连板涨停表现（结构同题材风向 /api/theme_wind_strength 的 ladder + 首板）：
+    每档 N 板 = 当日N板(current) + 前一交易日(N-1)板当日未涨停(broken，连板≥2才计，同题材风向口径)，高板在上；
+    再加首板（按归类板块分组）。每只股票带：归类板块(plate)、所有板块(plates)、所有 tags（均已隐藏泛概念，ST 过滤）。"""
+    d = _zt_classify_cached(10)
+    dates = d.get('dates') or []
+    if not dates:
+        return {'date': '', 'levels': [], 'first': []}
+    cls = _sector_class_load()
+    day = dates[-1]
+    prev = dates[-2] if len(dates) >= 2 else None
+
+    def pack(st, plate, **extra):
+        code = st['code']
+        plates = [x for x in (cls.get('cur_plates', {}).get(code) or cls.get('plates', {}).get(code, [])) if not _zt_class_generic(x)]
+        tags = [x for x in cls.get('tags', {}).get(code, []) if not _zt_class_generic(x)]
+        row = {'code': code, 'name': st['name'], 'board': st['board'], 'plate': plate, 'pct': st.get('pct'),
+               'first_time': st['first_time'], 'plates': plates, 'tags': tags}
+        row.update(extra)
+        return row
+
+    today_codes, levels, first = set(), {}, {}
+    for g in d['days'][day]['groups']:
+        for st in g['stocks']:
+            if st['kind'] != 'zt' or _sq_is_st(st['name']):
+                continue
+            today_codes.add(st['code'])
+            if st['lb'] >= 2:
+                levels.setdefault(st['lb'], {'current': [], 'broken': []})['current'].append(pack(st, g['plate']))
+            else:
+                first.setdefault(g['plate'], []).append(pack(st, g['plate']))
+    if prev:
+        pct_today = {st['code']: st.get('pct') for g in d['days'][day]['groups'] for st in g['stocks']}
+        for g in d['days'][prev]['groups']:
+            for st in g['stocks']:
+                if st['kind'] == 'zt' and st['lb'] >= 2 and st['code'] not in today_codes and not _sq_is_st(st['name']):
+                    st2 = dict(st, pct=pct_today.get(st['code']))
+                    levels.setdefault(st['lb'] + 1, {'current': [], 'broken': []})['broken'].append(pack(st2, g['plate'], prev_level=st['lb']))
+    out = []
+    for lv in sorted(levels, reverse=True):
+        r = levels[lv]
+        r['current'].sort(key=lambda x: (x['first_time'], x['code']))
+        r['broken'].sort(key=lambda x: (-x['prev_level'], x['code']))
+        out.append({'level': lv, 'current': r['current'], 'broken': r['broken']})
+    first_out = [{'plate': pl, 'stocks': sorted(v, key=lambda x: (x['first_time'], x['code']))} for pl, v in first.items()]
+    first_out.sort(key=lambda g: (g['plate'] == '未归类', -len(g['stocks']), g['plate']))
+    return {'date': day, 'levels': out, 'first': first_out, 'first_total': sum(len(g['stocks']) for g in first_out)}
+
+
+def _zt_classify_build(n=10):
+    """涨停分类：近 n 个已收盘交易日的涨停股 + 大涨股（创/科/北 >10% 未涨停，同轨迹口径），按开盘红精选板块 plate_name 归类。
+    归类规则：候选 = 股票 tags 与所属 plate_name 相同的词 ∪ tags 的「归属板块」（如 固态电池→锂电池，见 tag_home），去掉泛概念（并购重组等，改取 tags 里其他标签）；
+    候选里取得分最高的 plate_name：当日涨停+大涨股共用度，涨停梯队（连板≥2）上的股票权重 1+连板数，板块是该股 tags 关联词再翻倍；并列取成分股更少的。无候选则退到所属非泛概念板块。
+    只用已落盘的收盘数据；今日在收盘（15:00）前不纳入。"""
+    anchor = _kpl_zt_fetch_anchor_ymd()
+    days = [d for d in _trading_days if d <= anchor][-n:]
+    if not days:
+        return {'dates': [], 'days': {}}
+    fmt = lambda d: '%s-%s-%s' % (d[:4], d[4:6], d[6:])
+    dates = [fmt(d) for d in days]
+    _kpl_ensure_loaded(days[0], days[-1])
+    cls = _sector_class_load()
+    plates_of, tags_of, size_of = cls['plates'], cls['tags'], cls['size']
+    home_of, lib_names = cls['home'], cls['names']
+    # 日线：当日涨跌幅 + 大涨股
+    pct_map, surge = {}, {}
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
+    names = {}
+    try:
+        conn = sqlite3.connect(db_path, timeout=5)
+        ph = ','.join('?' * len(dates))
+        for code, td, pct in conn.execute(
+                'SELECT stock_code, trade_date, change_pct FROM kline_daily WHERE trade_date IN (%s)' % ph, dates):
+            code = str(code).zfill(6)
+            if pct is None:
+                continue
+            pct_map[(td, code)] = float(pct)
+            board = _trajectory_board_of_code(code)
+            if float(pct) > 10 and board != '主' and float(pct) < (29.5 if board == '北' else 19.5):
+                surge.setdefault(td, {})[code] = float(pct)
+        for code, nm in conn.execute('SELECT stock_code, stock_name FROM stocks'):
+            names[str(code).zfill(6)] = nm or ''
+        conn.close()
+    except Exception as exc:
+        print('[涨停分类] 日线读取失败: %s' % exc)
+    out = {}
+    for d_fmt in dates:
+        stocks = {}
+        for r in _kpl_rows_by_date.get(d_fmt, []):
+            code = str(r.get('stock_code') or '').zfill(6)
+            if code and code not in stocks:
+                stocks[code] = {'code': code, 'name': r.get('stock_name', '') or names.get(code, ''), 'kind': 'zt',
+                                'lb': max(1, int(_kpl_compute_lianban(code, d_fmt) or 1)),
+                                'first_time': int(r.get('first_time') or 0) or 999999,
+                                'kpl_tags': [t for t in (r.get('concepts') or '').split('、') if t]}
+        for code, pct in surge.get(d_fmt, {}).items():
+            if code not in stocks:
+                stocks[code] = {'code': code, 'name': names.get(code) or lib_names.get(code, ''), 'kind': 'surge', 'lb': 0,
+                                'first_time': 999999, 'kpl_tags': []}
+        # 板块得分：当日涨停+大涨股共用度；涨停梯队（连板≥2）上的股票权重更高（1+连板数）；
+        # 板块若正是该股 tags 里的词/归属板块，再翻倍——让「梯队股身上的板块和标签」优先
+        info = {}
+        for code, st in stocks.items():
+            cand = plates_of.get(code, [])
+            tg = tags_of.get(code) or st['kpl_tags']
+            linked = {pn for pn in cand if pn in tg} | {h for h in (home_of.get(t) for t in tg) if h and h in cand}
+            info[code] = (cand, tg, {pn for pn in linked if not _zt_class_generic(pn)})
+        score = {}
+        for code, st in stocks.items():
+            w = 1 + st['lb'] if st['lb'] >= 2 else 1
+            cand, tg, linked = info[code]
+            for pn in set(cand):
+                score[pn] = score.get(pn, 0) + w * (2 if pn in linked else 1)
+        groups = {}
+        for code, st in stocks.items():
+            cand, tg, linked = info[code]
+            # 候选：tags 关联的非泛概念板块；没有则退到所属的非泛概念板块；再没有才用全部所属板块
+            pool = linked or [pn for pn in cand if not _zt_class_generic(pn)] or cand
+            if pool:
+                plate = min(pool, key=lambda pn: (-score.get(pn, 0), size_of.get(pn, 10 ** 9), pn))
+            else:
+                plate = '未归类'
+            groups.setdefault(plate, []).append({
+                'code': code, 'name': st['name'], 'kind': st['kind'], 'lb': st['lb'], 'board': _trajectory_board_of_code(code),
+                'pct': pct_map.get((d_fmt, code)), 'first_time': st['first_time'],
+                'tags': [t for t in tg if t != plate and not _zt_class_generic(t)][:6], 'same': bool(linked), 'in_lib': bool(cand),
+            })
+        glist = []
+        for plate, lst in groups.items():
+            lst.sort(key=lambda x: (x['kind'] != 'zt', x['first_time'], x['code']))      # 按上板时间；大涨股无上板时间排最后
+            glist.append({'plate': plate, 'n': len(lst), 'zt': sum(1 for x in lst if x['kind'] == 'zt'),
+                          'top_lb': max([x['lb'] for x in lst] or [0]), 'stocks': lst})
+        glist.sort(key=lambda g: (g['plate'] == '未归类', -g['top_lb'], -g['n'], g['plate']))   # 梯队高度优先，其次个数
+        out[d_fmt] = {'groups': glist, 'zt': sum(g['zt'] for g in glist), 'total': len(stocks)}
+    return {'dates': dates, 'days': out}
+
+
+_sq_events_cache = {}
+
+
+def _sq_events(n=15):
+    """个股查询用：近 n 个已收盘交易日里每只股票的涨停/大涨事件（大涨=创/科/北>10%未涨停，同轨迹口径）。
+    返回 (days, events{code:[{'d','k':'zt'|'surge','lb','pct'}]（日期升序）}, latest_pct{code:最近交易日涨幅})；按锚点日缓存。"""
+    anchor = _kpl_zt_fetch_anchor_ymd()
+    got = _sq_events_cache.get((anchor, n))
+    if got is not None:
+        return got
+    days = [d for d in _trading_days if d <= anchor][-n:]
+    fmt = lambda d: '%s-%s-%s' % (d[:4], d[4:6], d[6:])
+    dates = [fmt(d) for d in days]
+    events, latest_pct = {}, {}
+    if days:
+        _kpl_ensure_loaded(days[0], days[-1])
+        pct_map = {}
+        try:
+            conn = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db'), timeout=5)
+            for code, td, pct in conn.execute('SELECT stock_code, trade_date, change_pct FROM kline_daily WHERE trade_date >= ? AND trade_date <= ?',
+                                              (dates[0], dates[-1])):
+                if pct is not None:
+                    pct_map[(td, str(code).zfill(6))] = float(pct)
+            conn.close()
+        except Exception as exc:
+            print('[个股查询] 日线读取失败: %s' % exc)
+        for d_fmt in dates:
+            seen = set()
+            for r in _kpl_rows_by_date.get(d_fmt, []):
+                code = str(r.get('stock_code') or '').zfill(6)
+                if code and code not in seen:
+                    seen.add(code)
+                    events.setdefault(code, []).append({'d': d_fmt, 'k': 'zt', 'lb': max(1, int(_kpl_compute_lianban(code, d_fmt) or 1)),
+                                                        'pct': pct_map.get((d_fmt, code))})
+            for (td, code), pct in pct_map.items():
+                if td != d_fmt or code in seen or pct <= 10:
+                    continue
+                board = _trajectory_board_of_code(code)
+                if board != '主' and pct < (29.5 if board == '北' else 19.5):
+                    events.setdefault(code, []).append({'d': d_fmt, 'k': 'surge', 'lb': 0, 'pct': pct})
+        for (td, code), pct in pct_map.items():
+            if td == dates[-1]:
+                latest_pct[code] = pct
+    _sq_events_cache.clear()
+    _sq_events_cache[(anchor, n)] = (dates, events, latest_pct)
+    return _sq_events_cache[(anchor, n)]
+
+
+def _sq_is_st(name):
+    n = (name or '').replace(' ', '').upper()
+    return n.startswith('ST') or n.startswith('*ST') or n.startswith('SST')
+
+
+def _sq_stock_row(code, cls, events, latest_pct, dates=None):
+    """lb=最近一次事件的连板数（大涨记 0）；gap=最近一次事件到最新交易日的间隔交易日数（0=最新交易日当天）"""
+    ev = events.get(code, [])
+    zt = [e for e in ev if e['k'] == 'zt']
+    last = ev[-1] if ev else None
+    gap = (len(dates) - 1 - dates.index(last['d'])) if (last and dates and last['d'] in dates) else None
+    return {'code': code, 'name': cls['names'].get(code) or (finder.stock_name_map.get(code, '') if finder else ''),
+            'board': _trajectory_board_of_code(code),
+            'zt': len(zt), 'surge': len(ev) - len(zt), 'top_lb': max([e['lb'] for e in zt] or [0]),
+            'lb': last['lb'] if last else 0, 'gap': gap,
+            'last': last['d'] if last else '', 'pct': latest_pct.get(code),
+            'ev': [[e['d'][5:], e['lb'] if e['k'] == 'zt' else 0] for e in ev]}
+
+
+def _sq_group_sort_key(x):
+    """连板数（最近一次事件）从高到低 → 涨幅从高到低 → 断板天数从少到多；无事件的排最后"""
+    return (0 if x['last'] else 1, -x['lb'], -(x['pct'] if x['pct'] is not None else -999), x['gap'] if x['gap'] is not None else 999, x['code'])
 
 
 def _trajectory_hist_warm_loop():
@@ -42514,6 +42798,90 @@ class Handler(BaseHTTPRequestHandler):
                 }
                 _set_cache(cache_key, result)
             self._respond_json(result, cors_headers)
+
+        elif path == '/api/sq_suggest':
+            # 个股查询搜索框：股票 + 板块 + tags 的联想（精确同名优先）
+            q = query.get('q', [''])[0].strip()
+            ql = q.upper()
+            cls = _sector_class_load()
+            items = []
+            if q:
+                stocks = []
+                for code, name in finder.stock_name_map.items():
+                    if code.startswith(ql) or ql in (name or '').upper():
+                        stocks.append({'type': 'stock', 'code': code, 'name': name})
+                        if len(stocks) >= 40:
+                            break
+                stocks.sort(key=lambda x: (x['name'].upper() != ql and x['code'] != ql, not x['name'].upper().startswith(ql), x['code']))
+                plates = [{'type': 'plate', 'name': n, 'n': len(v)} for n, v in cls.get('plate_members', {}).items() if ql in n.upper()]
+                tags = [{'type': 'tag', 'name': n, 'n': len(v)} for n, v in cls.get('tag_members', {}).items() if ql in n.upper()]
+                for lst in (plates, tags):
+                    lst.sort(key=lambda x: (x['name'].upper() != ql, not x['name'].upper().startswith(ql), -x['n']))
+                exact = [x for x in plates + tags + stocks if x['name'].upper() == ql]
+                rest = [x for x in stocks[:8] + plates[:6] + tags[:6] if x not in exact]
+                items = (exact + rest)[:20]
+            self._respond_json(items, cors_headers)
+
+        elif path == '/api/sq_ladder':
+            self._respond_json(_sq_ladder(), cors_headers)
+
+        elif path == '/api/sq_theme':
+            # 个股查询·题材复盘：板块 / tag 的成分股（不含ST）的 KPL 涨停记录，结构同 /api/kpl_reason_search，供前端复用「涨停节奏」渲染
+            kind = 'tag' if query.get('kind', ['plate'])[0] == 'tag' else 'plate'
+            name = query.get('name', [''])[0].strip()
+            date_start = query.get('date_start', [None])[0]
+            date_end = query.get('date_end', [None])[0]
+            only_tags = query.get('only_tags', ['0'])[0] == '1'     # 仅 tags 口径：板块名也只按「带该 tag 的股票」取成分股
+            cls = _sector_class_load()
+            src = cls['tag_members'] if (kind == 'tag' or only_tags) else cls['plate_members']
+            codes = [c for c in src.get(name, []) if not _sq_is_st(cls['names'].get(c, ''))]
+            cache_key = 'sq_theme_%s_%s_%s_%s_%s' % (kind, name, date_start, date_end, int(only_tags))
+            result = _get_cached(cache_key, ttl=30 if _is_trading_hours() else 300)
+            if result is None:
+                try:
+                    result = _kpl_full_search(name, date_start, date_end, '1', '0', True, None, codes=codes) if codes else {'results': [], 'total_hits': 0}
+                    result['members'] = len(codes)
+                    _set_cache(cache_key, result)
+                except Exception as e:
+                    import traceback
+                    result = {'error': str(e), 'traceback': traceback.format_exc(), 'results': [], 'total_hits': 0}
+            self._respond_json(result, cors_headers)
+
+        elif path == '/api/sq_stock':
+            # 个股查询（实时盯盘页）：该股所属板块 + tags，以及每个板块/tag 下近15个交易日有过涨停或大涨的股票
+            code = (query.get('code', [''])[0].strip() or '').zfill(6)
+            cls = _sector_class_load()
+            dates, events, latest_pct = _sq_events(15)
+            plates = [x for x in (cls.get('cur_plates', {}).get(code) or cls.get('plates', {}).get(code, [])) if not _zt_class_generic(x)]
+            tags = [x for x in cls.get('tags', {}).get(code, []) if not _zt_class_generic(x)]
+            def col(kind, name):
+                members = (cls['plate_members'] if kind == 'plate' else cls['tag_members']).get(name, [])
+                act = [r for r in (_sq_stock_row(c, cls, events, latest_pct, dates) for c in members if c in events) if not _sq_is_st(r['name'])]
+                act.sort(key=_sq_group_sort_key)
+                return {'name': name, 'total': len(members), 'active': act}
+            cols_p = [col('plate', n) for n in plates]
+            cols_t = [col('tag', n) for n in tags]
+            for cs in (cols_p, cols_t):
+                cs.sort(key=lambda c: (-len(c['active']), c['total']))
+            self._respond_json({'code': code, 'name': cls.get('names', {}).get(code, '') or (finder.stock_name_map.get(code, '') if finder else ''),
+                                'in_lib': code in cls.get('names', {}), 'dates': dates, 'self': _sq_stock_row(code, cls, events, latest_pct, dates),
+                                'plates': cols_p, 'tags': cols_t}, cors_headers)
+
+        elif path == '/api/sq_members':
+            # 「拓展」：某板块 / tag 下全部成分股（带近15日涨停/大涨摘要与最近交易日涨幅）
+            kind = 'tag' if query.get('kind', ['plate'])[0] == 'tag' else 'plate'
+            name = query.get('name', [''])[0].strip()
+            cls = _sector_class_load()
+            dates, events, latest_pct = _sq_events(15)
+            members = (cls['plate_members'] if kind == 'plate' else cls['tag_members']).get(name, [])
+            rows = [r for r in (_sq_stock_row(c, cls, events, latest_pct, dates) for c in members) if not _sq_is_st(r['name'])]
+            rows.sort(key=_sq_group_sort_key)
+            self._respond_json({'kind': kind, 'name': name, 'total': len(rows), 'stocks': rows}, cors_headers)
+
+        elif path == '/api/zt_classify':
+            # 涨停分类（实时盯盘页）：近 n 个已收盘交易日的涨停+大涨股，按精选板块 plate_name 归类；盘中不含今日
+            n = max(1, min(30, int(query.get('n', ['10'])[0])))
+            self._respond_json(_zt_classify_cached(n), cors_headers)
 
         elif path == '/api/elastic_arbitrage':
             # 弹性套利 · 创/科补涨池：连板晋级/新晋2板拆题材反查创/科成分股

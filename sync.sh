@@ -50,6 +50,8 @@ do_sync() {
         --include="data/trading_days.csv" \
         --include="data/kpl_first_zt_times.db" \
         --include="data/industry_chain_data.json" \
+        --include="data/kpl_selected/" \
+        --include="data/kpl_selected/sector_class.db" \
         --include="watch/" \
         --include="watch/static/" \
         --include="watch/static/*.js" \
