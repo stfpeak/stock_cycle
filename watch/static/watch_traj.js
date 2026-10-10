@@ -83,13 +83,78 @@ function watchRenderTimeline(twsData, boxId, searchMode) {
             var leftPct = g.minute >= 9999 ? 98.5 : ((eff(Math.max(g.minute, AXIS_START)) - AXIS_START) / AXIS_LEN * 100);
             g.items.sort(function(a, b2) { return (b2.lianban || 0) - (a.lianban || 0) || a.name.localeCompare(b2.name); });
             for (var q = 0; q < g.items.length; q++) {
-                h += _twsTlChip(g.items[q], leftPct, q, mapSearch, searchMode);
+                h += watchTlChip(g.items[q], leftPct, q, mapSearch, searchMode);
             }
         }
         h += '</div>';
     }
-    h += '</div></div></div>';
+    h += '</div>';
+    // 标签筛选条（时间轴下方）：当天涨停股在图上出现过的全部标签，全选 / 全取消 / 单选；未选中标签的股票变暗
+    var cnt = {};
+    tl.forEach(function (it) { watchTlTags(it).forEach(function (t) { cnt[t] = (cnt[t] || 0) + 1; }); });
+    _watchTl.tags = Object.keys(cnt).sort(function (a2, b2) { return cnt[b2] - cnt[a2] || (a2 < b2 ? -1 : 1); }).map(function (t) { return {t: t, n: cnt[t]}; });
+    h += '<div class="wtl-bar" id="watchTlBar">' + watchTlBarInner() + '</div></div>';
+    setTimeout(watchTlApply, 0);
     return h;
+}
+
+/* ===== 今日涨停时间轴 · 标签筛选 =====
+ * 状态：all=true 表示全选（正常显示，且今后新出现的标签也算选中）；否则 sel 里的标签为选中，
+ * 股票只要带任一选中标签就亮（高亮描边），其余变暗——全取消时全部变暗，再勾几个板块，新涨停落在其中就能一眼看出是补涨。 */
+var _watchTl = {all: true, sel: {}, tags: []};
+function watchTlTags(it) {
+    var out = [];
+    ((it && it.mab) || []).forEach(function (m) { var t = ((m || {}).t || '').trim(); if (t && out.indexOf(t) < 0) out.push(t); });
+    if (!out.length && it && it.theme) out.push(String(it.theme).trim());
+    return out;
+}
+function watchTlChip(it, leftPct, q, mapSearch, searchMode) {
+    var html = _twsTlChip(it, leftPct, q, mapSearch, searchMode);
+    var tags = watchTlTags(it).join('|').replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+    return html.replace('<span class="tws-tl-chip', '<span data-wtags="' + tags + '" class="tws-tl-chip');
+}
+function watchTlBarInner() {
+    var T = _watchTl, all = T.all, nSel = T.tags.filter(function (x) { return all || T.sel[x.t]; }).length;
+    var h = '<div class="wtl-head"><b>🏷 标签筛选</b><span class="wtl-hint">当天涨停股出现过的标签 ' + T.tags.length + ' 个 · 已选 ' + nSel +
+        (all ? '（全选：正常显示）' : '：只高亮带选中标签的股票，其余变暗') + '</span>' +
+        '<button class="wtl-btn' + (all ? ' on' : '') + '" onclick="watchTlAll(true)">全选</button><button class="wtl-btn' + (!all && !nSel ? ' on' : '') + '" onclick="watchTlAll(false)">全取消</button></div><div class="wtl-tags">';
+    T.tags.forEach(function (x) {
+        var on = all || T.sel[x.t];
+        var hue = 0; for (var ci = 0; ci < x.t.length; ci++) hue = (hue * 31 + x.t.charCodeAt(ci)) % 360;
+        var sty = on ? ' style="background:hsl(' + hue + ',55%,40%);border-color:hsl(' + hue + ',55%,52%);color:#fff;"' : '';
+        h += '<span class="wtl-tag' + (on ? ' on' : '') + '"' + sty + ' data-t="' + x.t.replace(/&/g, '&amp;').replace(/"/g, '&quot;') + '" onclick="watchTlToggle(this.getAttribute(\'data-t\'))">' + x.t.replace(/&/g, '&amp;').replace(/</g, '&lt;') + ' <i>' + x.n + '</i></span>';
+    });
+    return h + '</div>';
+}
+function watchTlAll(v) {
+    _watchTl.all = !!v; _watchTl.sel = {};
+    watchTlRefresh();
+}
+function watchTlToggle(t) {
+    var T = _watchTl;
+    if (T.all) {                                  // 全选态下点一个 = 取消它，其余保持选中
+        T.all = false; T.sel = {};
+        T.tags.forEach(function (x) { if (x.t !== t) T.sel[x.t] = true; });
+    } else {
+        T.sel[t] = !T.sel[t];
+        if (T.tags.length && T.tags.every(function (x) { return T.sel[x.t]; })) { T.all = true; T.sel = {}; }
+    }
+    watchTlRefresh();
+}
+function watchTlRefresh() {
+    var bar = document.getElementById('watchTlBar');
+    if (bar) bar.innerHTML = watchTlBarInner();
+    watchTlApply();
+}
+function watchTlApply() {
+    var T = _watchTl;
+    [].forEach.call(document.querySelectorAll('.tws-tl-chip[data-wtags]'), function (c) {
+        if (T.all) { c.classList.remove('wtl-dim', 'wtl-lit'); return; }
+        var tags = (c.getAttribute('data-wtags') || '').split('|').filter(Boolean);
+        var hit = tags.some(function (t) { return T.sel[t]; });
+        c.classList.toggle('wtl-lit', hit);
+        c.classList.toggle('wtl-dim', !hit);
+    });
 }
 
 function watchBoardOf(code) {

@@ -445,3 +445,76 @@
     color: #cbd5e1; background: rgba(255,183,77,0.1); border: 1px solid rgba(255,183,77,0.4); cursor: pointer; user-select: none; }
 .sq2-onlytags:has(input:checked) { background: rgba(255,183,77,0.3); color: #ffe0a8; border-color: #ffb74d; }
 .sq2-onlytags input { accent-color: #ffb74d; margin: 0; }
+
+/* tags 过滤按钮 / 面板 */
+.sq2-tagfilter-btn { margin-left: auto; align-self: center; padding: 3px 14px; border-radius: 14px; font-size: 0.8em; font-weight: 700; cursor: pointer;
+    color: #ffe0a8; background: rgba(255,183,77,0.14); border: 1px solid rgba(255,183,77,0.5); }
+.sq2-tagfilter-btn:hover { background: rgba(255,183,77,0.32); }
+.sq2-tagpanel { margin: 8px 0 4px; padding: 8px 12px; border-radius: 10px; background: rgba(255,183,77,0.06); border: 1px solid rgba(255,183,77,0.25); }
+.sq2-tp-head { font-size: 0.8em; color: #c9b88f; }
+.sq2-tp-clear { margin-left: 8px; padding: 0 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.3); background: transparent; color: #e6edf7; font-size: 0.9em; cursor: pointer; }
+.sq2-tagpanel .sq2-chip small { opacity: 0.7; margin-left: 2px; }
+/* 连板天梯：涨停股名称彩色加粗（按板数，同左侧徽标配色）；断板的偏暗 */
+.sq2-lname { font-weight: 800 !important; }
+.sq2-lname.sq2-lv-1 { color: #ffd166 !important; }
+.sq2-lname.sq2-lv-2 { color: #fb923c !important; }
+.sq2-lname.sq2-lv-3 { color: #ff5a5f !important; }
+.sq2-lname.sq2-lv-4 { color: #c084fc !important; }
+.sq2-lname.sq2-lv-high { color: #fde047 !important; text-shadow: 0 0 8px rgba(250,204,21,0.55); }
+.sq2-lname.sq2-lv-broken { color: #9fb0cc !important; font-weight: 700 !important; }
+.sq2-lname:hover { filter: brightness(1.25); }
+/* 板块/tags 列：进攻 暖橙 / 防御 冷青 / 中性 灰蓝（同题材地图） */
+.sq2-col.sq2-cat-attack { border-top: 3px solid #fb923c; }
+.sq2-col.sq2-cat-defense { border-top: 3px solid #2dd4bf; }
+.sq2-col.sq2-cat-neutral { border-top: 3px solid #64748b; }
+
+/* 状态标识：N板 / 首板 / 曾N板（+X） / 大涨（+X） */
+.sq2-st { color: #9fb0cc; font-weight: 600; }
+.sq2-st.hot { color: #ff7b7f; font-weight: 800; }
+.sq2-st.broke { color: #8b98b0; font-weight: 500; }
+/* 板块 / tags 卡片更宽，题材名称不换行 */
+.sq2-col { flex: 0 0 270px; }
+.sq2-colhead { flex-wrap: nowrap; }
+.sq2-colname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
+.sq2-colhead small, .sq2-exp { white-space: nowrap; flex: 0 0 auto; }
+.sq2-l1 { flex-wrap: nowrap; white-space: nowrap; }
+.sq2-l1 .wz-nm { overflow: hidden; text-overflow: ellipsis; }
+/* 连板涨停表现：每档上下两段（今日 / 昨日断板），股票卡片网格——列宽统一、同行等高、左缘对齐 */
+.sq2-ladder-rows .tws-ladder-groups { flex-direction: column; gap: 8px; align-items: stretch; }
+.sq2-ladder-rows .tws-ladder-group { flex: 0 0 auto; width: 100%; flex-direction: column; align-items: stretch; }
+.sq2-ladder-rows .tws-ladder-group-broken { padding-left: 0; border-left: none; border-top: 1px dashed rgba(248,113,113,.35); padding-top: 6px; }
+.sq2-ladder-rows .tws-ladder-chips { display: grid; grid-template-columns: repeat(auto-fill, 262px); gap: 8px; align-items: stretch; justify-content: start; }
+.sq2-ladder-rows .sq2-lchip { width: 262px; max-width: none; box-sizing: border-box; display: flex; flex-direction: column; justify-content: flex-start; height: 100%; }
+.sq2-ladder-rows .sq2-l1 { white-space: nowrap; overflow: hidden; }
+.sq2-ladder-rows .sq2-l1 .wz-nm { flex: 0 1 auto; min-width: 0; }
+.sq2-ladder-rows .sq2-lname { overflow: hidden; text-overflow: ellipsis; }
+
+/* 连板天梯：日期切换 / 盘中标记；未涨停（断板）卡片用不同背景区分 */
+.sq2-ldates { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 10px; }
+.sq2-dchip { padding: 2px 10px; border-radius: 12px; font-size: 0.8em; font-weight: 700; cursor: pointer; color: #9fb0cc; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12); font-variant-numeric: tabular-nums; }
+.sq2-dchip:hover { background: rgba(255,255,255,0.14); }
+.sq2-dchip.on { color: #06101f; background: #4fc3f7; border-color: #4fc3f7; }
+.sq2-dchip i { font-style: normal; margin-left: 4px; font-size: 0.8em; color: #ff7b7f; }
+.sq2-dchip.on i { color: #7a1020; }
+.sq2-livetag { color: #ff5a5f; animation: sq2Pulse 1.6s ease-in-out infinite; }
+@keyframes sq2Pulse { 50% { opacity: 0.45; } }
+.sq2-ladder.loading .sq2-ladder-rows { opacity: 0.5; }
+.sq2-ladder-rows .sq2-lchip.broken { opacity: 1; background: rgba(127,29,29,0.34); border: 1px dashed rgba(248,113,113,0.6); }
+.sq2-ladder-rows .sq2-lchip.broken:hover { background: rgba(127,29,29,0.5); }
+.sq2-ladder-rows .tws-ladder-group-broken .tws-ladder-label { color: #fca5a5; }
+
+/* ===== 今日涨停时间轴 · 标签筛选条 ===== */
+.wtl-bar { margin-top: 8px; padding: 8px 12px 10px; border-radius: 12px; background: rgba(15,52,96,0.22); border: 1px solid rgba(255,255,255,0.09); }
+.wtl-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; font-size: 0.85em; color: #cbd5e1; }
+.wtl-hint { color: #8396b4; font-size: 0.9em; margin-right: auto; }
+.wtl-btn { padding: 2px 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.25); background: rgba(255,255,255,0.06); color: #cbd5e1; font-size: 0.9em; font-weight: 700; cursor: pointer; }
+.wtl-btn:hover { background: rgba(255,255,255,0.16); }
+.wtl-btn.on { background: #1e88e5; border-color: #1e88e5; color: #fff; }
+.wtl-tags { display: flex; flex-wrap: wrap; gap: 5px; max-height: 150px; overflow-y: auto; }
+.wtl-tag { padding: 1px 9px; border-radius: 12px; font-size: 0.78em; cursor: pointer; user-select: none; color: #7f8da6; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.12); }
+.wtl-tag i { font-style: normal; opacity: 0.7; margin-left: 2px; }
+.wtl-tag.on { font-weight: 700; }
+.wtl-tag:hover { filter: brightness(1.3); }
+/* 时间轴上：命中选中标签的股票亮（金色描边），其余变暗 */
+.tws-tl-chip.wtl-dim { opacity: 0.14; filter: grayscale(0.85); transition: opacity .15s; }
+.tws-tl-chip.wtl-lit { box-shadow: 0 0 0 2px #ffd700, 0 0 14px rgba(255,215,0,0.65); z-index: 6; }

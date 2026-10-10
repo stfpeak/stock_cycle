@@ -52,7 +52,7 @@
         if (!d || !d.plates || !d.plates.length) return '';
         var promo = document.getElementById('watchPromoBody');
         if (promo) {
-            promo.innerHTML = _twsRenderThemePromotion(d) ||
+            promo.innerHTML = (_twsRenderThemePromotion(d) || '').replace('（4日连续观察 · 题材为主 · 按涨停时间）', '（4日连续观察 · 板块 + tags 题材 · 按涨停时间）') ||
                 '<div class="lt-trajectory-loading">暂无细分题材晋级数据</div>';
         }
         return '<div class="tws-summary">' + _twsRenderTimeline(d) + '</div>';
@@ -159,7 +159,7 @@
         return Promise.all([
             initial ? Promise.resolve(typeof _kplLevelEnsureHotRank === 'function' ? _kplLevelEnsureHotRank() : null).catch(function () {}) : null,
             fetch('/api/sector_ranking?max_age=25&_t=' + Date.now()).then(function (r) { return r.json(); }).catch(function () { return null; }),
-            fetch('/api/theme_wind_strength?max_age=15&_t=' + Date.now()).then(function (r) { return r.json(); }).catch(function () { return null; })
+            fetch('/api/theme_wind_strength?max_age=15&lib=1&_t=' + Date.now()).then(function (r) { return r.json(); }).catch(function () { return null; })
         ]).then(function (arr) {
             if (!arr[2] || arr[2].error) throw new Error((arr[2] && arr[2].error) || '板块强度数据获取失败');
             _themeWindStrengthData = arr[2];
@@ -207,7 +207,7 @@
 
     // ===================== 个股查询页（独立视图，点「返回」回到盯盘主页） =====================
     // 自上而下：搜索框(自动补全) → 板块名+tags 平铺 → KPL涨停记录 → K线 → 板块横排(近15日涨停/大涨，可拓展) → tags 横排(同)
-    var sq = {onlyTags: false, root: null, code: '', scrollY: 0, timer: null, token: 0};
+    var sq = {ladderToken: 0, ladderDate: '', ladderLive: '', firstOpen: false, tagSel: {}, root: null, code: '', scrollY: 0, timer: null, token: 0};
     function sqEsc(v) { return _kplEsc(v == null ? '' : String(v)); }
     function sqPct(v) { v = Number(v); return (v === null || !isFinite(v)) ? '' : (v > 0 ? '+' : '') + v.toFixed(2) + '%'; }
     function sqBuildRoot() {
@@ -222,13 +222,9 @@
             '<button class="sq2-go" data-sq-go="1">搜索</button></div><div class="sq2-sug" id="sq2Sug"></div></div>' +
             '<div id="sq2Result"><div class="lt-trajectory-loading">输入股票名称或代码开始查询</div></div>' +
             '<div class="sq2-sec" id="sq2ThemeSec"><div class="sq2-title">题材复盘 <small>点击任意板块 / tags 名称（连板天梯、板块列、标签行均可），在此展示该题材近1个月的涨停节奏</small>' +
-            '<label class="sq2-onlytags" title="开启后，板块名也只按「带该 tag 的股票」取成分股，不再按板块成分股"><input type="checkbox" id="sq2OnlyTags"> 仅 tags 口径</label></div>' +
-            '<div class="sq2-chiprow" id="sq2ThemeChips"></div><div id="sq2ThemeBody"><div class="sq2-none sq2-theme-hint">未选择题材。点击上方任意板块 / tags 名称即可查看。</div></div></div>';
+            '<button class="sq2-tagfilter-btn" data-sq-tagpanel="1" title="只按 tags 过滤涨停节奏里的股票">🏷 tags 过滤</button></div>' +
+            '<div class="sq2-chiprow" id="sq2ThemeChips"></div><div class="sq2-tagpanel" id="sq2TagPanel" style="display:none"></div><div id="sq2ThemeBody"><div class="sq2-none sq2-theme-hint">未选择题材。点击上方任意板块 / tags 名称即可查看。</div></div></div>';
         el.addEventListener('click', sqOnClick);
-        el.querySelector('#sq2OnlyTags').addEventListener('change', function () {
-            sq.onlyTags = this.checked;
-            if (sqTheme.key) sqThemeShow(sqTheme.key, true);      // 当前已展示的题材按新口径重算
-        });
         document.querySelector('.container').appendChild(el);
         var inp = el.querySelector('#sq2Input');
         inp.addEventListener('input', function () {
@@ -256,7 +252,7 @@
         return el;
     }
     function sqOnClick(e) {
-        var t = e.target.closest && e.target.closest('[data-sq-back],[data-sq-go],[data-sq-code],[data-sq-open],[data-sq-expand],[data-sq-jump],[data-sq-theme],[data-sq-toggle],[data-sq-pick],[data-sq-toggle-first]');
+        var t = e.target.closest && e.target.closest('[data-sq-back],[data-sq-go],[data-sq-code],[data-sq-open],[data-sq-expand],[data-sq-jump],[data-sq-theme],[data-sq-toggle],[data-sq-pick],[data-sq-toggle-first],[data-sq-tagpanel],[data-sq-tagsel],[data-sq-ldate]');
         if (!t) return;
         if (t.hasAttribute('data-sq-back')) return watchCloseStockQuery();
         if (t.hasAttribute('data-sq-go')) return sqSearch(document.getElementById('sq2Input').value);
@@ -266,8 +262,19 @@
             if (c) { c.scrollIntoView({behavior: 'smooth', block: 'center', inline: 'center'}); c.classList.add('flash'); setTimeout(function () { c.classList.remove('flash'); }, 1500); }
             return;
         }
+        if (t.hasAttribute('data-sq-ldate')) return sqLoadLadder(t.getAttribute('data-sq-ldate'));
+        if (t.hasAttribute('data-sq-tagpanel')) {
+            var tp = document.getElementById('sq2TagPanel');
+            tp.style.display = tp.style.display === 'none' ? '' : 'none';
+            return;
+        }
+        if (t.hasAttribute('data-sq-tagsel')) {
+            var tg = t.getAttribute('data-sq-tagsel');
+            if (tg === '*') sq.tagSel = {}; else sq.tagSel[tg] = !sq.tagSel[tg];
+            return sqThemeRender();
+        }
         if (t.hasAttribute('data-sq-toggle-first')) {
-            var fr = t.closest('.sq2-first'), col = fr.classList.toggle('collapsed');
+            var fr = t.closest('.sq2-first'), col = fr.classList.toggle('collapsed'); sq.firstOpen = !col;
             t.querySelector('small').textContent = (t.querySelector('small').textContent.replace(/[▸▾]/, '') + (col ? '▸' : '▾')).replace(/\s+/g, ' ');
             return;
         }
@@ -303,24 +310,27 @@
         document.getElementById('sq2Input').value = v;
         sqThemeShow(type + ':' + v, true);
     }
+    // 状态标识：最新日 → N板 / 首板 / 大涨；已断 → 曾N板（+断板天数）/ 曾首板（+N）/ 大涨（+N）
+    function sqStatus(s) {
+        if (!s.last || s.gap === null || s.gap === undefined) return '';
+        var base = s.lb >= 2 ? s.lb + '板' : (s.lb === 1 ? '首板' : '大涨');
+        return s.gap === 0 ? base : (s.lb >= 1 ? '曾' + base : base) + '（+' + s.gap + '）';
+    }
     function sqStockRow(s, selfCode) {
         var tip = (s.ev || []).map(function (e) { return e[0] + (e[1] >= 2 ? ' ' + e[1] + '板' : (e[1] === 1 ? ' 首板' : ' 大涨')); }).join('，');
-        var meta = '';
-        if (s.last) {
-            meta = '<span class="sq2-lb' + (s.lb >= 2 ? ' hot' : '') + '">' + (s.lb >= 2 ? s.lb + '板' : (s.lb === 1 ? '首板' : '大涨')) + '</span>' +
-                '<span class="sq2-gap">' + (s.gap ? '断板' + s.gap + '天' : '最新日') + '</span>';
-        }
+        var st = sqStatus(s);
+        var cls = s.gap === 0 ? (s.lb >= 2 ? ' hot' : '') : ' broke';
         var pct = sqPct(s.pct);
         return '<div class="sq2-stk' + (s.code === selfCode ? ' self' : '') + '" data-sq-open="' + sqEsc(s.code) + '" data-sq-name="' + sqEsc(s.name) + '" title="' + sqEsc(s.name + ' ' + s.code + (tip ? ' · ' + tip : '')) + '">' +
             '<div class="sq2-l1"><i class="wz-bd wz-bd-' + sqEsc(s.board || '主') + '">' + sqEsc(s.board || '主') + '</i><span class="wz-nm">' + sqEsc(s.name || s.code) + '</span>' +
             (pct ? '<b class="' + (s.pct > 0 ? 'wz-up' : (s.pct < 0 ? 'wz-down' : '')) + '">' + pct + '</b>' : '') + '</div>' +
-            (meta ? '<div class="sq2-l2">' + meta + '</div>' : '') + '</div>';
+            (st ? '<div class="sq2-l2"><span class="sq2-st' + cls + '">' + sqEsc(st) + '</span></div>' : '') + '</div>';
     }
     function sqColumns(kind, cols, selfCode) {
         if (!cols.length) return '<div class="lt-trajectory-loading">暂无' + (kind === 'plate' ? '板块' : 'tags') + '</div>';
         return '<div class="sq2-scroll"><div class="sq2-cols">' + cols.map(function (c, i) {
             var id = 'sq2col-' + kind + '-' + i;
-            return '<div class="sq2-col" id="' + id + '" data-kind="' + kind + '" data-name="' + sqEsc(c.name) + '">' +
+            return '<div class="sq2-col sq2-cat-' + sqEsc(c.cat || 'neutral') + '" id="' + id + '" data-kind="' + kind + '" data-name="' + sqEsc(c.name) + '">' +
                 '<div class="sq2-colhead"><span class="sq2-colname" data-sq-theme="' + kind + ':' + sqEsc(c.name) + '" title="点击查看该题材的涨停节奏（题材复盘）">' + sqEsc(c.name) + '</span>' +
                 '<small>' + c.active.length + ' / ' + c.total + '</small>' +
                 '<button class="sq2-exp" data-sq-expand="1">拓展</button></div>' +
@@ -373,7 +383,7 @@
                 '<img class="sq2-kline" data-orig-src="' + sinaKlineImg(code) + '" src="' + sinaKlineImg(code) + '" onerror="retryImg(this)"></div>' +
                 '<div class="sq2-chart"><div class="sq2-chart-t">分时图 <button class="img-refresh-btn" onclick="reloadSinaImg(this)" title="重新加载">&#x27f3;</button></div>' +
                 '<img class="sq2-kline" data-orig-src="' + sinaMinImg(code) + '" src="' + sinaMinImg(code) + '" onload="checkMinImgLoad(this)" onerror="retryImg(this)"></div></div></div>';
-            h += '<div class="sq2-sec"><div class="sq2-title">板块 <small>每列 = 该板块近15个交易日（' + sqEsc((g.dates[0] || '').slice(5)) + '~' + sqEsc((g.dates[g.dates.length - 1] || '').slice(5)) + '）有过涨停/大涨的股票（不含ST，已隐藏泛概念），按 连板 → 涨幅 → 断板天数 排序</small></div>' +
+            h += '<div class="sq2-sec"><div class="sq2-title">板块 <small>每列 = 该板块近15个交易日（' + sqEsc((g.dates[0] || '').slice(5)) + '~' + sqEsc((g.dates[g.dates.length - 1] || '').slice(5)) + '）有过涨停/大涨的股票（不含ST，已隐藏泛概念），排序：连板高度 → 首板 → 大涨 → 已断板（曾N板（+X）、大涨（+X）只标识，按断板天数）</small></div>' +
                 sqColumns('plate', g.plates, code) + '</div>';
             h += '<div class="sq2-sec"><div class="sq2-title">tags <small>每列 = 具有相同 tag 的近15日涨停/大涨股票（点击股票弹出K线）</small></div>' + sqColumns('tag', g.tags, code) + '</div>';
             out.innerHTML = h;
@@ -390,13 +400,13 @@
     }
 
     // ---- 连板涨停表现（搜索框上方，同题材风向的「连板涨停表现」：N板→2板 + 昨日断板 + 首板）；板块/tags 用新库，每只股票显示全部板块和 tags ----
-    function sqLadderChip(x, broken) {
+    function sqLadderChip(x, broken, lv) {
         var ft = Number(x.first_time), tm = (!broken && ft && ft < 999999) ? ('0' + Math.floor(ft / 10000)).slice(-2) + ':' + ('0' + Math.floor(ft / 100) % 100).slice(-2) : '';
         var plates = (x.plates || []).slice().sort(function (a, b) { return (b === x.plate) - (a === x.plate); });
         return '<div class="sq2-lchip' + (broken ? ' broken' : '') + '">' +
             '<div class="sq2-l1">' + (tm ? '<span class="wz-tm">' + tm + '</span>' : '') +
             '<i class="wz-bd wz-bd-' + sqEsc(x.board || '主') + '">' + sqEsc(x.board || '主') + '</i>' +
-            '<span class="wz-nm sq2-lname" data-sq-open="' + sqEsc(x.code) + '" data-sq-name="' + sqEsc(x.name) + '" title="点击弹出K线">' + sqEsc(x.name) + '</span>' +
+            '<span class="wz-nm sq2-lname sq2-lv-' + (broken ? 'broken' : (lv >= 5 ? 'high' : lv)) + '" data-sq-open="' + sqEsc(x.code) + '" data-sq-name="' + sqEsc(x.name) + '" title="点击弹出K线">' + sqEsc(x.name) + '</span>' +
             '<span class="sq2-lcode">' + sqEsc(x.code) + '</span>' +
             (sqPct(x.pct) ? '<b class="' + (x.pct > 0 ? 'wz-up' : (x.pct < 0 ? 'wz-down' : '')) + '">' + sqPct(x.pct) + '</b>' : '') + '</div>' +
             '<div class="sq2-l3">' + plates.map(function (n) {
@@ -405,38 +415,51 @@
                 return '<span class="sq2-chip sq2-chip-t" data-sq-theme="tag:' + sqEsc(n) + '">' + sqEsc(n) + '</span>';
             }).join('') + '</div></div>';
     }
-    function sqLoadLadder() {
+    // 日期：近15个交易日，默认最新交易日；盘中最新日=实时（30s 随总时钟刷新）。已收盘日由服务端提前计算并落盘，点击直接加载
+    function sqLoadLadder(date, silent) {
         var box = document.getElementById('sq2Ladder');
         if (!box) return;
-        fetch('/api/sq_ladder').then(function (r) { return r.json(); }).then(function (d) {
+        var token = ++sq.ladderToken;
+        if (!silent && date) box.classList.add('loading');
+        fetch('/api/sq_ladder' + (date ? '?date=' + encodeURIComponent(date) : '')).then(function (r) { return r.json(); }).then(function (d) {
+            if (token !== sq.ladderToken) return;
+            box.classList.remove('loading');
             if (!d || !d.date) { box.innerHTML = '<div class="sq2-title">📈 连板涨停表现</div><div class="sq2-none">暂无数据</div>'; return; }
+            sq.ladderDate = d.date; sq.ladderLive = d.is_live ? d.date : '';
             var n = (d.levels || []).reduce(function (a, l) { return a + l.current.length; }, 0);
-            var h = '<div class="sq2-title sq2-ltoggle" data-sq-toggle="sq2Ladder" title="点击折叠 / 展开">📈 连板涨停表现 <small>' + sqEsc(d.date) + ' · 连板 ' + n + ' 只 · 首板 ' + (d.first_total || 0) + ' 只 · 点击名称弹出K线，点击板块 / tags 查看题材复盘</small></div><div class="sq2-ladder-rows">';
+            var h = '<div class="sq2-title sq2-ltoggle" data-sq-toggle="sq2Ladder" title="点击折叠 / 展开">📈 连板涨停表现 <small>' + sqEsc(d.date) + (d.is_live ? ' · <b class="sq2-livetag">盘中实时</b>' : '') +
+                ' · 连板 ' + n + ' 只 · 首板 ' + (d.first_total || 0) + ' 只 · 点击名称弹出K线，点击板块 / tags 查看题材复盘</small></div>' +
+                '<div class="sq2-ldates">' + (d.dates || []).slice().reverse().map(function (x) {
+                    return '<span class="sq2-dchip' + (x === d.date ? ' on' : '') + (x === d.live ? ' live' : '') + '" data-sq-ldate="' + sqEsc(x) + '">' + sqEsc(x.slice(5)) + (x === d.live ? '<i>盘中</i>' : '') + '</span>';
+                }).join('') + '</div><div class="sq2-ladder-rows">';
             (d.levels || []).forEach(function (l) {
                 h += '<div class="tws-ladder-row"><div class="tws-ladder-level sc-lb' + (l.level >= 5 ? 'high' : l.level) + '">' + l.level + '板</div><div class="tws-ladder-groups">';
-                if (l.current.length) h += '<div class="tws-ladder-group"><span class="tws-ladder-label">今日' + l.level + '板</span><span class="tws-ladder-chips">' + l.current.map(function (x) { return sqLadderChip(x, false); }).join('') + '</span></div>';
-                if (l.broken.length) h += '<div class="tws-ladder-group tws-ladder-group-broken"><span class="tws-ladder-label">昨日' + (l.level - 1) + '板未涨停</span><span class="tws-ladder-chips">' + l.broken.map(function (x) { return sqLadderChip(x, true); }).join('') + '</span></div>';
+                if (l.current.length) h += '<div class="tws-ladder-group"><span class="tws-ladder-label">' + (d.is_live ? '今日' : '当日') + l.level + '板</span><span class="tws-ladder-chips">' + l.current.map(function (x) { return sqLadderChip(x, false, l.level); }).join('') + '</span></div>';
+                if (l.broken.length) h += '<div class="tws-ladder-group tws-ladder-group-broken"><span class="tws-ladder-label">前一交易日' + (l.level - 1) + '板，当日未涨停</span><span class="tws-ladder-chips">' + l.broken.map(function (x) { return sqLadderChip(x, true); }).join('') + '</span></div>';
                 h += '</div></div>';
             });
             if ((d.first || []).length) {
-                h += '<div class="tws-ladder-row tws-ladder-first sq2-first collapsed"><div class="tws-ladder-level sc-lb1 sq2-ftoggle" data-sq-toggle-first="1" title="点击展开 / 折叠首板">首板<small>' + (d.first_total || 0) + ' ▸</small></div><div class="tws-ladder-groups">';
+                h += '<div class="tws-ladder-row tws-ladder-first sq2-first' + (sq.firstOpen ? '' : ' collapsed') + '"><div class="tws-ladder-level sc-lb1 sq2-ftoggle" data-sq-toggle-first="1" title="点击展开 / 折叠首板">首板<small>' + (d.first_total || 0) + (sq.firstOpen ? ' ▾' : ' ▸') + '</small></div><div class="tws-ladder-groups">';
                 d.first.forEach(function (g) {
                     h += '<div class="tws-ladder-group tws-ladder-group-first"><span class="tws-ladder-label"><span class="sq2-chip sq2-chip-p main" data-sq-theme="plate:' + sqEsc(g.plate) + '">' + sqEsc(g.plate) + '</span> <em>' + g.stocks.length + '只首板</em></span>' +
-                        '<span class="tws-ladder-chips">' + g.stocks.map(function (x) { return sqLadderChip(x, false); }).join('') + '</span></div>';
+                        '<span class="tws-ladder-chips">' + g.stocks.map(function (x) { return sqLadderChip(x, false, 1); }).join('') + '</span></div>';
                 });
                 h += '</div></div>';
             }
             box.innerHTML = h + '</div>';
             sqMarkTheme();
-        }).catch(function () { box.innerHTML = ''; });
+        }).catch(function () { box.classList.remove('loading'); if (!silent) box.innerHTML = ''; });
     }
+    window.watchSqTick = function () {          // 30s 总时钟：个股查询页可见且正看盘中实时日时刷新天梯
+        if (sq.root && sq.root.style.display !== 'none' && sq.ladderLive) sqLoadLadder(sq.ladderLive, true);
+    };
     function sqMarkTheme() {
         [].forEach.call(document.querySelectorAll('#watchSqRoot [data-sq-theme]'), function (c) {
             c.classList.toggle('on', !!sqTheme.key && c.getAttribute('data-sq-theme') === sqTheme.key);
         });
     }
     // ---- 题材复盘·涨停节奏：复用主页面「题材复盘」的 _kplRenderRhythmGrid（同内容/同交互/同样式），数据换成板块或 tag 的成分股 ----
-    var sqTheme = {key: '', token: 0};
+    var sqTheme = {key: '', token: 0, seq: 0, data: null, kind: '', name: ''};
     function sqScrollToTheme() {        // 题材复盘在页面最下方：点击后一定滚到它，否则看起来「没反应」
         var sec = document.getElementById('sq2ThemeSec');
         if (sec) sec.scrollIntoView({behavior: 'smooth', block: 'start'});
@@ -446,55 +469,106 @@
         if (!body) return;
         var sep = key.indexOf(':'), kind = key.slice(0, sep), name = key.slice(sep + 1);
         if (!force && sqTheme.key === key && body.innerHTML) {            // 再点一次 = 收起
-            sqTheme.key = ''; body.innerHTML = '<div class="sq2-none sq2-theme-hint">未选择题材。点击上方任意板块 / tags 名称即可查看。</div>';
+            sqTheme.key = ''; sqTheme.data = null;
+            body.innerHTML = '<div class="sq2-none sq2-theme-hint">未选择题材。点击上方任意板块 / tags 名称即可查看。</div>';
+            document.getElementById('sq2TagPanel').innerHTML = '';
             sqMarkTheme();
             return;
         }
-        sqTheme.key = key;
+        sqTheme.key = key; sqTheme.data = null; sq.tagSel = {};
+        document.getElementById('sq2TagPanel').innerHTML = '';
         sqMarkTheme();
         var token = ++sqTheme.token;
         body.innerHTML = '<div class="lt-trajectory-loading">加载「' + sqEsc(name) + '」涨停节奏...</div>';
         sqScrollToTheme();
         var now = new Date(), st = new Date(now); st.setMonth(st.getMonth() - 1);
         var f = function (d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); };
-        fetch('/api/sq_theme?kind=' + kind + '&name=' + encodeURIComponent(name) + '&date_start=' + f(st) + '&date_end=' + f(now) + (sq.onlyTags ? '&only_tags=1' : ''))
+        fetch('/api/sq_theme?kind=' + kind + '&name=' + encodeURIComponent(name) + '&date_start=' + f(st) + '&date_end=' + f(now))
             .then(function (r) { return r.json(); }).then(function (d) {
                 if (token !== sqTheme.token) return;
                 if (!d || d.error) throw new Error((d && d.error) || '加载失败');
-                _kplGemStrongRise = d.gem_strong_rise || {};
-                _kplTradeDates = d.trade_dates || [];
-                var secId = 'sq' + token;
-                var html = _kplRenderRhythmGrid(d.results || [], secId, secId + '-rhythm');
-                body.innerHTML = '<div class="sq2-theme-head"><b>' + (kind === 'plate' ? '板块' : 'tag') + '：' + sqEsc(name) + '</b><span>成分股 ' + (d.members || 0) + ' 只（不含ST）· 近1个月</span></div>' +
-                    '<div class="board-section merged-section">' + (html || '<div class="sq2-none">近1个月该题材成分股无涨停 / 大涨</div>') + '</div>';
-                _kplLoadFirstZtTimes();
-                var grid = document.getElementById('kpl-rhythm-grid-' + secId);
-                if (!grid) return;
-                [].forEach.call(grid.querySelectorAll('.rg-row[data-stock]'), function (row) {
-                    row.addEventListener('mouseenter', function () {
-                        var nm = this.getAttribute('data-stock');
-                        [].forEach.call(grid.querySelectorAll('.rg-row[data-stock]'), function (o) {
-                            [].forEach.call(o.querySelectorAll('.stock-block'), function (b) { b.classList.toggle('highlighted', o.getAttribute('data-stock') === nm); });
-                        });
-                    });
-                    row.addEventListener('mouseleave', function () {
-                        [].forEach.call(grid.querySelectorAll('.rg-row .stock-block'), function (b) { b.classList.remove('highlighted'); });
-                    });
-                    [].forEach.call(row.querySelectorAll('.stock-block'), function (block) {
-                        block.addEventListener('click', function (e) {
-                            e.stopPropagation();
-                            var nm = row.getAttribute('data-stock'), code = this.getAttribute('data-code');
-                            if (!nm || !code) return;
-                            var nav = _buildRhythmNavList(this), idx = -1;
-                            for (var i = 0; i < nav.length; i++) { if (nav[i].code === code) { idx = i; break; } }
-                            openDsStockFromRhythm(nm, code, '', nav, idx);
-                        });
-                    });
-                });
+                sqTheme.data = d; sqTheme.kind = kind; sqTheme.name = name;
+                sqThemeRender();
                 sqScrollToTheme();
             }).catch(function (e) {
                 if (token === sqTheme.token) body.innerHTML = '<div class="watch-err">加载失败：' + sqEsc(e && e.message || e) + '</div>';
             });
+    }
+    // 涨停节奏里的上板时间：本地首封库没有的（含最新交易日）用 KPL 行自带的 first_time 补上
+    function sqFillZtTimes(rows) {
+        var m = {};
+        (rows || []).forEach(function (r) {
+            var ft = Number(r.first_time);
+            if (r.date && r.stock_code && ft && ft < 999999) m[r.date.replace(/-/g, '') + r.stock_code] = ft;
+        });
+        var run = function () {
+            [].forEach.call(document.querySelectorAll('#sq2ThemeBody .rg-first-zt-time'), function (n) {
+                if (n.textContent) return;
+                var v = m[(n.getAttribute('data-first-zt-date') || '') + (n.getAttribute('data-first-zt-code') || '')];
+                var t = v && _kplFormatFirstZtTime(v);
+                if (t) { n.textContent = t; n.title = '首次涨停时间 ' + t; }
+            });
+        };
+        run(); setTimeout(run, 700); setTimeout(run, 2500);
+    }
+    // 渲染（可重复调用：勾选 tags 过滤时只重画，不再请求）：只按 tags 过滤 = 只保留命中任一已选 tag 的股票行
+    function sqThemeRender() {
+        var d = sqTheme.data, body = document.getElementById('sq2ThemeBody'), panel = document.getElementById('sq2TagPanel');
+        if (!d || !body) return;
+        var ct = d.code_tags || {}, rows = d.results || [];
+        var sel = Object.keys(sq.tagSel).filter(function (t) { return sq.tagSel[t]; });
+        // tags 统计（按当前题材涨停节奏里出现的股票去重）
+        var cnt = {}, seen = {};
+        rows.forEach(function (r) {
+            var c = r.stock_code; if (!c || seen[c]) return; seen[c] = 1;
+            (ct[c] || []).forEach(function (t) { cnt[t] = (cnt[t] || 0) + 1; });
+        });
+        var tags = Object.keys(cnt).sort(function (a, b) { return cnt[b] - cnt[a] || (a < b ? -1 : 1); });
+        panel.innerHTML = '<div class="sq2-tp-head">只按 tags 过滤：勾选后仅保留命中任一所选 tags 的股票' +
+            (sel.length ? ' <button class="sq2-tp-clear" data-sq-tagsel="*">清除（' + sel.length + '）</button>' : '') + '</div><div class="sq2-chiprow">' +
+            (tags.length ? tags.map(function (t) {
+                return '<span class="sq2-chip sq2-chip-t' + (sq.tagSel[t] ? ' on' : '') + '" data-sq-tagsel="' + sqEsc(t) + '">' + sqEsc(t) + ' <small>' + cnt[t] + '</small></span>';
+            }).join('') : '<span class="sq2-none">无可用 tags</span>') + '</div>';
+        var shown = rows;
+        _kplGemStrongRise = d.gem_strong_rise || {};
+        if (sel.length) {
+            var hit = function (c) { return (ct[c] || []).some(function (t) { return sq.tagSel[t]; }); };
+            shown = rows.filter(function (r) { return hit(r.stock_code); });
+            var gs = {}; Object.keys(_kplGemStrongRise).forEach(function (c) { if (hit(c)) gs[c] = _kplGemStrongRise[c]; });
+            _kplGemStrongRise = gs;
+        }
+        _kplTradeDates = d.trade_dates || [];
+        var secId = 'sq' + (++sqTheme.seq);
+        var html = _kplRenderRhythmGrid(shown, secId, secId + '-rhythm');
+        var nStocks = {}; shown.forEach(function (r) { nStocks[r.stock_code] = 1; });
+        body.innerHTML = '<div class="sq2-theme-head"><b>' + (sqTheme.kind === 'plate' ? '板块' : 'tag') + '：' + sqEsc(sqTheme.name) + '</b><span>成分股 ' + (d.members || 0) + ' 只（不含ST）· 近1个月' +
+            (sel.length ? ' · 已按 tags 过滤：' + sel.map(sqEsc).join('、') + '（' + Object.keys(nStocks).length + ' 只）' : '') + '</span></div>' +
+            '<div class="board-section merged-section">' + (html || '<div class="sq2-none">近1个月该题材成分股无涨停 / 大涨' + (sel.length ? '（当前 tags 过滤下）' : '') + '</div>') + '</div>';
+        _kplLoadFirstZtTimes();
+        sqFillZtTimes(shown);
+        var grid = document.getElementById('kpl-rhythm-grid-' + secId);
+        if (!grid) return;
+        [].forEach.call(grid.querySelectorAll('.rg-row[data-stock]'), function (row) {
+            row.addEventListener('mouseenter', function () {
+                var nm = this.getAttribute('data-stock');
+                [].forEach.call(grid.querySelectorAll('.rg-row[data-stock]'), function (o) {
+                    [].forEach.call(o.querySelectorAll('.stock-block'), function (b) { b.classList.toggle('highlighted', o.getAttribute('data-stock') === nm); });
+                });
+            });
+            row.addEventListener('mouseleave', function () {
+                [].forEach.call(grid.querySelectorAll('.rg-row .stock-block'), function (b) { b.classList.remove('highlighted'); });
+            });
+            [].forEach.call(row.querySelectorAll('.stock-block'), function (block) {
+                block.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    var nm = row.getAttribute('data-stock'), code = this.getAttribute('data-code');
+                    if (!nm || !code) return;
+                    var nav = _buildRhythmNavList(this), idx = -1;
+                    for (var i = 0; i < nav.length; i++) { if (nav[i].code === code) { idx = i; break; } }
+                    openDsStockFromRhythm(nm, code, '', nav, idx);
+                });
+            });
+        });
     }
     // 进入：query 可为股票名称或代码，传入则自动搜索；返回：恢复盯盘主页和滚动位置
     window.watchOpenStockQuery = function (query) {
@@ -505,7 +579,7 @@
         if (back) back.style.display = 'none';
         sq.root.style.display = '';
         window.scrollTo(0, 0);
-        sqLoadLadder();
+        sqLoadLadder(sq.ladderDate && sq.ladderDate !== sq.ladderLive ? sq.ladderDate : null);
         if (query) { document.getElementById('sq2Input').value = query; sqSearch(query); }
         else document.getElementById('sq2Input').focus();
     };
@@ -515,6 +589,24 @@
         main.style.display = '';
         if (back) back.style.display = '';
         window.scrollTo(0, sq.scrollY || 0);
+    };
+    // K 线弹框：去掉「东财概念标签」；「开盘红行业 / 概念标签」改为「开盘啦」，下面补上新库里的 板块 与 tags
+    window._renderDcConcepts = function () { return ''; };
+    window._renderKphIndustryConcepts = function (data, compact) {
+        var esc = function (v) { return (typeof escapeHtml === 'function' ? escapeHtml(v) : String(v)); };
+        var pill = function (v, bg, fg, bd) { return '<span class="stock-detail-tag" style="background:' + bg + ';color:' + fg + ';border-color:' + bd + ';">' + esc(v) + '</span>'; };
+        var row = function (lab, arr, bg, fg, bd) {
+            return '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-top:6px;"><span style="color:#6b7280;font-size:0.8em;min-width:44px;">' + lab + '</span>' +
+                (arr.length ? arr.map(function (c) { return pill(c, bg, fg, bd); }).join('') : '<span style="color:#888;font-size:0.85em;">暂无</span>') + '</div>';
+        };
+        var date = (data && data.kph_industry_as_of) || '';
+        var title = '开盘啦' + (date ? ' · ' + date : '');
+        var wrapA = compact ? '<div class="sq-concepts" style="margin-top:8px;"><div class="sq-concepts-label">' : '<div class="ds-stock-kline-section"><div class="ds-stock-kline-label">';
+        return wrapA + title + '</div><div>' +
+            row('行业/概念', (data && data.kph_industry_concepts) || [], '#fff3e0', '#a45100', '#f1c27d') +
+            row('板块', (data && data.kph_plates) || [], '#e3f2fd', '#0d47a1', '#90caf9') +
+            row('tags', (data && data.kph_tags) || [], '#f3e5f5', '#6a1b9a', '#ce93d8') +
+            '</div></div>';
     };
     // 所有股票 K 线弹框里「查询概念」右边补一个「个股查询」（弹框是主页面脚本动态生成的，用 MutationObserver 兜底）
     function sqInjectButtons() {
@@ -596,6 +688,7 @@
         refreshStrength(false);
         watchRefreshTrajectory();
         watchRefreshIndices();
+        if (window.watchSqTick) watchSqTick();
         var modal = document.getElementById('tmmThemeKlineModal');
         if (modal && modal.classList.contains('active') && typeof refreshTmmThemeKlines === 'function') refreshTmmThemeKlines();
     }
