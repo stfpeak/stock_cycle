@@ -99,12 +99,26 @@
             '<span class="rt-refresh-icon" onclick="manualRefreshTws()" title="刷新">↻</span></h3>' +
             '<div id="twWindStrengthBody"><div class="loading">加载中...</div></div></div>' +
 
+            '<div class="rt-section lt-trajectory-section" id="watchReverseSection">' +
+            '<h3 class="wd-head" style="color:#22d3ee;" onclick="watchToggleReverse()" title="点击展开 / 折叠">' +
+            '<span class="wd-arrow" id="watchReverseArrow">▶</span>🔎 反推关注 <span class="count-badge">首板涨停 → 昨日同题材尚未涨停的首板 / 2板</span> ' +
+            '<span class="wd-count" id="watchReverseCount"></span>' +
+            '<span class="rt-refresh-icon" onclick="event.stopPropagation();watchLoadReverse()" title="刷新">↻</span></h3>' +
+            '<div id="watchReverseBody" style="display:none"><div class="lt-trajectory-loading">加载中...</div></div></div>' +
+
             '<div class="rt-section lt-trajectory-section" id="watchDeclineSection">' +
             '<h3 id="watchDeclineHead" class="wd-head" onclick="watchToggleDecline()" title="点击展开 / 折叠">' +
             '<span class="wd-arrow" id="watchDeclineArrow">▶</span>🔻 跌幅 <span class="count-badge">跌幅 &gt; 5%</span> ' +
             '<span class="wd-count" id="watchDeclineCount"></span>' +
             '<span class="rt-refresh-icon" onclick="event.stopPropagation();watchRefreshTrajectory()" title="刷新">↻</span></h3>' +
             '<div id="watchDeclineBody" style="display:none"><div class="lt-trajectory-loading">加载中...</div></div></div>' +
+
+            '<div class="rt-section lt-trajectory-section" id="watchSlotSection">' +
+            '<h3 class="wd-head" style="color:#ff9f43;" onclick="watchToggleSlot()" title="点击展开 / 折叠">' +
+            '<span class="wd-arrow" id="watchSlotArrow">▶</span>📣 竞价报告 <span class="count-badge">题材内 / 题材间卡位 · T=竞价涨幅（开盘价） F=封板时间</span> ' +
+            '<span class="rt-refresh-icon" onclick="event.stopPropagation();watchLoadSlot()" title="刷新">↻</span></h3>' +
+            '<div id="watchSlotWrap" style="display:none"><div class="as-bar" id="watchSlotBar"></div>' +
+            '<div id="watchSlotBody"><div class="lt-trajectory-loading">加载中...</div></div></div></div>' +
 
             '<div class="rt-section lt-trajectory-section" id="twLtTrajectorySection">' +
             '<h3 style="margin:6px 0 8px 0;font-size:0.9em;color:#4fc3f7;">🌐 涨停原因标签轨迹 <span class="count-badge">近20日</span> ' +
@@ -679,6 +693,216 @@
         if (arrow) arrow.textContent = open ? '▼' : '▶';
         if (open && !ztClass.loaded) watchLoadZtClass();
     };
+    // ===================== 竞价报告 · 卡位（/api/auction_slot） =====================
+    // 基准 = 前一交易日题材梯队（板数↓、涨停时间↑）；当日竞价（=开盘价）用 T（竞价涨幅）与 F（封板时间）重排，序变了即「卡位」。
+    var slot = {date: '', stage: 'auction', onlySlot: true, data: null, loading: false, token: 0};
+    function asEsc(v) { return _kplEsc(v == null ? '' : String(v)); }
+    function asT(t) { return (t === null || t === undefined) ? '--' : (t > 0 ? '+' : '') + Number(t).toFixed(2) + '%'; }
+    function asTCls(t) { return t === null || t === undefined ? '' : (t > 0 ? 'wz-up' : (t < 0 ? 'wz-down' : '')); }
+    function asNames(list) {
+        if (!list || !list.length) return '';
+        var n = list.slice(0, 2).map(function (x) { return asEsc(x.name); }).join('、');
+        return n + (list.length > 2 ? ' 等' + list.length + '只' : '');
+    }
+    function asStk(m) {
+        return 'onclick="openDsStockFromRhythm(\'' + asEsc(m.name) + '\',\'' + m.code + '\',\'\',[],-1)"';
+    }
+    function asSlotLabel(m) {
+        var w = (m.wts && m.wts.length) ? '<span class="as-tag as-wts">弱转强</span> 反超 ' + asNames(m.wts) + ' ' : '';
+        var x = '';
+        if (m.wtw) {
+            var why = [];
+            if (m.wtw.lt_open) why.push('收盘价低于开盘价');
+            if (m.wtw.rank) why.push('名次 ' + m.wtw.rank[0] + '→' + m.wtw.rank[1]);
+            x = '<span class="as-tag as-wtw">强转弱</span> ' + why.join('，') + ' ';
+        }
+        var sl = asSlotLabel0(m);
+        return w + x + (sl && (w || x) ? '｜ ' : '') + sl;
+    }
+    function asSlotLabel0(m) {
+        if (m.slot === 'same') return '<span class="as-tag as-same">同位卡位</span> 压过 ' + asNames(m.over);
+        if (m.slot === 'up1') return '<span class="as-tag as-up1">越1位卡位</span> 压过 ' + asNames(m.over);
+        if (m.slot === 'lost') return '<span class="as-tag as-lost">被卡位</span> ← ' + asNames(m.over_by);
+        return '';
+    }
+    function asMemberRow(m, stage, live) {
+        var mv = '';
+        if (m.r0 === null) mv = '<span class="as-new">新晋</span>→' + m.r1;
+        else if (m.r0 === m.r1) mv = m.r0 + '→' + m.r1;
+        else mv = m.r0 + '→' + m.r1 + (m.r1 < m.r0 ? ' <i class="as-mup">▲' + (m.r0 - m.r1) + '</i>' : ' <i class="as-mdn">▼' + (m.r1 - m.r0) + '</i>');
+        var lv = m.new ? '昨日未涨停' : (m.lb0 >= 2 ? m.lb0 + '板' : '首板') + (m.ft0 ? ' ' + m.ft0 : '');
+        var st = m.status ? '<span class="as-st as-st-' + (m.yizi ? 'yz' : (m.t >= 1.5 ? 'hi' : (m.t > -1.5 ? 'fl' : 'lo'))) + '">' + m.status + '</span>' : '';
+        var fcol = m.sealed ? '<b class="as-f">' + asEsc(m.f) + '</b>' + (m.lb1 >= 2 ? ' <i>' + m.lb1 + '板</i>' : '') :
+            (m.pct === null || m.pct === undefined ? '<span class="as-nf">--</span>' : '<span class="as-px ' + asTCls(m.pct) + '">' + (live ? '现 ' : '收 ') + asT(m.pct) + '</span>');
+        return '<div class="as-row' + (m.slot === 'lost' ? ' lost' : (m.slot === 'same' || m.slot === 'up1' ? ' win' : '')) + (m.wts && m.wts.length ? ' wts' : '') + (m.wtw ? ' wtw' : '') + '">' +
+            '<span class="as-mv">' + mv + '</span>' +
+            '<span class="as-nm' + (m.weak ? ' weak' : '') + '" ' + (m.weak ? 'title="仅所属板块命中该题材，tags 不含" ' : '') + asStk(m) + '><i class="wz-bd wz-bd-' + asEsc(m.board || '主') + '">' + asEsc(m.board || '主') + '</i>' + asEsc(m.name) + '</span>' +
+            '<span class="as-lv">' + asEsc(lv) + '</span>' +
+            '<span class="as-t ' + asTCls(m.t) + '">T ' + asT(m.t) + '</span>' + st +
+            '<span class="as-fc">' + fcol + '</span>' +
+            '<span class="as-lab">' + asSlotLabel(m) + '</span></div>';
+    }
+    function asTheme(r, stage, live, tp) {
+        var head = '<div class="as-th-head"><b class="as-th-name"><i class="as-prio">' + r.prio + '</i>' + asEsc(r.theme) + '</b>' +
+            '<span class="as-th-meta">昨日最高 ' + (r.top_lb0 >= 2 ? r.top_lb0 + '板' : '首板') + ' · 参与 ' + r.n + ' 只' + (r.n_yizi ? ' · 一字 ' + r.n_yizi : '') + '</span>' +
+            (r.n_slot ? '<span class="as-tag as-same">卡位 ' + r.n_slot + ' 只</span>' : '') +
+            (r.n_wts ? '<span class="as-tag as-wts">弱转强 ' + r.n_wts + ' 只</span>' : '') +
+            (r.n_wtw ? '<span class="as-tag as-wtw">强转弱 ' + r.n_wtw + ' 只</span>' : '') +
+            (r.leader_change ? '<span class="as-tag as-lead">龙头易主 ' + asEsc(r.leader0) + ' → ' + asEsc(r.leader1) + '</span>' : '') + '</div>';
+        var tops = '';
+        if (tp) {
+            var one = function (list, kind, emptyTxt) {
+                return list.length ? list.map(function (c) { return asTopCard(c, kind, live); }).join('') : '<span class="as-nf">' + emptyTxt + '</span>';
+            };
+            tops = '<div class="as-th-tops"><div><div class="as-th-tops-t">昨日最高板</div>' + one(tp.y, 'y', '--') + '</div>' +
+                '<div><div class="as-th-tops-t">今日最高板</div>' + one(tp.t, 't', '今日暂无涨停') + '</div></div>';
+        }
+        return '<div class="as-theme">' + head + tops + '<div class="as-th-cols"><span>昨序→今序</span><span>股票</span><span>昨日</span><span>竞价 T</span><span>状态</span><span>' +
+            (stage === 'final' ? '封板 F / ' : '竞价封板 / ') + (live ? '现价' : '收盘') + '</span><span>卡位结果</span></div>' +
+            r.members.map(function (m) { return asMemberRow(m, stage, live); }).join('') + '</div>';
+    }
+    function asCrossSide(s) {
+        return '<span class="as-cs" onclick="openDsStockFromRhythm(\'' + asEsc(s.name) + '\',\'' + s.code + '\',\'\',[],-1)">' + asEsc(s.name) + '</span> 昨 ' + asEsc(s.ft0) +
+            ' · T <b class="' + asTCls(s.t) + '">' + asT(s.t) + '</b>' + (s.yizi ? ' 一字' : '') + (s.f && !s.yizi ? ' · F ' + asEsc(s.f) : '');
+    }
+    function asCross(st) {
+        var ct = st.cross_themes || [];
+        if (!ct.length) return '<div class="as-none">昨日没有 ≥2 板的题材梯队，无题材间卡位可比。</div>';
+        var order = '<div class="as-ct-order">' + ct.map(function (c) {
+            var mv = c.r0 === c.r1 ? '' : (c.r1 < c.r0 ? '<i class="as-mup">▲' + (c.r0 - c.r1) + '</i>' : '<i class="as-mdn">▼' + (c.r1 - c.r0) + '</i>');
+            return '<span class="as-ct"><em>' + c.r0 + '→' + c.r1 + '</em><b>' + asEsc(c.theme) + '</b> ' + c.top + '板 ' + asEsc(c.leader) +
+                ' <span class="' + asTCls(c.t) + '">' + (c.yizi ? '一字' : asT(c.t)) + '</span> ' + mv + '</span>';
+        }).join('') + '</div>';
+        var ev = (st.cross || []).map(function (x) {
+            var kind = x.gap === 0 ? '同高度卡位' : '越' + x.gap + '板卡位';
+            return '<div class="as-ev"><span class="as-tag ' + (x.gap === 0 ? 'as-same' : 'as-up1') + '">' + kind + '</span> ' +
+                '<b class="as-win">' + asEsc(x.win) + '</b>（昨' + x.win_lb0 + '板）卡位 <b class="as-lose">' + asEsc(x.lose) + '</b>（昨' + x.lose_lb0 + '板）：' +
+                asCrossSide(x.win_stock) + ' &nbsp;<em>压过</em>&nbsp; ' + asCrossSide(x.lose_stock) + '</div>';
+        }).join('') || '<div class="as-none">题材间暂无卡位：各题材高度排序与昨日一致。</div>';
+        return order + ev;
+    }
+    function asTopCard(c, kind, live) {
+        if (!c) return '';
+        var lb = kind === 'y' ? c.lb0 : c.lb1;
+        var tm = c.tmode === '未涨停' ? '<span class="as-tm as-tm-no">未涨停 ' + (live ? '现' : '收') + ' <b class="' + asTCls(c.pct) + '">' + asT(c.pct) + '</b></span>' :
+            '<span class="as-tm as-tm-' + (c.tmode === '一字' ? 'yz' : 'hs') + '">今日' + asEsc(c.tmode) + (c.tf ? ' ' + asEsc(c.tf) : '') + (c.lb1 >= 2 ? ' · ' + c.lb1 + '板' : '') + '</span>';
+        var ym = '<span class="as-tm as-tm-y">昨日' + asEsc(c.ymode) + (c.yft && c.ymode !== '一字' ? ' ' + asEsc(c.yft) : '') + '</span>';
+        return '<div class="as-top"><div class="as-top-l1"><span class="as-nm' + (c.weak ? ' weak' : '') + '" onclick="openDsStockFromRhythm(\'' + asEsc(c.name) + '\',\'' + c.code + '\',\'\',[],-1)">' +
+            '<i class="wz-bd wz-bd-' + asEsc(c.board || '主') + '">' + asEsc(c.board || '主') + '</i>' + asEsc(c.name) + '</span><em>' + asEsc(c.code) + '</em>' +
+            '<b class="as-lbn">' + (lb >= 2 ? lb + '板' : (lb === 1 ? '首板' : '--')) + '</b>' +
+            '<span class="as-t ' + asTCls(c.t) + '">竞价 ' + asT(c.t) + '</span>' +
+            '<span class="as-t ' + asTCls(c.pct) + '">' + (live ? '现' : '收') + ' ' + asT(c.pct) + '</span>' + ym + tm + '</div>' +
+            '<div class="as-top-l2">' + (c.plates.length ? '<span>板块：' + c.plates.map(asEsc).join('、') + '</span>' : '') +
+            (c.tags.length ? '<span>tags：' + c.tags.map(asEsc).join('、') + '</span>' : '') + '</div></div>';
+    }
+    function asRender() {
+        var d = slot.data, bar = document.getElementById('watchSlotBar'), body = document.getElementById('watchSlotBody');
+        if (!bar || !body) return;
+        if (!d) { body.innerHTML = '<div class="lt-trajectory-loading">加载中...</div>'; return; }
+        var dates = (d.dates || []).slice().reverse();
+        var st = d[slot.stage];
+        var sum = st ? st.summary : null;
+        bar.innerHTML =
+            '<select class="as-sel" onchange="watchSlotPick(this.value)">' + dates.map(function (x) {
+                return '<option value="' + x + '"' + (x === d.date ? ' selected' : '') + '>' + x + (x === d.live ? '（今日·盘中）' : '') + '</option>';
+            }).join('') + '</select>' +
+            '<span class="as-seg"><button class="' + (slot.stage === 'auction' ? 'on' : '') + '" onclick="watchSlotStage(\'auction\')" title="只看开盘价 T（9:25 竞价结束即定，一字=竞价封板）">竞价（T）</button>' +
+            '<button class="' + (slot.stage === 'final' ? 'on' : '') + '" onclick="watchSlotStage(\'final\')" title="叠加当日实际首封时间 F：已封板排前（按 F），其次按 T">全天（T+F）</button></span>' +
+            '<label class="as-chk"><input type="checkbox" ' + (slot.onlySlot ? 'checked' : '') + ' onchange="watchSlotOnly(this.checked)">只看有卡位的题材</label>' +
+            '<span class="as-sum">基准 ' + asEsc(d.prev || '--') + ' 昨日梯队 → ' + asEsc(d.date || '--') + ' 开盘' +
+            (sum ? ' ｜ 题材 ' + sum.themes + ' · 有卡位 <b>' + sum.slot_themes + '</b> · 卡位个股 <b>' + sum.slot_stocks + '</b> · 弱转强 <b>' + sum.wts_stocks + '</b> · 强转弱 <b>' + sum.wtw_stocks + '</b> · 题材间卡位 <b>' + sum.cross + '</b> · 龙头易主 <b>' + sum.leader_change + '</b>' : '') + '</span>';
+        if (!st) { body.innerHTML = '<div class="as-none">' + asEsc(d.msg || '暂无数据') + '</div>'; return; }
+        var themes = st.themes.filter(function (r) { return !slot.onlySlot || r.n_slot || r.leader_change || r.n_wts || r.n_wtw; });
+        var tmap = {};
+        (d.tops || []).forEach(function (x) { tmap[x.theme] = x; });
+        body.innerHTML =
+            '<div class="as-blk"><div class="as-blk-t">题材间卡位 <small>昨日 ≥2 板梯队的题材，用最高板股今日表现互比，只算相邻高度（同高度、差1板；N+1 不与 N-1 比）：序变了 = 靠后者卡位靠前者</small></div>' + asCross(st) + '</div>' +
+            '<div class="as-blk"><div class="as-blk-t">题材内卡位 <small>题材按昨日连板天梯从最高板往下确定优先级（①最高），股票可同时出现在多个题材；红底=卡位者，灰底=被卡位，青底=弱转强（竞价排在后，最终上板涨停且早于竞价排在它前面的股票）；紫底=强转弱（收盘价低于开盘价，或板块内名次降低）；新晋=昨日未涨停但今日涨停/一字。点股票名看K线</small></div>' +
+            (themes.length ? '<div class="as-themes">' + themes.map(function (r) { return asTheme(r, slot.stage, !!d.is_live, tmap[r.theme]); }).join('') + '</div>' :
+                '<div class="as-none">该日无题材内卡位' + (slot.onlySlot ? '（可取消「只看有卡位的题材」查看全部梯队）' : '') + '。</div>') + '</div>' +
+            '<div class="as-rule">规则：基准序=板数↓、涨停时间↑；T=开盘价/昨收-1（0.5%一档，同档按昨日序）；一字=竞价封板；全天阶段 F 按 10 秒一档、9:26 前封板视为竞价一字。同身位卡位=同板数里后排压过前排；越1位卡位=低一个身位（含新晋首板）压过高一个身位；不跨2个身位；既卡位又被卡位的按被卡位算。灰色半透明名称=仅所属板块命中该题材、tags 不含（题材匹配优先看 tags）。弱转强=竞价排在某股之后，最终却上板涨停并早于该股（该股未封或封得更晚）；强转弱=未封板，且收盘价（盘中=现价）低于开盘价，或板块内名次较竞价时降低（收盘仍封板的不算），与弱转强互斥。未封板者显示收盘涨幅（盘中为现价涨幅）。</div>';
+    }
+    window.watchLoadSlot = function (silent) {
+        var token = ++slot.token;
+        if (!silent && !slot.data) asRender();
+        return fetch('/api/auction_slot?date=' + encodeURIComponent(slot.date || '') + '&_t=' + Date.now())
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (token !== slot.token) return;
+                slot.data = d;
+                slot.date = d.date;
+                asRender();
+            }).catch(function (e) {
+                if (token !== slot.token) return;
+                var body = document.getElementById('watchSlotBody');
+                if (body && !slot.data) body.innerHTML = '<div class="watch-err">加载失败：' + (e && e.message || e) + '</div>';
+                else console.error('刷新竞价卡位失败:', e);
+            });
+    };
+    window.watchSlotPick = function (day) { slot.date = day; slot.data = null; asRender(); return watchLoadSlot(); };
+    window.watchSlotStage = function (s) { slot.stage = s; asRender(); };
+    window.watchSlotOnly = function (v) { slot.onlySlot = !!v; asRender(); };
+    // 30s 总时钟：选中的是今日（盘中）或今日竞价尚未就绪时才随之刷新；历史日是落盘结果，不用刷
+    window.watchSlotTick = function () {
+        var d = slot.data;
+        if (!slot.open) return;
+        if (!d || d.is_live || !d.ready) watchLoadSlot(true);
+    };
+    window.watchToggleSlot = function () {
+        var wrap = document.getElementById('watchSlotWrap'), arrow = document.getElementById('watchSlotArrow');
+        if (!wrap) return;
+        slot.open = wrap.style.display === 'none';
+        wrap.style.display = slot.open ? '' : 'none';
+        if (arrow) arrow.textContent = slot.open ? '▼' : '▶';
+        if (slot.open && !slot.data) watchLoadSlot();
+    };
+
+    // ===================== 反推关注（今日涨停时间轴下方） =====================
+    var rw = {data: null, onlyMatch: true, token: 0};
+    function rwStk(x, cls) {
+        return '<span class="rw-nm ' + (cls || '') + '" onclick="openDsStockFromRhythm(\'' + asEsc(x.name) + '\',\'' + x.code + '\',\'\',[],-1)">' +
+            '<i class="wz-bd wz-bd-' + asEsc(x.board || '主') + '">' + asEsc(x.board || '主') + '</i>' + asEsc(x.name) + '</span>';
+    }
+    function rwRender() {
+        var d = rw.data, body = document.getElementById('watchReverseBody'), cnt = document.getElementById('watchReverseCount');
+        if (!body || !d) return;
+        var items = d.items || [];
+        var shown = items.filter(function (x) { return !rw.onlyMatch || x.n_match; });
+        var nb = (d.bright || []).length;
+        if (cnt) cnt.textContent = d.date + ' · 可反推首板 ' + items.filter(function (x) { return x.n_match; }).length + ' 只' + (nb ? ' · 已明牌排除 ' + nb : '');
+        body.innerHTML = '<div class="rw-bar"><label class="as-chk"><input type="checkbox" ' + (rw.onlyMatch ? 'checked' : '') +
+            ' onchange="watchReverseOnly(this.checked)">只看有关联的首板</label><span class="rw-hint">首板涨停 → 按 KPL 板块 / 标签 / 简述反推 ' + asEsc(d.prev || '上一交易日') +
+            ' 尚未涨停的首板 / 2 板；<b class="rw-hot">金色</b>=首板之后该关联股也涨停（反推兑现）；题材已有 3 板晋级则不反推' +
+            (nb ? '（排除：' + d.bright.slice(0, 6).map(function (x) { return asEsc(x.name) + '←' + asEsc(x.by); }).join('、') + (nb > 6 ? ' 等' : '') + '）' : '') + '</span></div>' +
+            (shown.length ? shown.map(function (x) {
+                var tags = (x.mab || []).slice(0, 4).map(function (t) { return '<em class="rw-tag' + (t.p ? ' m' : '') + '">' + asEsc(t.t) + '</em>'; }).join('');
+                var ms = x.matches.length ? x.matches.slice(0, 8).map(function (m) {
+                    var hit = m.hits.map(function (h) { return h.k + '·' + h.t; }).join(' / ');
+                    return '<span class="rw-m' + (m.today ? ' hot' : '') + '" title="' + asEsc(hit) + '"><span class="rw-lv">' + (m.lb >= 2 ? '2板' : '首板') + '</span>' + rwStk(m) +
+                        '<span class="rw-ft">昨' + asEsc(m.time) + '</span>' + (m.today ? '<b class="rw-td">兑现 ' + asEsc(m.today.time) + '</b>' : '') +
+                        '<i class="rw-hit">' + asEsc(m.hits[0].t) + '</i></span>';
+                }).join('') + (x.matches.length > 8 || x.n_match > x.matches.length ? '<span class="rw-more">+' + (Math.max(x.n_match, x.matches.length) - 8) + '</span>' : '') :
+                    '<span class="as-nf">无关联</span>';
+                return '<div class="rw-card"><div class="rw-a" title="' + asEsc(x.brief || '') + '"><b class="rw-time">' + asEsc(x.time) + '</b>' + rwStk(x, 'rw-self') +
+                    (x.pct !== null && x.pct !== undefined ? '<span class="as-t ' + asTCls(x.pct) + '">' + asT(x.pct) + '</span>' : '') + tags + '</div><div class="rw-ms">' + ms + '</div></div>';
+            }).join('') : '<div class="as-none">暂无可反推的首板。</div>');
+    }
+    window.watchToggleReverse = function () {
+        var wrap = document.getElementById('watchReverseBody'), arrow = document.getElementById('watchReverseArrow');
+        if (!wrap) return;
+        var open = wrap.style.display === 'none';
+        wrap.style.display = open ? '' : 'none';
+        if (arrow) arrow.textContent = open ? '▼' : '▶';
+    };
+    window.watchLoadReverse = function () {
+        var token = ++rw.token;
+        return fetch('/api/reverse_watch?_t=' + Date.now()).then(function (r) { return r.json(); }).then(function (d) {
+            if (token !== rw.token) return;
+            rw.data = d;
+            rwRender();
+        }).catch(function (e) { console.error('刷新反推关注失败:', e); });
+    };
+    window.watchReverseOnly = function (v) { rw.onlyMatch = !!v; rwRender(); };
     window.watchRefreshStrength = function () { return refreshStrength(false); };
     window.manualRefreshTws = window.watchRefreshStrength;      // 标题上的 ↻ 沿用同一条刷新链
 
@@ -689,6 +913,8 @@
         watchRefreshTrajectory();
         watchRefreshIndices();
         if (window.watchSqTick) watchSqTick();
+        if (window.watchSlotTick) watchSlotTick();
+        watchLoadReverse();
         var modal = document.getElementById('tmmThemeKlineModal');
         if (modal && modal.classList.contains('active') && typeof refreshTmmThemeKlines === 'function') refreshTmmThemeKlines();
     }
@@ -713,6 +939,7 @@
         refreshStrength(true);
         watchRefreshTrajectory();
         watchRefreshIndices();
+        watchLoadReverse();
         setInterval(tick, REFRESH_MS);
         document.addEventListener('visibilitychange', function () { if (!document.hidden) tick(); });
     }

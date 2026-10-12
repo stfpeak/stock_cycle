@@ -7385,6 +7385,535 @@ def _sq_ladder_warm_loop():
         time.sleep(600)
 
 
+# ===================== 竞价卡位报告（盯盘页「竞价报告」） =====================
+# 口径：基准 = 前一交易日各题材（_zt_classify 归类板块）的涨停梯队，按「板数↓、涨停时间↑」排出基准序；
+# 次日竞价（= 当日开盘价）用 T（竞价涨幅 = 开盘价/昨收-1）与 F（当日首封时间）重排，序变了即「卡位」。
+#   题材内：同身位卡位（同板数里后排压过前排）、越N位卡位（低身位压过高身位；昨日不在梯队但今日涨停/一字的新晋票身位=首板）。
+#   题材间：昨日有连板梯队（昨日≥2板，今日目标≥3板）的题材，用梯队最高板股今日表现互相比较，高度/时间靠后者压过靠前者即题材间卡位。
+#   竞价阶段只看 T（一字=竞价封板，F=9:25）；全天阶段再叠加 F（封板排最前，其次未封板按 T）。
+_AS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'auction_slot')
+_AS_VER = 3
+_AS_T_BUCKET = 0.5          # 竞价涨幅按 0.5% 分档，同档视为平手（按昨日序）
+_AS_F_BUCKET = 10           # 封板时间按 10 秒分档；9:26 前封板统一算「竞价一字」
+_AS_CROSS_MIN_LB = 2        # 题材间卡位：昨日梯队≥2板（今日目标≥3板）的题材才参与
+_as_lock = threading.RLock()
+
+
+def _as_sec(hms):
+    """HHMMSS 整数 → 当日秒数；缺失/异常按收盘后处理。"""
+    try:
+        v = int(hms or 0)
+    except (TypeError, ValueError):
+        v = 0
+    if v <= 0 or v >= 999999:
+        return 86399
+    return (v // 10000) * 3600 + ((v // 100) % 100) * 60 + v % 100
+
+
+def _as_fq(hms):
+    """封板时间分档：9:26 前（竞价封板）统一为 0；其余按 10 秒一档。"""
+    s = _as_sec(hms)
+    return 0 if s < 9 * 3600 + 26 * 60 else s // _AS_F_BUCKET
+
+
+def _as_tq(t):
+    return int(round(t / _AS_T_BUCKET)) if t is not None else None
+
+
+def _as_hm(hms):
+    s = _as_sec(hms)
+    return '' if s >= 86399 else '%02d:%02d' % (s // 3600, (s // 60) % 60) + ('' if s % 60 == 0 else ':%02d' % (s % 60))
+
+
+def _as_status(t, yizi):
+    if t is None:
+        return ''
+    if yizi:
+        return '一字'
+    if t >= 5:
+        return '大高开'
+    if t >= 1.5:
+        return '高开'
+    if t > -1.5:
+        return '平开'
+    if t > -5:
+        return '低开'
+    return '大低开'
+
+
+# ===================== 反推关注（盯盘页·今日涨停时间轴下方） =====================
+# 今日每只首板股：取它在界面上显示的 KPL 题材（板块 M + 涨停理由/简述拆分的标签，即 _tws_mab_tags），
+# 去匹配上一交易日首板与 2 板股的 KPL 板块 / 标签 / 简述（任一关键词相同，或关键词出现在对方简述里），
+# 列出关联股及其昨日首封时间。反推只对「关联股尚未涨停」成立：关联股在首板之前已涨停的剔除，之后才涨停的标「反推兑现」；
+# 题材在该首板之前已有 3 板晋级股的，题材已明牌，整只首板不再反推。
+_RW_NOISE = {'首板', '首版', '重启', '晋级', '未分类', '其他'}
+
+
+def _rw_day_rows(day, live_day):
+    rows = _kpl_rows_by_date.get(day) or (_kpl_today_live_rows() if day == live_day else []) or []
+    out = {}
+    for r in rows:
+        code = str(r.get('stock_code') or '').zfill(6)
+        if code and code not in out:
+            out[code] = r
+    return out
+
+
+def _rw_match(a, b):
+    """a 今日首板、b 昨日股的 KPL 关键词命中 [{'k': '板块'|'标签'|'简述', 't': 关键词}]。"""
+    hits, seen = [], set()
+    bterms = {x['t']: x['p'] for x in b['mab']}
+    for x in a['mab']:
+        t = x['t']
+        if len(t) < 2 or t in _RW_NOISE or t in seen:
+            continue
+        if t in bterms:
+            seen.add(t)
+            hits.append({'k': '板块' if (x['p'] and bterms[t]) else '标签', 't': t})
+        elif t in b['brief']:
+            seen.add(t)
+            hits.append({'k': '简述', 't': t})
+    for x in b['mab']:
+        t = x['t']
+        if len(t) >= 2 and t not in _RW_NOISE and t not in seen and t in a['brief']:
+            seen.add(t)
+            hits.append({'k': '简述', 't': t})
+    return hits
+
+
+def _rw_build(d, day):
+    dates = d.get('dates') or []
+    if day not in dates or dates.index(day) == 0:
+        return {'date': day, 'prev': '', 'items': []}
+    prev = dates[dates.index(day) - 1]
+    live_day = d.get('live_day') or ''
+    _kpl_ensure_loaded(prev.replace('-', ''), day.replace('-', ''))
+    rows_t, rows_p = _rw_day_rows(day, live_day), _rw_day_rows(prev, live_day)
+
+    def pack(st, rows):
+        r = rows.get(st['code']) or {}
+        return {'code': st['code'], 'name': st['name'], 'board': st['board'], 'lb': int(st['lb']), 'ft': st['first_time'],
+                'mab': _tws_mab_tags(r), 'brief': (r.get('reason_brief') or '') + ' ' + (r.get('reason_tag') or '')}
+
+    today = {st['code']: st for g in d['days'][day]['groups'] for st in g['stocks'] if st['kind'] == 'zt' and not _sq_is_st(st['name'])}
+    prevs = [pack(st, rows_p) for g in d['days'][prev]['groups'] for st in g['stocks']
+             if st['kind'] == 'zt' and st['lb'] in (1, 2) and not _sq_is_st(st['name'])]
+    highs = [pack(st, rows_t) for st in today.values() if int(st['lb']) >= 3]      # 今日已晋级 3 板及以上的股票
+    items, bright = [], []
+    for code, st in today.items():
+        if int(st['lb']) != 1:
+            continue
+        a = pack(st, rows_t)
+        a_sec = _as_sec(st['first_time'])
+        # 该题材在这个首板之前已有 3 板晋级的股票 → 题材已明牌，不再反推
+        hi = [h for h in highs if _as_sec(h['ft']) <= a_sec and _rw_match(a, h)]
+        if hi:
+            bright.append({'code': code, 'name': st['name'], 'by': hi[0]['name']})
+            continue
+        ms = []
+        for b in prevs:
+            if b['code'] == code:
+                continue
+            hits = _rw_match(a, b)
+            if not hits:
+                continue
+            tz = today.get(b['code'])
+            if tz and _as_sec(tz['first_time']) <= a_sec:      # 关联股在这只首板之前（或同时）已涨停 → 不叫反推
+                continue
+            ms.append({'code': b['code'], 'name': b['name'], 'board': b['board'], 'lb': b['lb'], 'time': _as_hm(b['ft']), 'hits': hits,
+                       'today': ({'lb': int(tz['lb']), 'time': ('09:25' if _as_sec(tz['first_time']) < 9 * 3600 + 26 * 60 else _as_hm(tz['first_time'])),
+                                  'ft': _as_sec(tz['first_time'])} if tz else None),
+                       '_sc': sum({'标签': 3, '板块': 2, '简述': 1}[h['k']] for h in hits)})
+        ms.sort(key=lambda m: (-m['_sc'], -m['lb'], m['time'], m['code']))
+        for m in ms:
+            m.pop('_sc')
+        items.append({'code': code, 'name': st['name'], 'board': st['board'], 'time': _as_hm(st['first_time']), 'ft': _as_sec(st['first_time']),
+                      'pct': st.get('pct'), 'mab': a['mab'], 'brief': (rows_t.get(code) or {}).get('reason_brief') or '',
+                      'matches': ms[:14], 'n_match': len(ms)})
+    items.sort(key=lambda x: (-x['ft'], x['code']))
+    return {'date': day, 'prev': prev, 'items': items, 'bright': bright, 'is_live': day == live_day}
+
+
+def _rw_get(day=None):
+    info = _sq_ladder_dates()
+    dates = info['dates']
+    if not dates:
+        return {'date': '', 'prev': '', 'items': []}
+    day = day if day in dates else dates[-1]
+    key = 'rw_%s_%s' % (day, 'live' if day == info['live'] else 'done')
+    got = _get_cached(key, ttl=(15 if day == info['live'] else 300))
+    if got is None:
+        got = _rw_build(_zt_classify_cached(_SQ_LADDER_DAYS + 1, live=True), day)
+        _set_cache(key, got)
+    return got
+
+
+def _as_names(code, cls, plate=''):
+    """股票的题材名 (tags, plates)：tags=标签库，plates=精选板块 ∪ 当日归类板块；都去泛概念。匹配时优先看 tags，仅板块命中的算弱匹配。"""
+    plates = cls.get('cur_plates', {}).get(code) or cls.get('plates', {}).get(code, [])
+    ok = lambda n: bool(n) and n != '未归类' and not _zt_class_generic(n)
+    tags = [n for n in dict.fromkeys(cls.get('tags', {}).get(code, [])) if ok(n)]
+    pls = [n for n in dict.fromkeys(list(plates) + ([plate] if plate else [])) if ok(n) and n not in tags]
+    return tags, pls
+
+
+def _as_quotes(day, codes, is_live):
+    """竞价口径行情 {code:{'open','prev_close','t'(竞价涨幅),'pct'(收盘涨幅，盘中为实时涨幅)}}。历史日读日K；盘中的今日读全市场实时快照；缺失的今日代码再走实时报价。"""
+    out = {}
+    day_ymd = day.replace('-', '')
+    codes = sorted(set(codes))
+    if not is_live and codes:
+        for c, q in (_auction_kline_open_quotes(day_ymd, codes) or {}).items():
+            out[c] = {'open': q['open'], 'prev_close': q['prev_close'], 't': q['change_pct'], 'pct': None}
+        try:
+            conn = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db'), timeout=5)
+            for i in range(0, len(codes), 500):
+                chunk = codes[i:i + 500]
+                for code, chg in conn.execute('SELECT stock_code, change_pct FROM kline_daily WHERE trade_date=? AND stock_code IN (%s)'
+                                              % ','.join('?' * len(chunk)), [day] + chunk):
+                    if code in out and chg is not None:
+                        out[code]['pct'] = float(chg)
+            conn.close()
+        except Exception as exc:
+            print('[竞价卡位] 收盘涨幅读取失败 %s: %s' % (day, exc))
+    if (is_live or day_ymd == _bj_now().strftime('%Y%m%d')) and len(out) < len(codes):
+        miss = [c for c in codes if c not in out]
+        for c, q in (_live_quotes_for_codes(miss) or {}).items():
+            op, pc = _traj_num(q.get('open')), _traj_num(q.get('prev_close'))
+            if op and pc and op > 0 and pc > 0:
+                out[c] = {'open': op, 'prev_close': pc, 't': round((op - pc) / pc * 100, 2), 'pct': _traj_num(q.get('change_pct'))}
+    if is_live:       # 盘中：已入库的今日实时涨幅
+        for c, q in (_live_quotes_for_codes([c for c in codes if c in out]) or {}).items():
+            v = _traj_num(q.get('change_pct'))
+            if v is not None:
+                out[c]['pct'] = v
+    return out
+
+
+def _as_members(d, day):
+    """返回 ({题材: [member]}（按题材优先级排序）, 前一交易日)。
+    题材优先级 C：从昨日连板天梯最高板往下逐只看，股票的板块/tags 若不含已有的 C，则它的归类板块成为新的 C（越高板越靠前）；
+    之后每只股票（含昨日未涨停、今日涨停的新晋股）进入它板块/tags 命中的所有 C（可同时出现在多个梯队）；一个都没命中的新晋股自成一组排最后。
+    member：基准股 lb0>=1（昨日涨停）；新晋股 lb0=0（身位=首板）。"""
+    dates = d.get('dates') or []
+    if day not in dates or dates.index(day) == 0:
+        return None, ''
+    prev = dates[dates.index(day) - 1]
+    is_live = (day == d.get('live_day'))
+    base = {}
+    for g in d['days'][prev]['groups']:
+        for st in g['stocks']:
+            if st['kind'] == 'zt' and not _sq_is_st(st['name']):
+                base[st['code']] = {'plate': g['plate'], 'lb0': int(st['lb']), 'ft0': st['first_time'], 'st': st}
+    today = {}
+    for g in d['days'][day]['groups']:
+        for st in g['stocks']:
+            if st['kind'] == 'zt' and not _sq_is_st(st['name']):
+                today[st['code']] = (g['plate'], st)
+    entrants = {c: v for c, v in today.items() if c not in base}
+    cls = _sector_class_load()
+    names, cs = {}, []
+    for code, b in sorted(base.items(), key=lambda kv: (-kv[1]['lb0'], _as_fq(kv[1]['ft0']), kv[0])):
+        names[code] = _as_names(code, cls, b['plate'])
+        if not any(c in names[code][0] or c in names[code][1] for c in cs) and b['plate'] and b['plate'] != '未归类':
+            cs.append(b['plate'])
+    for code in sorted(entrants):
+        names[code] = _as_names(code, cls, entrants[code][0])
+        if not any(c in names[code][0] or c in names[code][1] for c in cs) and entrants[code][0] != '未归类':
+            cs.append(entrants[code][0])
+    quotes = _as_quotes(day, list(base) + list(entrants), is_live)
+    themes = {c: [] for c in cs}
+    for code in list(base) + sorted(entrants):
+        if code in base:
+            b = base[code]
+            st0, lb0, ft0 = b['st'], b['lb0'], b['ft0']
+        else:
+            st0, lb0, ft0 = entrants[code][1], 0, 999999
+        q = quotes.get(code) or {}
+        t = q.get('t')
+        lim = _limit_pct_for(code, st0['name'])
+        tz = today.get(code)
+        m = {'code': code, 'name': st0['name'], 'board': st0['board'], 'lb0': lb0, 'pos': lb0 + 1, 'ft0': ft0,
+             't': t, 'pct': q.get('pct') if q.get('pct') is not None else t,
+             'yizi': bool(t is not None and t >= lim - 0.12), 'zt': bool(tz), 'lb1': int(tz[1]['lb']) if tz else 0,
+             'f': (tz[1]['first_time'] if tz else None), 'new': code not in base}
+        tg, pl = names.get(code, ([], []))
+        m['tg'], m['pl'] = tg, pl
+        for c in cs:
+            if c in tg:
+                themes[c].append(dict(m, weak=False))
+            elif c in pl:
+                themes[c].append(dict(m, weak=True))        # tags 不含该题材，仅所属板块命中
+    return themes, prev
+
+
+def _as_rank(members, stage):
+    """给一个题材的成员排出「昨日序 / 今日序」并找出卡位关系（只看同身位与相邻 1 个身位），就地写入字段，返回按今日序排好的成员列表。"""
+    base = sorted([m for m in members if not m['new']], key=lambda m: (-m['lb0'], _as_fq(m['ft0']), m['code']))
+    for i, m in enumerate(base):
+        m['r0'] = i + 1
+        m['bk'] = (-m['lb0'], _as_fq(m['ft0']))
+    for m in members:
+        if m['new']:
+            m['r0'] = None
+            m['bk'] = (99, 0)
+
+    def prim(m):
+        # 竞价阶段：一字（=竞价封板）最前，其余按 T 分档；全天阶段：已封板（含一字）按首封时间，其余按收盘涨幅（盘中=实时涨幅）
+        if stage == 'auction':
+            if m['yizi']:
+                return (0, 0)
+            return (1, -_as_tq(m['t'])) if m['t'] is not None else (2, 0)
+        if m['yizi'] or m['zt']:
+            return (0, 0 if m['yizi'] else _as_fq(m['f']))
+        v = m['pct'] if m['pct'] is not None else m['t']
+        return (1, -_as_tq(v)) if v is not None else (2, 0)
+
+    for m in members:
+        m['pk'] = prim(m)
+        m['key'] = (m['pk'], m['bk'], m['code'])
+    order = sorted(members, key=lambda m: m['key'])
+    for i, m in enumerate(order):
+        m['r1'] = i + 1
+        m['over'], m['over_by'] = [], []
+    for a in members:                       # b 昨日序在 a 之后（或为新晋），今日却压过 a
+        for b in members:
+            if a is b or not (a['bk'] < b['bk']) or not (b['pk'] < a['pk']):
+                continue
+            gap = a['pos'] - b['pos']
+            if gap < 0 or gap > 1:
+                continue
+            b['over'].append({'code': a['code'], 'name': a['name'], 'gap': gap})
+            a['over_by'].append({'code': b['code'], 'name': b['name'], 'gap': gap})
+    for m in members:
+        m['slot'] = ''
+        if m['over_by']:                  # 既卡位别人又被别人卡位，按被卡位算
+            m['slot'] = 'lost'
+        elif m['over']:
+            m['slot'] = 'same' if max(x['gap'] for x in m['over']) == 0 else 'up1'
+    return order
+
+
+def _as_pack_member(m, stage):
+    out = {k: m[k] for k in ('code', 'name', 'board', 'lb0', 'pos', 't', 'pct', 'yizi', 'new', 'weak', 'r0', 'r1', 'slot', 'over', 'over_by')}
+    out['status'] = _as_status(m['t'], m['yizi'])
+    out['ft0'] = _as_hm(m['ft0']) if not m['new'] else ''
+    sealed = m['yizi'] or (stage == 'final' and m['zt'])
+    out['sealed'] = sealed
+    out['f'] = ('09:25' if m['yizi'] else _as_hm(m['f'])) if sealed else ''
+    out['lb1'] = m['lb1'] if (stage == 'final' and m['zt']) else 0
+    out['wts'] = m.get('wts') or []
+    out['wtw'] = m.get('wtw')
+    return out
+
+
+def _as_top_card(m):
+    """题材最高板卡片：名称/代码/板块/tags/竞价涨幅/现价涨幅/昨日涨停方式/今日涨停方式。"""
+    auction_end = 9 * 3600 + 26 * 60
+    sealed = bool(m['yizi'] or m['zt'])
+    today_yizi = bool(m['yizi'] or (m['zt'] and _as_sec(m['f']) < auction_end))
+    return {'code': m['code'], 'name': m['name'], 'board': m['board'], 'lb0': m['lb0'], 'lb1': m['lb1'] if m['zt'] else 0,
+            'ymode': '昨日未涨停' if m['new'] else ('一字' if _as_sec(m['ft0']) < auction_end else '换手板'),
+            'yft': '' if m['new'] else _as_hm(m['ft0']),
+            'tmode': ('一字' if today_yizi else '换手板') if sealed else '未涨停',
+            'tf': ('09:25' if today_yizi else _as_hm(m['f'])) if sealed else '',
+            't': m['t'], 'pct': m['pct'], 'tags': m.get('tg', [])[:8], 'plates': m.get('pl', [])[:6], 'weak': m.get('weak', False)}
+
+
+def _as_cross(entries, stage):
+    """题材间卡位：昨日≥2板梯队的题材，用最高板股今日表现互比；只算相邻高度（同高度、差1板），N+1 不与 N-1 比。"""
+    merged = {}                  # 同一只龙头股领衔多个题材 → 合并成一项，避免同一只股票重复出现
+    for c in sorted(entries, key=lambda c: c['theme']):
+        k = c['lead']['code']
+        if k in merged:
+            merged[k]['themes'].append(c['theme'])
+        else:
+            merged[k] = dict(c, themes=[c['theme']])
+    entries = list(merged.values())
+    for c in entries:
+        c['theme'] = '、'.join(c['themes'])
+        c['key'] = (c['pk'], c['bk'], c['theme'])
+    base_order = sorted(entries, key=lambda c: (c['bk'], c['theme']))
+    for i, c in enumerate(base_order):
+        c['r0'] = i + 1
+    for i, c in enumerate(sorted(entries, key=lambda c: c['key'])):
+        c['r1'] = i + 1
+    side = lambda x: {'code': x['code'], 'name': x['name'], 't': x['t'], 'yizi': x['yizi'], 'ft0': _as_hm(x['ft0']),
+                      'f': ('09:25' if x['yizi'] else _as_hm(x['f'])) if (x['yizi'] or (stage == 'final' and x['zt'])) else ''}
+    cross = []
+    for a in entries:
+        for b in entries:
+            if a is b or not (a['bk'] < b['bk']) or not (b['pk'] < a['pk']) or a['lead']['code'] == b['lead']['code']:
+                continue
+            gap = a['top'] - b['top']
+            if gap < 0 or gap > 1:
+                continue
+            cross.append({'win': b['theme'], 'lose': a['theme'], 'gap': gap, 'win_lb0': b['top'], 'lose_lb0': a['top'],
+                          'win_stock': side(b['lead']), 'lose_stock': side(a['lead'])})
+    cross.sort(key=lambda x: (x['gap'], -x['win_lb0'], x['win']))
+    return cross, [{'theme': c['theme'], 'top': c['top'], 'r0': c['r0'], 'r1': c['r1'], 'leader': c['lead']['name'],
+                    't': c['lead']['t'], 'yizi': c['lead']['yizi']} for c in base_order]
+
+
+def _as_build(d, day):
+    """生成 day 的完整卡位结果：{'auction': 竞价阶段 | None, 'final': 全天阶段 | None, 'prev', 'ready'}"""
+    themes, prev = _as_members(d, day)
+    if themes is None:
+        return {'date': day, 'prev': '', 'auction': None, 'final': None, 'ready': False, 'msg': '该日无前一交易日基准'}
+    base_m = [m for v in themes.values() for m in v if not m['new']]
+    have = sum(1 for m in base_m if m['t'] is not None)
+    if not base_m or have < max(1, int(len(base_m) * 0.8)):
+        return {'date': day, 'prev': prev, 'auction': None, 'final': None, 'ready': False,
+                'msg': '竞价数据未就绪（9:25 竞价结束后生成；或该日日K缺失）'}
+    rows = {'auction': [], 'final': []}
+    tops = []
+    cross_in = {'auction': [], 'final': []}
+    for prio, (name, mem) in enumerate(themes.items(), 1):
+        mem_f = [dict(m) for m in mem]
+        if len(mem_f) < 2:
+            continue
+        mem_a = [dict(m) for m in mem if (not m['new']) or m['yizi']]
+        ranked = {'auction': _as_rank(mem_a, 'auction'), 'final': _as_rank(mem_f, 'final')}
+        pa = {m['code']: m['pk'] for m in mem_a}
+        pf = {m['code']: m['pk'] for m in mem_f}
+        nm = {m['code']: m['name'] for m in mem_f}
+        wts = {}          # 弱转强：竞价排在 b 之后，但自己最终上板涨停且早于 b（b 未封板或封得更晚）
+        for a in pa:
+            for b in pa:
+                if a != b and a in pf and b in pf and pa[b] < pa[a] and pf[a][0] == 0 and pf[a] < pf[b]:
+                    wts.setdefault(a, []).append({'code': b, 'name': nm[b]})
+        # 强转弱：未封板，且收盘价（盘中=现价）低于开盘价，或板块内名次（只在竞价/全天都出现的股票里比）较竞价时降低；与弱转强互斥
+        common = [m['code'] for m in mem_f if m['code'] in pa]
+        ra = {c: i + 1 for i, c in enumerate(sorted(common, key=lambda c: (pa[c], c)))}
+        rf = {c: i + 1 for i, c in enumerate(sorted(common, key=lambda c: (pf[c], c)))}
+        mf = {m['code']: m for m in mem_f}
+        wtw = {}
+        for c in common:
+            m = mf[c]
+            if c in wts or m['zt'] or m['yizi']:       # 收盘仍封涨停的不算强转弱
+                continue
+            lt_open = bool(m['pct'] is not None and m['t'] is not None and m['pct'] < m['t'] - 0.3)
+            down = rf[c] > ra[c]
+            if lt_open or down:
+                wtw[c] = {'lt_open': lt_open, 'rank': [ra[c], rf[c]] if down else None}
+        by = [m for m in mem_f if not m['new']]
+        ytop = max([m['lb0'] for m in by] or [0])
+        zts = [m for m in mem_f if m['zt']]
+        ttop = max([m['lb1'] for m in zts] or [0])
+        tops.append({'theme': name, 'prio': prio, 'ylb': ytop, 'tlb': ttop,
+                     'y': [_as_top_card(m) for m in sorted([m for m in by if m['lb0'] == ytop], key=lambda m: (_as_fq(m['ft0']), m['code']))[:3]],
+                     't': [_as_top_card(m) for m in sorted([m for m in zts if m['lb1'] == ttop], key=lambda m: (_as_fq(m['f']), m['code']))[:3]]})
+        for stage, ms in (('auction', mem_a), ('final', mem_f)):
+            for m in ms:
+                m['wts'] = wts.get(m['code'], [])
+                m['wtw'] = wtw.get(m['code'])
+            order = ranked[stage]
+            base_top = [m for m in ms if not m['new']]
+            top_lb0 = max([m['lb0'] for m in base_top] or [0])
+            leader0 = min(base_top, key=lambda m: m['r0']) if base_top else None
+            leader1 = order[0] if order else None
+            rows[stage].append({
+                'theme': name, 'prio': prio, 'top_lb0': top_lb0, 'n': len(ms), 'n_base': len(base_top),
+                'n_slot': sum(1 for m in order if m['slot'] in ('same', 'up1')), 'n_wts': sum(1 for m in order if m['wts']),
+                'n_wtw': sum(1 for m in order if m['wtw']),
+                'n_yizi': sum(1 for m in ms if m['yizi']),
+                'leader_change': bool(leader0 and leader1 and leader0['code'] != leader1['code'] and len(ms) >= 2),
+                'leader0': leader0['name'] if leader0 else '', 'leader1': leader1['name'] if leader1 else '',
+                'members': [_as_pack_member(m, stage) for m in order]})
+            if top_lb0 >= _AS_CROSS_MIN_LB:
+                lead = [m for m in base_top if m['lb0'] == top_lb0]
+                cross_in[stage].append({'theme': name, 'top': top_lb0, 'bk': (-top_lb0, min(_as_fq(m['ft0']) for m in lead)),
+                                        'pk': min(m['pk'] for m in lead), 'lead': min(lead, key=lambda m: m['key'])})
+    out = {'date': day, 'prev': prev, 'ready': True, 'msg': '', 'tops': tops}
+    for stage in ('auction', 'final'):
+        cross, cth = _as_cross(cross_in[stage], stage)
+        rs = rows[stage]
+        out[stage] = {'themes': rs, 'cross': cross, 'cross_themes': cth,
+                      'summary': {'themes': len(rs), 'slot_themes': sum(1 for r in rs if r['n_slot']),
+                                  'slot_stocks': len({m['code'] for r in rs for m in r['members'] if m['slot'] in ('same', 'up1')}),
+                                  'wts_stocks': len({m['code'] for r in rs for m in r['members'] if m['wts']}),
+                                  'wtw_stocks': len({m['code'] for r in rs for m in r['members'] if m['wtw']}),
+                                  'cross': len(cross), 'leader_change': sum(1 for r in rs if r['leader_change'])}}
+    return out
+
+
+def _as_path(day):
+    return os.path.join(_AS_DIR, day + '.json')
+
+
+def _as_load(day):
+    try:
+        with open(_as_path(day), encoding='utf-8') as f:
+            got = json.load(f)
+        return got if got.get('_ver') == _AS_VER else None
+    except Exception:
+        return None
+
+
+def _as_save(day, res):
+    try:
+        os.makedirs(_AS_DIR, exist_ok=True)
+        tmp = _as_path(day) + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(dict(res, _ver=_AS_VER, _saved_at=_bj_now().strftime('%Y-%m-%d %H:%M:%S')), f, ensure_ascii=False)
+        os.replace(tmp, _as_path(day))
+    except Exception as exc:
+        print('[竞价卡位] 落盘失败 %s: %s' % (day, exc))
+
+
+def _as_get(day=None):
+    """取某日竞价卡位：已收盘日读落盘文件（缺失则重算并落盘）；盘中的今日——竞价阶段在 9:26 后冻结落盘（之后不再变），全天阶段实时计算（15s 缓存），收盘后落盘。"""
+    with _as_lock:
+        info = _sq_ladder_dates()
+        dates = info['dates']
+        if not dates:
+            return {'date': '', 'dates': [], 'live': '', 'ready': False, 'auction': None, 'final': None, 'msg': '暂无数据'}
+        day = day if day in dates else dates[-1]
+        live = info['live']
+        meta = {'dates': dates, 'live': live}
+        if day != live:
+            got = _as_load(day)
+            if got and got.get('final'):
+                return dict(got, **meta, is_live=False)
+        d = _zt_classify_cached(_SQ_LADDER_DAYS + 1, live=True)
+        if day == live:
+            frozen = _as_load(day)
+            now_min = _bj_now().hour * 60 + _bj_now().minute
+            res = _as_build(d, day)
+            if frozen and frozen.get('auction'):
+                if res.get('final'):                               # 竞价阶段以 9:26 的冻结结果为准，仅把实时涨幅同步进去
+                    pct = {m['code']: m['pct'] for r in res['final']['themes'] for m in r['members']}
+                    for r in frozen['auction']['themes']:
+                        for m in r['members']:
+                            if m['code'] in pct:
+                                m['pct'] = pct[m['code']]
+                res['auction'] = frozen['auction']
+            elif res.get('ready') and res.get('auction') and now_min >= 9 * 60 + 26:
+                _as_save(day, dict(res, final=None))
+            return dict(res, **meta, is_live=True)
+        res = _as_build(d, day)
+        if res.get('ready'):
+            _as_save(day, res)
+        return dict(res, **meta, is_live=False)
+
+
+def _as_warm_loop():
+    """启动后补算近 15 个已收盘交易日；盘中 9:26 后冻结当日竞价阶段，收盘后落盘全天阶段（每 30s 检查一次）。"""
+    time.sleep(75)
+    while True:
+        try:
+            info = _sq_ladder_dates()
+            for day in info['dates']:
+                if day != info['live'] and not (_as_load(day) or {}).get('final'):
+                    _as_get(day)
+            n = _bj_now()
+            if n.strftime('%Y%m%d') in _trading_days and n.hour * 60 + n.minute >= 9 * 60 + 26:
+                _as_get(n.strftime('%Y-%m-%d'))
+        except Exception as exc:
+            print('[竞价卡位] 预计算失败: %s' % exc)
+        time.sleep(30)
+
+
 def _zt_classify_build(n=10, live=False):
     """涨停分类：近 n 个已收盘交易日的涨停股 + 大涨股（创/科/北 >10% 未涨停，同轨迹口径），按开盘红精选板块 plate_name 归类。
     归类规则：候选 = 股票 tags 与所属 plate_name 相同的词 ∪ tags 的「归属板块」（如 固态电池→锂电池，见 tag_home），去掉泛概念（并购重组等，改取 tags 里其他标签）；
@@ -43025,6 +43554,12 @@ class Handler(BaseHTTPRequestHandler):
                 items = (exact + rest)[:20]
             self._respond_json(items, cors_headers)
 
+        elif path == '/api/reverse_watch':
+            self._respond_json(_rw_get(query.get('date', [''])[0].strip() or None), cors_headers)
+
+        elif path == '/api/auction_slot':
+            self._respond_json(_as_get(query.get('date', [''])[0].strip() or None), cors_headers)
+
         elif path == '/api/sq_ladder':
             self._respond_json(_sq_ladder_get(query.get('date', [''])[0].strip() or None), cors_headers)
 
@@ -45553,6 +46088,7 @@ def main():
         threading.Thread(target=_theme_strength_matrix_backfill_loop, daemon=True),
         threading.Thread(target=_trajectory_hist_warm_loop, daemon=True),
         threading.Thread(target=_sq_ladder_warm_loop, daemon=True),
+        threading.Thread(target=_as_warm_loop, daemon=True),
         threading.Thread(target=_trajectory_movers_loop, daemon=True),   # 盘中每 ~15s 预取涨跌幅榜（新浪行情中心，东财镜像备用）   # 提前算好「近15日涨停/大涨」索引（盯盘页未涨停>2%的 M(+N)）
         # 市场结构/连板联动由前端在首屏完成后按 20日 → 30日 → 联动顺序预热。
         # 不在服务启动时与首屏高频任务并发，避免用户刚切页时排队等待同一把构建锁。
