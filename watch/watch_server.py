@@ -364,6 +364,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static(path)
             if path == '/healthz':
                 return self._send(200, b'ok', 'text/plain; charset=utf-8')
+            if path == '/api/refresh_latest':
+                _cache.entries.clear()     # 手动更新后丢弃热点接口缓存，下一次请求回源取新数据
+                return self._proxy()
             if path in CACHE_ROUTES and self.command in ('GET', 'HEAD'):
                 return self._cached_api(path, parts.query)
             return self._proxy()

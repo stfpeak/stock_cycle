@@ -587,7 +587,7 @@ function watchRenderTrajectory(data, bodyId) {
         var total = tagTotals[tag] || 0;
         var dateCounts = freqByTag[tag] || {};
         html += '<tr class="lt-theme-row" id="wt-row-' + tagIdx + '" style="--th-h:' + HUES[tagIdx % HUES.length] + '">';
-        html += '<td class="lt-trajectory-row-header lt-th-cell" title="' + _kplEsc(tag) + ' (共' + total + '次)"><div class="lt-th-name">' + newBadge(tag) + rBadge(tag) + '<span class="lt-tag-link" onclick="event.stopPropagation();switchTab(\x27kplsearch\x27);setTimeout(function(){doKplSearch(\x27' + (tag||'').replace(/'/g,'') + '\x27)},100)">' + _kplEsc(tag) + '</span> <span class="lt-th-total">' + total + '</span></div>' + watchThemeKlineBtn(tag, sumCtx) + watchThemeSummary(tag, sumCtx, bodyId) + watchThemeMarks(tag) + '</td>';
+        html += '<td class="lt-trajectory-row-header lt-th-cell" title="' + _kplEsc(tag) + ' (共' + total + '次)"><div class="lt-th-name">' + newBadge(tag) + rBadge(tag) + '<span class="lt-tag-link" title="点击查看该题材的涨停节奏（题材复盘）" onclick="event.stopPropagation();watchOpenTheme(\x27' + (tag||'').replace(/'/g,'') + '\x27)">' + _kplEsc(tag) + '</span> <span class="lt-th-total">' + total + '</span></div>' + watchThemeKlineBtn(tag, sumCtx) + watchThemeSummary(tag, sumCtx, bodyId) + watchThemeMarks(tag) + '</td>';
         // 连板序号逻辑: 从最右（最旧）到最左（最新），连续出现则递增，断板则重置为1
         var counter = 0;
         var seqMap = {};  // date → counter value

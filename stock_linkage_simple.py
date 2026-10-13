@@ -2435,7 +2435,7 @@ def _inject_today_zt_to_trajectory(recent_fmt, freq_by_tag, min_lianban=0, stock
         return {}
     # 未开盘/非交易日守卫（Session 61）：akshare 实时池对未开盘的今日回退上一交易日池并贴今日标签，
     # 若照常注入 → 最新列=昨日重复拷贝（用户例 0908 列=0907）。只有真实交易日开盘后才注入当日实时池。
-    if today_ymd not in _trading_days or today_bj.hour < 9:
+    if today_ymd not in _trading_days or today_bj.hour * 60 + today_bj.minute < 9 * 60 + 25:
         return {}
     has_today_data = any(today_fmt in counts for counts in freq_by_tag.values())
     if has_today_data:
@@ -2645,6 +2645,8 @@ def _kpl_today_live_rows():
     today_fmt = now_bj.strftime('%Y-%m-%d')
     if today_fmt in _kpl_day_cache:
         return _kpl_today_live_cache
+    if now_bj.hour * 60 + now_bj.minute < 9 * 60 + 25:
+        return _kpl_today_live_cache     # 9:25 前 akshare 对今日回退返回上一交易日池，不得注入
     if not _trading_days or today_ymd not in _trading_days:
         # 非交易日（周末/节假日）：akshare 无当日实时涨停池，只会回退上一交易日数据，
         # 若仍注入会把上一交易日涨停污染成「今日=0904重复拷贝列」。只有真实交易日开盘后才注入当日池。
@@ -3728,6 +3730,7 @@ def _kpl_full_search(q, date_start, date_end, no_st, strict, gem_extra=True, lia
     try:
         ds = (date_start or '').replace('-', '') or (_trading_days[0] if _trading_days else '')
         de = (date_end or '').replace('-', '') or (_trading_days[-1] if _trading_days else '')
+        de = min(de, _traj_anchor_ymd())   # 未开盘/无真实数据的今日不进入日历，否则涨停节奏会多出一列空/复制的今日
         result['trade_dates'] = [f"{d[:4]}-{d[4:6]}-{d[6:]}" for d in _trading_days if d and ds <= d <= de]
     except Exception as e:
         print(f"[KPL trade_dates] 失败: {e}")
@@ -13118,9 +13121,9 @@ def _bj_now():
 
 
 def _bj_opened():
-    """北京 9:00 及以后视为已开盘（未开盘/非交易日不得把当天当"今日"注入轨迹列）"""
+    """北京 9:25（集合竞价撮合完成、实时池有真实数据）及以后视为已开盘（未开盘/非交易日不得把当天当"今日"注入轨迹列）"""
     n = _bj_now()
-    return n.hour * 60 + n.minute >= 9 * 60
+    return n.hour * 60 + n.minute >= 9 * 60 + 25
 
 
 def _traj_anchor_ymd():
@@ -13133,7 +13136,7 @@ def _traj_anchor_ymd():
     today_ymd = now_bj.strftime('%Y%m%d')
     if not _trading_days:
         return today_ymd
-    if today_ymd in _trading_days and now_bj.hour * 60 + now_bj.minute >= 9 * 60:
+    if today_ymd in _trading_days and now_bj.hour * 60 + now_bj.minute >= 9 * 60 + 25:
         return today_ymd
     prev = [d for d in _trading_days if d < today_ymd]
     return prev[-1] if prev else today_ymd
@@ -13251,37 +13254,122 @@ def _zt_auto_startup():
         print('[涨停自动更新-启动] 异常: %s' % e)
 
 
-def _zt_after_close_loop():
-    """收盘后统一自动更新。
+_refresh_latest_lock = threading.Lock()
+_refresh_latest_state = {'running': False, 'msg': '', 'steps': [], 'ok': None, 'started': 0, 'finished': 0,
+                         'latest_day': '', 'source': '', 'ft_done_day': ''}
 
-    交易日北京 15:05 后补全当日涨停日文件；15:10 起同步 levistock 当日首次封板时间。
-    首封池若尚未可用，每 3 分钟重试直至成功，当天成功后不再重复联网。"""
-    last_fired = None
-    last_first_time_fired = None
+
+def _refresh_latest_data(source='手动', auto=False):
+    """检查并补齐「最新交易日」的全部落盘数据，缺什么补什么，已是最新则不联网：
+      1) 涨停日文件（KPL，轨迹/时间轴/题材地图的数据源）
+      2) 当日首封时间库（收盘后 15:10 起，每个进程日至少重刷一次）
+      3) K线库（开/收盘涨跌幅来自这里；auto=True 时 15:30 前不尝试，数据源还没出）
+    返回 {'complete': bool, 'steps': [...]}；单飞：已有任务在跑时直接返回其状态。"""
+    st = _refresh_latest_state
+    if not _refresh_latest_lock.acquire(blocking=False):
+        return {'complete': False, 'steps': ['已有更新任务在运行']}
+    st.update(running=True, ok=None, started=time.time(), source=source, steps=[], msg='检查中...')
+    steps = st['steps']
+
+    def note(msg):
+        steps.append(msg)
+        st['msg'] = msg
+        print('[最新数据-%s] %s' % (source, msg))
+
+    complete = True
+    try:
+        now_bj = _bj_now()
+        today_ymd = now_bj.strftime('%Y%m%d')
+        total = now_bj.hour * 60 + now_bj.minute
+        anchor = _kpl_zt_fetch_anchor_ymd()
+        st['latest_day'] = '%s-%s-%s' % (anchor[:4], anchor[4:6], anchor[6:])
+        after_close = today_ymd == anchor and today_ymd in _trading_days and total >= 900
+
+        # 1) 涨停日文件
+        missing = _kpl_missing_zt_days(anchor)
+        if missing:
+            note('涨停日文件缺 %d 天（至 %s），拉取中...' % (len(missing), anchor))
+            _kpl_fetch_missing_days(missing, source=source)
+            missing = _kpl_missing_zt_days(anchor)
+            if missing:
+                complete = False
+                note('涨停日文件仍缺 %s（数据源暂未发布，稍后重试）' % ','.join(missing[-3:]))
+            else:
+                note('涨停日文件已补齐')
+        else:
+            note('涨停日文件已最新（%s）' % st['latest_day'])
+
+        # 2) 当日首封时间（收盘后）
+        if after_close and total >= 910:
+            if st['ft_done_day'] == today_ymd:
+                note('首封时间已同步')
+            elif _kpl_refresh_current_first_zt_times(today_ymd):
+                st['ft_done_day'] = today_ymd
+                note('已同步 %s 首封时间' % today_ymd)
+                _invalidate_cache()
+            else:
+                complete = False
+                note('首封时间暂无有效涨停池，稍后重试')
+
+        # 3) K线库（开/收盘涨跌幅）
+        if auto and after_close and total < 930:
+            note('K线库：15:30 后再检查')
+            complete = False
+        else:
+            try:
+                import update_data_fast
+                kl_missing = [d for d in update_data_fast.get_db_missing_dates() if d <= anchor]
+                if kl_missing:
+                    note('K线库缺 %d 天（%s ~ %s），拉取中...' % (len(kl_missing), kl_missing[0], kl_missing[-1]))
+                    res = update_data_fast.fetch_and_save_missing_dates(kl_missing, delay=0.3) or {}
+                    if hasattr(finder, '_load_zt_from_db'):
+                        finder._load_zt_from_db()
+                        finder._merge_zt_data()
+                    _invalidate_cache()
+                    left = [d for d in update_data_fast.get_db_missing_dates() if d <= anchor]
+                    if left:
+                        complete = False
+                        note('K线库仍缺 %s（拉取 %s/%d 天，数据源暂未发布）' % (','.join(left[-3:]), res.get('success', 0), len(kl_missing)))
+                    else:
+                        note('K线库已补齐（新增 %s 条）' % res.get('records', 0))
+                else:
+                    note('K线库已最新')
+            except Exception as e:
+                complete = False
+                note('K线库更新失败: %s' % e)
+        st['ok'] = complete
+        st['msg'] = ('✅ 已是最新（%s）' if complete else '⚠ 部分数据暂未就绪（%s）') % st['latest_day'] + ' · ' + '；'.join(steps)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        complete = False
+        st['ok'] = False
+        st['msg'] = '❌ 更新失败: %s' % e
+    finally:
+        st['running'] = False
+        st['finished'] = time.time()
+        _refresh_latest_lock.release()
+    return {'complete': complete, 'steps': list(steps)}
+
+
+def _zt_after_close_loop():
+    """收盘后统一自动更新：交易日北京 15:05 起，每 3 分钟检查一次最新交易日数据（涨停日文件 / 首封时间 / K线），
+    缺什么补什么，全部到位当天才停止——数据源发布有先后，不能「触发一次就算完」。"""
+    last_ok = None
+    last_try = 0.0
     while True:
         try:
             now_bj = _bj_now()
             today_ymd = now_bj.strftime('%Y%m%d')
             total = now_bj.hour * 60 + now_bj.minute
-            if today_ymd in _trading_days and total >= 905 and last_fired != today_ymd:
-                last_fired = today_ymd
-                print('[涨停自动更新-收盘] %s 触发当日收盘统一更新' % now_bj.strftime('%Y-%m-%d %H:%M'))
-                missing = _kpl_missing_zt_days(today_ymd)
-                if missing:
-                    _kpl_fetch_missing_days(missing, source='收盘')
-                else:
-                    print('[涨停自动更新-收盘] 当日数据已完整')
-            # 首封时间通常在收盘后数分钟才稳定；成功前保留重试，避免写入空池覆盖已有数据。
-            if today_ymd in _trading_days and total >= 910 and last_first_time_fired != today_ymd:
-                if _kpl_refresh_current_first_zt_times(today_ymd):
-                    last_first_time_fired = today_ymd
-                    print('[首次涨停时间-收盘] %s 已同步 %s 的 levistock 首封时间' % (
-                        now_bj.strftime('%H:%M'), today_ymd))
-                else:
-                    print('[首次涨停时间-收盘] %s 暂无有效涨停池，3分钟后重试' % now_bj.strftime('%H:%M'))
-            time.sleep(180)
+            if (today_ymd in _trading_days and total >= 905 and last_ok != today_ymd
+                    and time.time() - last_try >= 170):
+                last_try = time.time()
+                if _refresh_latest_data(source='收盘', auto=True)['complete']:
+                    last_ok = today_ymd
+            time.sleep(60)
         except Exception:
-            time.sleep(180)
+            time.sleep(60)
 
 
 def _get_zt_from_akshare(with_concepts=True):
@@ -43577,9 +43665,10 @@ class Handler(BaseHTTPRequestHandler):
             result = _get_cached(cache_key, ttl=30 if _is_trading_hours() else 300)
             if result is None:
                 try:
-                    result = _kpl_full_search(name, date_start, date_end, '1', '0', True, None, codes=codes) if codes else {'results': [], 'total_hits': 0}
-                    result['members'] = len(codes)
+                    # 与 6688 题材复盘同口径：KPL 分类关键词匹配（板块 + 标签 + 简介），不再按精选板块/tags 库成分股圈定
+                    result = _kpl_full_search(name, date_start, date_end, '1', '0', True, None)
                     rcodes = {r.get('stock_code') for r in result.get('results', [])}
+                    result['members'] = len(rcodes)
                     result['code_tags'] = {c: [t for t in cls['tags'].get(c, []) if not _zt_class_generic(t)] for c in rcodes if c}
                     _set_cache(cache_key, result)
                 except Exception as e:
@@ -44589,6 +44678,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 print(f"[KPL标签] 获取失败: {e}")
                 self._respond_json(_kpl_get_top_tags(n), cors_headers)
+
+        elif path == '/api/refresh_latest':
+            # 手动「检查并更新最新数据」：?start=1 触发（单飞），否则仅返回当前状态
+            st = _refresh_latest_state
+            if query.get('start', ['0'])[0] == '1' and not st['running']:
+                threading.Thread(target=_refresh_latest_data, kwargs={'source': '手动'}, daemon=True).start()
+                time.sleep(0.2)
+            self._respond_json({k: st[k] for k in ('running', 'msg', 'steps', 'ok', 'started', 'finished', 'latest_day')}, cors_headers)
 
         elif path == '/api/kpl_update_data':
             try:

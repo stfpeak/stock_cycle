@@ -75,7 +75,9 @@
                 '<div class="wb-brand"><span class="wb-eyebrow">REAL-TIME MARKET WATCH</span><h1>实时盯盘</h1>' +
                   '<span class="wb-sub">题材强度 · 涨停时间轴 · 跌幅 · 标签轨迹 · 题材晋级，一屏盯全盘</span></div>' +
                 '<div class="wb-meta"><div class="wb-clock" id="watchClock">--:--:--</div>' +
-                  '<div class="wb-meta-row"><span class="wb-tz">北京时间</span><span class="watch-state" id="watchState">--</span></div></div>' +
+                  '<div class="wb-meta-row"><span class="wb-tz">北京时间</span><span class="watch-state" id="watchState">--</span>' +
+                    '<button class="wb-update" id="watchUpdateBtn" onclick="watchCheckUpdate()" title="检查最新交易日的涨停日文件 / 首封时间 / K线是否齐全，不齐则立即更新">🔄 检查更新</button></div>' +
+                  '<div class="wb-update-msg" id="watchUpdateMsg"></div></div>' +
               '</div>' +
               '<div class="wb-questions">' +
                 '<div class="wb-q"><span class="wb-qn">01</span><div><b>做高哪个题材？</b><small>HIGH · 高度与主线</small></div></div>' +
@@ -442,7 +444,8 @@
             sq.ladderDate = d.date; sq.ladderLive = d.is_live ? d.date : '';
             var n = (d.levels || []).reduce(function (a, l) { return a + l.current.length; }, 0);
             var h = '<div class="sq2-title sq2-ltoggle" data-sq-toggle="sq2Ladder" title="点击折叠 / 展开">📈 连板涨停表现 <small>' + sqEsc(d.date) + (d.is_live ? ' · <b class="sq2-livetag">盘中实时</b>' : '') +
-                ' · 连板 ' + n + ' 只 · 首板 ' + (d.first_total || 0) + ' 只 · 点击名称弹出K线，点击板块 / tags 查看题材复盘</small></div>' +
+                ' · 连板 ' + n + ' 只 · 首板 ' + (d.first_total || 0) + ' 只 · 点击名称弹出K线，点击板块 / tags 查看题材复盘</small>' +
+                '<span class="sq2-kbtn-wrap"><button type="button" class="concept-btn" onclick="event.stopPropagation();toggleKplKlines(\'rtTodayZt\')" title="按涨停时间顺序查看当日涨停股票K线走势">📈 K线走势</button></span></div>' +
                 '<div class="sq2-ldates">' + (d.dates || []).slice().reverse().map(function (x) {
                     return '<span class="sq2-dchip' + (x === d.date ? ' on' : '') + (x === d.live ? ' live' : '') + '" data-sq-ldate="' + sqEsc(x) + '">' + sqEsc(x.slice(5)) + (x === d.live ? '<i>盘中</i>' : '') + '</span>';
                 }).join('') + '</div><div class="sq2-ladder-rows">';
@@ -460,11 +463,24 @@
                 });
                 h += '</div></div>';
             }
-            box.innerHTML = h + '</div>';
+            // K线走势：直接复用 6688「今日涨停」的 K线卡片（题材筛选/列数/放大/刷新），数据=本日天梯里全部涨停股（连板 + 首板），按封板时间排序
+            var zhits = [], zseen = {};
+            var addHit = function (x) {
+                if (!x || !x.code || zseen[x.code]) return;
+                zseen[x.code] = 1;
+                zhits.push({stock_name: x.name || '', stock_code: x.code, subthemes: [x.plate || (x.plates || [])[0] || '未归类'],
+                            first_time: Number(x.first_time) || 999999, show_zt_time: true});
+            };
+            (d.levels || []).forEach(function (l) { (l.current || []).forEach(addHit); });
+            (d.first || []).forEach(function (g) { (g.stocks || []).forEach(addHit); });
+            zhits.sort(function (a, b) { return a.first_time - b.first_time; });
+            _kplSectionHits.rtTodayZt = zhits;
+            _rtTodayZtKlineThemeSelection = null;
+            box.innerHTML = h + '</div>' + _rtTodayZtKlineWrapHtml();
             sqMarkTheme();
         }).catch(function () { box.classList.remove('loading'); if (!silent) box.innerHTML = ''; });
     }
-    window.watchSqTick = function () {          // 30s 总时钟：个股查询页可见且正看盘中实时日时刷新天梯
+    window.watchSqTick = function () {              // 30s 总时钟：个股查询页可见且正看盘中实时日时刷新天梯
         if (sq.root && sq.root.style.display !== 'none' && sq.ladderLive) sqLoadLadder(sq.ladderLive, true);
     };
     function sqMarkTheme() {
@@ -555,7 +571,7 @@
         var secId = 'sq' + (++sqTheme.seq);
         var html = _kplRenderRhythmGrid(shown, secId, secId + '-rhythm');
         var nStocks = {}; shown.forEach(function (r) { nStocks[r.stock_code] = 1; });
-        body.innerHTML = '<div class="sq2-theme-head"><b>' + (sqTheme.kind === 'plate' ? '板块' : 'tag') + '：' + sqEsc(sqTheme.name) + '</b><span>成分股 ' + (d.members || 0) + ' 只（不含ST）· 近1个月' +
+        body.innerHTML = '<div class="sq2-theme-head"><b>' + (sqTheme.kind === 'plate' ? '板块' : 'tag') + '：' + sqEsc(sqTheme.name) + '</b><span>匹配股票 ' + (d.members || 0) + ' 只（KPL 板块+标签+简介 · 不含ST）· 近1个月' +
             (sel.length ? ' · 已按 tags 过滤：' + sel.map(sqEsc).join('、') + '（' + Object.keys(nStocks).length + ' 只）' : '') + '</span></div>' +
             '<div class="board-section merged-section">' + (html || '<div class="sq2-none">近1个月该题材成分股无涨停 / 大涨' + (sel.length ? '（当前 tags 过滤下）' : '') + '</div>') + '</div>';
         _kplLoadFirstZtTimes();
@@ -596,6 +612,13 @@
         sqLoadLadder(sq.ladderDate && sq.ladderDate !== sq.ladderLive ? sq.ladderDate : null);
         if (query) { document.getElementById('sq2Input').value = query; sqSearch(query); }
         else document.getElementById('sq2Input').focus();
+    };
+    // 从轨迹题材列跳到「个股查询 · 题材复盘」并展示该题材的涨停节奏
+    window.watchOpenTheme = function (name) {
+        name = String(name || '').trim();
+        if (!name) return;
+        window.watchOpenStockQuery('');
+        sqThemeShow('tag:' + name, true);
     };
     window.watchCloseStockQuery = function () {
         if (sq.root) sq.root.style.display = 'none';
@@ -905,6 +928,42 @@
     window.watchReverseOnly = function (v) { rw.onlyMatch = !!v; rwRender(); };
     window.watchRefreshStrength = function () { return refreshStrength(false); };
     window.manualRefreshTws = window.watchRefreshStrength;      // 标题上的 ↻ 沿用同一条刷新链
+
+    // 手动「检查并更新最新数据」：触发主服务单飞任务 → 轮询进度 → 完成后重刷全页
+    var _updPolling = false;
+    window.watchCheckUpdate = function () {
+        var btn = document.getElementById('watchUpdateBtn'), msg = document.getElementById('watchUpdateMsg');
+        if (!btn || _updPolling) return;
+        _updPolling = true;
+        btn.disabled = true;
+        btn.textContent = '⏳ 更新中...';
+        msg.textContent = '';
+        msg.className = 'wb-update-msg';
+        function finish(text, ok) {
+            _updPolling = false;
+            btn.disabled = false;
+            btn.textContent = '🔄 检查更新';
+            msg.textContent = text;
+            msg.className = 'wb-update-msg ' + (ok ? 'ok' : 'warn');
+        }
+        function poll() {
+            fetch('/api/refresh_latest?_t=' + Date.now()).then(function (r) { return r.json(); }).then(function (d) {
+                if (d.running) {
+                    msg.textContent = d.msg || '检查中...';
+                    return setTimeout(poll, 1500);
+                }
+                finish(d.msg || '完成', d.ok);
+                // 无论是否更新，都强制重拉（服务端缓存已在 refresh_latest 时被清掉）
+                refreshStrength(false);
+                watchRefreshTrajectory();
+                watchRefreshIndices();
+                watchLoadReverse();
+            }).catch(function (e) { finish('❌ 请求失败: ' + e, false); });
+        }
+        fetch('/api/refresh_latest?start=1&_t=' + Date.now()).then(function (r) { return r.json(); })
+            .then(function () { setTimeout(poll, 800); })
+            .catch(function (e) { finish('❌ 请求失败: ' + e, false); });
+    };
 
     // 30s 总时钟：仅在 9:25~15:00 且页面可见时刷新；K线弹框打开时一并刷新
     function tick() {
