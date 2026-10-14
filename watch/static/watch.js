@@ -12,14 +12,20 @@
 
     // —— 刷新窗口：仅「交易日 9:15~15:00」。非交易日 / 盘前 / 盘后不做任何定时请求，页面停在上一交易日收盘落盘状态 ——
     // 交易日判断问主服务（/api/ladder_dates?n=1 在交易日 9:00 后返回今天），按日期缓存；问到之前按「非交易日」处理，不刷新。
-    var tradingDay = {date: '', ok: false, pending: false};
+    var tradingDay = {date: '', ok: false, pending: false, lastTry: 0};
     function bjDateStr() { var d = bjNow(); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+    // 今天是否交易日：/api/ladder_dates 在交易日 9:25 后才返回今天（9:25 前回退上一交易日），
+    // 所以「是」随时可定论，「否」要 9:30 后才定论（留出时钟误差）；9:30 前每 10s 重试，绝不能把"还没到9:25"缓存成"今天休市"。
     function ensureTradingDay() {
         var today = bjDateStr();
         if (tradingDay.date === today || tradingDay.pending) return;
+        if (Date.now() - tradingDay.lastTry < 10000) return;
         tradingDay.pending = true;
+        tradingDay.lastTry = Date.now();
         fetch('/api/ladder_dates?n=1&_t=' + Date.now()).then(function (r) { return r.json(); }).then(function (a) {
-            if (bjNow().getHours() >= 9) { tradingDay.date = today; tradingDay.ok = !!(a && a[a.length - 1] === today); }
+            var ok = !!(a && a[a.length - 1] === today);
+            var n = bjNow();
+            if (ok || n.getHours() * 60 + n.getMinutes() >= 9 * 60 + 30) { tradingDay.date = today; tradingDay.ok = ok; }
         }).catch(function () {}).then(function () { tradingDay.pending = false; });
     }
     window._twsRefreshGate = function () {
@@ -178,6 +184,11 @@
             fetch('/api/theme_wind_strength?max_age=15&lib=1&_t=' + Date.now()).then(function (r) { return r.json(); }).catch(function () { return null; })
         ]).then(function (arr) {
             if (!arr[2] || arr[2].error) throw new Error((arr[2] && arr[2].error) || '板块强度数据获取失败');
+            // 盘中上游偶发拿不到实时涨停池（live_unavailable）：保留已显示的今日内容，下个 30s 再试，不要把时间轴刷成空白
+            if (!initial && arr[2].live_unavailable && body.querySelector('.tws-timeline')) {
+                console.warn('实时涨停池暂不可用，保留上一次时间轴');
+                return;
+            }
             _themeWindStrengthData = arr[2];
             body.innerHTML = renderThemeWindStrength(arr[1], arr[2]);
             [].forEach.call(document.querySelectorAll('#twWindStrengthSection .tws-tl-scroll, #watchPromoSection .tws-tl-scroll'),
@@ -223,7 +234,7 @@
 
     // ===================== 个股查询页（独立视图，点「返回」回到盯盘主页） =====================
     // 自上而下：搜索框(自动补全) → 板块名+tags 平铺 → KPL涨停记录 → K线 → 板块横排(近15日涨停/大涨，可拓展) → tags 横排(同)
-    var sq = {ladderToken: 0, ladderDate: '', ladderLive: '', firstOpen: false, tagSel: {}, root: null, code: '', scrollY: 0, timer: null, token: 0};
+    var sq = {ladderToken: 0, ladderDate: '', ladderLive: '', ladderFailed: undefined, firstOpen: false, tagSel: {}, root: null, code: '', scrollY: 0, timer: null, token: 0};
     function sqEsc(v) { return _kplEsc(v == null ? '' : String(v)); }
     function sqPct(v) { v = Number(v); return (v === null || !isFinite(v)) ? '' : (v > 0 ? '+' : '') + v.toFixed(2) + '%'; }
     function sqBuildRoot() {
@@ -478,10 +489,19 @@
             _rtTodayZtKlineThemeSelection = null;
             box.innerHTML = h + '</div>' + _rtTodayZtKlineWrapHtml();
             sqMarkTheme();
-        }).catch(function () { box.classList.remove('loading'); if (!silent) box.innerHTML = ''; });
+            sq.ladderFailed = undefined;
+        }).catch(function () {
+            if (token !== sq.ladderToken) return;
+            box.classList.remove('loading');
+            sq.ladderFailed = date || '';
+            // 失败不再把卡片清空成"没有数据"：保留已有内容；首次就失败则给出提示，30s 总时钟会自动重试
+            if (!box.querySelector('.sq2-ladder-rows')) box.innerHTML = '<div class="sq2-title">📈 连板涨停表现</div><div class="sq2-none">加载失败，稍后自动重试 <a href="javascript:void(0)" data-sq-ldate="' + sqEsc(date || '') + '">立即重试</a></div>';
+        });
     }
-    window.watchSqTick = function () {              // 30s 总时钟：个股查询页可见且正看盘中实时日时刷新天梯
-        if (sq.root && sq.root.style.display !== 'none' && sq.ladderLive) sqLoadLadder(sq.ladderLive, true);
+    window.watchSqTick = function () {              // 30s 总时钟：个股查询页可见时，盘中实时日（或上次加载失败的日期）刷新天梯
+        if (!sq.root || sq.root.style.display === 'none') return;
+        if (sq.ladderLive) sqLoadLadder(sq.ladderLive, true);
+        else if (sq.ladderFailed !== undefined) sqLoadLadder(sq.ladderFailed || null, true);
     };
     function sqMarkTheme() {
         [].forEach.call(document.querySelectorAll('#watchSqRoot [data-sq-theme]'), function (c) {
@@ -968,6 +988,7 @@
     // 30s 总时钟：仅在 9:25~15:00 且页面可见时刷新；K线弹框打开时一并刷新
     function tick() {
         if (!_twsRefreshGate() || document.hidden) return;
+        watchTlLoadDates();
         refreshStrength(false);
         watchRefreshTrajectory();
         watchRefreshIndices();
@@ -995,6 +1016,7 @@
         _themeWindLoaded = true;
         tickBar();
         setInterval(tickBar, 1000);
+        watchTlLoadDates().then(function () { if (document.getElementById('twTimelineBox')) watchTlRerender(); });   // 时间轴下方的日期条（近15个交易日）
         refreshStrength(true);
         watchRefreshTrajectory();
         watchRefreshIndices();

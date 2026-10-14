@@ -8,12 +8,20 @@
 function watchRenderTimeline(twsData, boxId, searchMode) {
     boxId = boxId || 'twTimelineBox';
     var mapSearch = boxId === 'tmmTimelineBox' || searchMode === 'cls';
+    var isMain = boxId === 'twTimelineBox' && !searchMode;     // 盯盘主页的时间轴：下方带日期切换
+    var histDay = isMain && _watchTl.dsel && _watchTl.dayData && _watchTl.dayData.date === _watchTl.dsel ? _watchTl.dayData : null;
+    if (histDay) twsData = histDay;
     var AXIS_START = 25;   // 轴起点 = 距9:00分钟数（9:25）：A股9:25集合竞价后才产生涨停，9:00~9:25无数据，轴从9:25开始
     var LUNCH_CUT = 75;   // 午休 11:30~13:00 共 90 分钟，压缩成 15 分钟（少 75 分钟空白）
     var AXIS_LEN = 360 - AXIS_START - LUNCH_CUT;   // 轴总长 = 9:25~15:00 去掉压缩掉的午休 = 260 分钟（minute 基准距 9:00，150=11:30，240=13:00）
     function eff(m) { return m <= 150 ? m : (m >= 240 ? m - LUNCH_CUT : 150 + (m - 150) / 6); }
     var tl = (twsData && twsData.timeline) || [];
-    if (!tl.length) return '';
+    if (!tl.length) {
+        if (!isMain || !_watchTl.dsel) return '';
+        // 选了历史日期但还在加载 / 当天无数据：保留日期条，方便切换
+        return '<div id="' + boxId + '" class="tws-tl-box"><div class="tws-summary-sec-head">⏱ 涨停时间轴 · ' + _watchTl.dsel +
+            '</div><div class="lt-trajectory-loading">' + (_watchTl.err || '加载中...') + '</div>' + watchTlDatesHtml() + '</div>';
+    }
     // 最小宽度随涨停股数自适应：股越多时间轴越宽（横向滚动），减少纵向 lane 数避免叠太高
     var MIN_W = Math.round(Math.max(1500, tl.length * 46) * AXIS_LEN / 335);   // 轴变短后同比缩窄，每分钟像素不变，不会多出泳道
     // 按分钟分组（同分钟多股 → 同列垂直堆叠）
@@ -73,7 +81,7 @@ function watchRenderTimeline(twsData, boxId, searchMode) {
         axis += '<span class="tws-tl-tick" style="left:' + (mpos[mi] / AXIS_LEN * 100).toFixed(2) + '%">' + marks[mi] + '</span>';
     }
     axis += '<span class="tws-tl-lunch" style="left:' + (125 / AXIS_LEN * 100).toFixed(2) + '%;width:' + (15 / AXIS_LEN * 100).toFixed(2) + '%">午休</span>';
-    var h = '<div id="' + boxId + '" class="tws-tl-box"><div class="tws-summary-sec-head">⏱ 今日涨停时间轴（9:25~15:00）<button class="wz-tl-sq" onclick="watchOpenStockQuery()" title="个股查询">🔍 个股查询</button></div>';
+    var h = '<div id="' + boxId + '" class="tws-tl-box"><div class="tws-summary-sec-head">' + (histDay ? '⏱ 涨停时间轴 · ' + histDay.date + '（历史）' : '⏱ 今日涨停时间轴（9:25~15:00）') + '<button class="wz-tl-sq" onclick="watchOpenStockQuery()" title="个股查询">🔍 个股查询</button></div>';
     h += '<div class="tws-tl-scroll"><div class="tws-timeline" style="min-width:' + MIN_W + 'px">';
     h += '<div class="tws-tl-axis">' + axis + '</div>';
     for (var li = 0; li < lanes.length; li++) {
@@ -93,7 +101,7 @@ function watchRenderTimeline(twsData, boxId, searchMode) {
     var cnt = {};
     tl.forEach(function (it) { watchTlTags(it).forEach(function (t) { cnt[t] = (cnt[t] || 0) + 1; }); });
     _watchTl.tags = Object.keys(cnt).sort(function (a2, b2) { return cnt[b2] - cnt[a2] || (a2 < b2 ? -1 : 1); }).map(function (t) { return {t: t, n: cnt[t]}; });
-    h += '<div class="wtl-bar" id="watchTlBar">' + watchTlBarInner() + '</div></div>';
+    h += '</div>' + (isMain ? watchTlDatesHtml() : '') + '<div class="wtl-bar" id="watchTlBar">' + watchTlBarInner() + '</div></div>';
     setTimeout(watchTlApply, 0);
     return h;
 }
@@ -101,7 +109,47 @@ function watchRenderTimeline(twsData, boxId, searchMode) {
 /* ===== 今日涨停时间轴 · 标签筛选 =====
  * 状态：all=true 表示全选（正常显示，且今后新出现的标签也算选中）；否则 sel 里的标签为选中，
  * 股票只要带任一选中标签就亮（高亮描边），其余变暗——全取消时全部变暗，再勾几个板块，新涨停落在其中就能一眼看出是补涨。 */
-var _watchTl = {all: true, sel: {}, tags: []};
+var _watchTl = {all: true, sel: {}, tags: [], dates: [], dsel: '', dayData: null, err: ''};
+/* 日期切换（时间轴下方）：近 15 个交易日；dsel=''=最新交易日（实时 / 收盘时间轴，随 30s 刷新）；
+ * 选历史日期时读 /api/zt_timeline_day，存入 dayData，30s 刷新重绘时仍显示所选日期。 */
+function watchTlDatesHtml() {
+    var T = _watchTl, ds = T.dates || [];
+    if (!ds.length) return '';
+    var latest = ds[ds.length - 1], cur = T.dsel || latest;
+    return '<div class="wtl-dates"><b>📅 日期</b>' + ds.slice().reverse().map(function (d) {
+        return '<span class="wtl-date' + (d === cur ? ' on' : '') + '" onclick="watchTlPickDate(\'' + d + '\')">' + d.slice(5) + (d === latest ? '<i>最新</i>' : '') + '</span>';
+    }).join('') + '</div>';
+}
+function watchTlRerender() {
+    var box = document.getElementById('twTimelineBox');
+    if (!box) return;
+    var sc = box.querySelector('.tws-tl-scroll'), left = sc ? sc.scrollLeft : 0;
+    var live = (typeof _themeWindStrengthData !== 'undefined') ? _themeWindStrengthData : null;
+    var html = watchRenderTimeline(live, 'twTimelineBox');
+    var tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    if (tmp.firstChild) box.replaceWith(tmp.firstChild); else box.remove();
+    var sc2 = document.querySelector('#twTimelineBox .tws-tl-scroll');
+    if (sc2) sc2.scrollLeft = left;
+}
+function watchTlPickDate(d) {
+    var T = _watchTl, latest = T.dates[T.dates.length - 1];
+    T.all = true; T.sel = {};
+    T.err = '';
+    if (!d || d === latest) { T.dsel = ''; T.dayData = null; return watchTlRerender(); }
+    T.dsel = d; T.dayData = null;
+    watchTlRerender();                       // 先显示"加载中"并高亮所选日期
+    fetch('/api/zt_timeline_day?date=' + encodeURIComponent(d)).then(function (r) { return r.json(); }).then(function (x) {
+        if (T.dsel !== d) return;
+        if (x && x.timeline && x.timeline.length) T.dayData = x; else T.err = '该日无涨停数据';
+        watchTlRerender();
+    }).catch(function () { if (T.dsel === d) { T.err = '加载失败，请重试'; watchTlRerender(); } });
+}
+function watchTlLoadDates() {
+    return fetch('/api/ladder_dates?n=15&_t=' + Date.now()).then(function (r) { return r.json(); }).then(function (a) {
+        if (a && a.length) { _watchTl.dates = a; if (_watchTl.dsel && a.indexOf(_watchTl.dsel) < 0) _watchTl.dsel = ''; }
+    }).catch(function () {});
+}
 function watchTlTags(it) {
     var out = [];
     ((it && it.mab) || []).forEach(function (m) { var t = ((m || {}).t || '').trim(); if (t && out.indexOf(t) < 0) out.push(t); });

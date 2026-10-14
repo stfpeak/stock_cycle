@@ -2628,12 +2628,15 @@ def _kpl_akshare_zt_rows(date_ymd):
     return rows
 
 
+_kpl_today_live_good = None     # (YYYYMMDD, ts, rows)：今日最近一次成功拉到的实时池
+
+
 def _kpl_today_live_rows():
     """akshare 实时涨停池合成 KPL 行（60s 内存缓存），供 KPL涨停深挖 实时查询。
     今日日文件已存在 → 返回 []（走固定日文件数据，避免重复注入）；否则注入当日 akshare 涨停池
     （盘中=最新涨停可查；盘后今日文件未生成也能查到当日涨停，修复盲区）。
     返回 KPL 行列表，每行含 _kpl_live_today=True（后端跳过连板重算）+ _kpl_live_trading（前端是否标「盘中」）。"""
-    global _kpl_today_live_cache, _kpl_today_live_ts
+    global _kpl_today_live_cache, _kpl_today_live_ts, _kpl_today_live_good
     now = time.time()
     if _kpl_today_live_cache is not None and now - _kpl_today_live_ts < 60:
         return _kpl_today_live_cache
@@ -2652,16 +2655,32 @@ def _kpl_today_live_rows():
         # 若仍注入会把上一交易日涨停污染成「今日=0904重复拷贝列」。只有真实交易日开盘后才注入当日池。
         return _kpl_today_live_cache
     trading = _is_trading_hours()
-    try:
-        import akshare as ak
-        df = ak.stock_zt_pool_em(date=today_ymd)
-        for r in _kpl_build_akshare_rows(df, today_fmt):
-            rr = dict(r)
-            rr['_kpl_live_today'] = True
-            rr['_kpl_live_trading'] = trading
-            _kpl_today_live_cache.append(rr)
-    except Exception:
-        _kpl_today_live_cache = []
+    if _kpl_today_live_good and _kpl_today_live_good[0] == today_ymd:
+        _kpl_today_live_cache = _kpl_today_live_good[2]     # 回源期间并发调用沿用上一份好数据
+    rows = []
+    for attempt in range(2):
+        try:
+            import akshare as ak
+            df = ak.stock_zt_pool_em(date=today_ymd)
+            rows = []
+            for r in _kpl_build_akshare_rows(df, today_fmt):
+                rr = dict(r)
+                rr['_kpl_live_today'] = True
+                rr['_kpl_live_trading'] = trading
+                rows.append(rr)
+        except Exception:
+            rows = []
+        if rows:
+            break
+        if attempt == 0:
+            time.sleep(0.8)
+    good = _kpl_today_live_good
+    if rows:
+        _kpl_today_live_good = (today_ymd, time.time(), rows)
+    elif good and good[0] == today_ymd and time.time() - good[1] < 900:
+        rows = good[2]                              # 本轮拉取失败：沿用今日最近一次成功的池（≤15 分钟），别让今日整列消失
+        _kpl_today_live_ts = now - 50               # 仅缓存约 10s，尽快重试
+    _kpl_today_live_cache = rows
     return _kpl_today_live_cache
 
 
@@ -5037,17 +5056,88 @@ def _auction_report_loop():
 
 
 def _get_zt_timeline_pool_cached():
-    """时间轴专用轻量涨停池：不逐只查询同花顺概念，避免首屏被 90+ 次慢查询拖住。"""
+    """时间轴专用轻量涨停池：不逐只查询同花顺概念，避免首屏被 90+ 次慢查询拖住。
+    盘中口径：成功结果缓存 20s（须是北京当天的池，跨 9:25 不复用盘前回退的昨日池）；
+    拉取失败/为空时不再缓存空池 60s，而是 5s 后重试，并在重试期间沿用同一天最近一次成功的池（≤15 分钟），
+    避免东财偶发超时让今日涨停时间轴整块空白。"""
     now = time.time()
-    if _zt_timeline_pool_cache['data'] is not None and now - _zt_timeline_pool_cache['ts'] < 60:
-        return _zt_timeline_pool_cache['data']
-    try:
-        data = _get_zt_from_akshare(with_concepts=False)
-    except Exception:
+    c = _zt_timeline_pool_cache
+    today_fmt = _bj_now().strftime('%Y%m%d')
+
+    def _same_day(rows):
+        return bool(rows) and str(rows[0].get('trade_date') or '') == today_fmt
+
+    live = _is_trading_hours()
+    if c['data'] is not None:
+        age = now - c['ts']
+        if live:
+            if (_same_day(c['data']) and age < 20) or (not c['data'] and age < 5):
+                return c['data']
+        elif age < 60:
+            return c['data']
+    data = []
+    for attempt in range(2):
+        try:
+            data = _get_zt_from_akshare(with_concepts=False)
+        except Exception:
+            data = []
+        if data and (not live or _same_day(data)):
+            break
         data = []
-    _zt_timeline_pool_cache['data'] = data
-    _zt_timeline_pool_cache['ts'] = now
+        if attempt == 0:
+            time.sleep(0.8)
+    if data:
+        c['good'], c['good_ts'] = data, now
+    elif live and c.get('good') and _same_day(c['good']) and now - c.get('good_ts', 0) < 900:
+        data = c['good']        # 本轮拉取失败：沿用同一天最近一次成功的池
+        c['data'], c['ts'] = data, now - 12     # 仅再缓存约 8s，尽快重试
+        return data
+    c['data'] = data
+    c['ts'] = now
     return data
+
+
+def _build_timeline_for_date(date_fmt):
+    """指定历史交易日的涨停时间轴（来自 KPL 日文件，字段与实时时间轴一致，供盯盘页时间轴下方的日期切换）。"""
+    _kpl_ensure_loaded()
+    rows = _kpl_rows_by_date.get(date_fmt, []) or []
+    timeline, seen = [], set()
+    for r in rows:
+        code = str(r.get('stock_code') or '').strip()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        name = r.get('stock_name') or code
+        if _sq_is_st(name):
+            continue        # ST 不显示
+        try:
+            lb = max(1, int(_kpl_compute_lianban(code, date_fmt) or 1))
+        except Exception:
+            lb = max(1, int(r.get('lianban') or 1))
+        kpl = (_kpl_resolve_stock_kpl(code, date_fmt) or {})
+        ft = int(r.get('first_time') or 0) or 999999
+        stock = {'code': code, 'name': name, 'lianban': lb, 'first_time': ft,
+                 'plate_name': kpl.get('plate_name') or r.get('plate_name') or '',
+                 'reason_tag': kpl.get('reason_tag') or r.get('reason_tag') or '',
+                 'reason_brief': kpl.get('reason_brief') or r.get('reason_brief') or ''}
+        minute = None
+        if ft < 999999:
+            ft_s = f'{ft:06d}'
+            minute = int(ft_s[:2]) * 60 + int(ft_s[2:4]) - 540
+        tags = _tws_subtheme_tags(stock)
+        try:
+            _lb, is_r, _, _ = _kpl_board_info(code, date_fmt, lb_override=lb)
+        except Exception:
+            is_r = False
+        timeline.append({
+            'code': code, 'name': name, 'minute': minute, 'first_time': ft, 'lianban': lb,
+            'theme': tags[0] if tags else stock['reason_tag'], 'plate': stock['plate_name'],
+            'type': 'restart' if is_r else ('ladder' if lb >= 2 else 'normal'),
+            'mab': _tws_mab_tags(stock),
+            'search_terms': _tws_telegraph_search_terms(code, name, date_fmt, stock),
+        })
+    timeline.sort(key=lambda x: (999999 if x['minute'] is None else x['minute'], -x['lianban'], x['name']))
+    return {'date': date_fmt, 'timeline': timeline, 'historical': True}
 
 
 def _build_today_timeline_fast():
@@ -5091,7 +5181,7 @@ def _build_today_timeline_fast():
     timeline = []
     for item in pool:
         code = str(item.get('code') or '').strip()
-        if not code:
+        if not code or _sq_is_st(item.get('name')):
             continue
         # 部分实时涨停股当天还没有 KPL 标签记录；解析函数会返回 None，
         # 时间轴仍应保留该股票，不能因标签缺失让整个接口 500。
@@ -6708,6 +6798,8 @@ def _build_theme_wind_strength(top_n=10, lib_promotion=False):
     timeline = []
     if zt_stocks:
         for s in zt_stocks:
+            if _sq_is_st(s.get('name')):
+                continue        # ST 不进时间轴
             ft = ft_map.get(s['code'], 999999)
             minute = None
             if ft and ft < 999999:
@@ -7272,7 +7364,17 @@ def _zt_class_generic(t):
 
 def _zt_classify_cached(n=10, live=False):
     cache_key = 'zt_classify_%s_%s%s' % (n, _kpl_zt_fetch_anchor_ymd(), '_live' if live else '')
-    result = _get_cached(cache_key, ttl=(15 if (live and _is_live_quote_hours()) else 600))
+    ttl = 600
+    if live:
+        _nb = _bj_now()
+        _tot = _nb.hour * 60 + _nb.minute
+        _ty = _nb.strftime('%Y%m%d')
+        if _ty in _trading_days and _tot >= 565:
+            if _tot < 900:
+                ttl = 15
+            elif not _kpl_rows_by_date.get('%s-%s-%s' % (_ty[:4], _ty[4:6], _ty[6:])):
+                ttl = 20       # 收盘后日文件尚未补齐：今日仍按实时池算，文件到位后尽快切到定稿数据
+    result = _get_cached(cache_key, ttl=ttl)
     if result is None:
         result = _zt_classify_build(n, live=live)
         _set_cache(cache_key, result)
@@ -7362,6 +7464,9 @@ def _sq_ladder_get(day=None):
     except Exception:
         pass
     res = _sq_ladder_build(_zt_classify_cached(_SQ_LADDER_DAYS + 1), day)
+    if not res.get('levels') and not res.get('first'):
+        res.update(dates=dates, live=live, is_live=False)      # 空结果不落盘（否则数据补齐后仍读到落盘的空文件）
+        return res
     try:
         os.makedirs(_SQ_LADDER_DIR, exist_ok=True)
         tmp = path + '.tmp'
@@ -7926,15 +8031,21 @@ def _zt_classify_build(n=10, live=False):
     days = [d for d in _trading_days if d <= anchor][-n:]
     fmt = lambda d: '%s-%s-%s' % (d[:4], d[4:6], d[6:])
     live_day = ''
-    if live and _is_live_quote_hours():
-        today_ymd = _bj_now().strftime('%Y%m%d')
-        if today_ymd not in days:
-            days = (days + [today_ymd])[-n:]
-            live_day = fmt(today_ymd)
+    if days:
+        _kpl_ensure_loaded(days[0], days[-1])
+    if live:
+        # 今日尚无收盘定稿数据（盘中 9:25~15:00，或 15:00 后收盘日文件还没补齐的空档）→ 今日按实时涨停池追加/替换为最后一天。
+        # 旧逻辑只在盘中追加，15:00 后锚点已含今日但日文件未到，今日整天为空 → 连板涨停表现"没有数据"，且空结果还被落盘。
+        _nb = _bj_now()
+        _tot = _nb.hour * 60 + _nb.minute
+        _ty = _nb.strftime('%Y%m%d')
+        if _ty in _trading_days and _tot >= 565 and (_tot < 900 or not _kpl_rows_by_date.get(fmt(_ty))):
+            if _ty not in days:
+                days = (days + [_ty])[-n:]
+            live_day = fmt(_ty)
     if not days:
         return {'dates': [], 'days': {}}
     dates = [fmt(d) for d in days]
-    _kpl_ensure_loaded(days[0], days[-1])
     cls = _sector_class_load()
     plates_of, tags_of, size_of = cls['plates'], cls['tags'], cls['size']
     home_of, lib_names = cls['home'], cls['names']
@@ -43735,6 +43846,24 @@ class Handler(BaseHTTPRequestHandler):
             # 不让手机首次打开盯盘时触发行情网络请求。
             day = query.get('date', [''])[0].strip().replace('-', '')
             self._respond_json(_auction_load_report(day), cors_headers)
+
+        elif path == '/api/zt_timeline_day':
+            # 盯盘页「今日涨停时间轴」下方的日期切换：某个历史交易日的涨停时间轴（KPL 日文件）
+            try:
+                day = query.get('date', [''])[0].strip()
+                if not re.match(r'^\d{4}-\d{2}-\d{2}$', day):
+                    self._respond_json({'error': 'bad date', 'timeline': []}, cors_headers)
+                else:
+                    ck = 'zt_timeline_day_' + day
+                    result = _get_cached(ck, ttl=600)
+                    if result is None:
+                        result = _build_timeline_for_date(day)
+                        if result['timeline']:
+                            _set_cache(ck, result)
+                    self._respond_json(result, cors_headers)
+            except Exception as e:
+                import traceback
+                self._respond_json({'error': str(e), 'traceback': traceback.format_exc(), 'timeline': []}, cors_headers)
 
         elif path == '/api/today_zt_timeline':
             # 题材风向/舆情监控共用同一完整快照，确保股票名单、题材标签与板数标记一致。

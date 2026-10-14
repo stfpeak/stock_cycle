@@ -622,3 +622,10 @@
 .sq2-ltoggle { display: flex; align-items: center; gap: 8px; }
 .sq2-ltoggle > small { flex: 1; min-width: 0; }
 .sq2-kbtn-wrap { margin-left: auto; flex: none; }
+
+/* 时间轴下方日期切换 */
+.wtl-dates { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 8px; padding: 6px 12px; border-radius: 12px; background: rgba(15,52,96,0.22); border: 1px solid rgba(255,255,255,0.09); font-size: 0.85em; color: #cbd5e1; }
+.wtl-date { padding: 2px 10px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.18); background: rgba(255,255,255,0.05); color: #cbd5e1; cursor: pointer; user-select: none; font-weight: 600; }
+.wtl-date:hover { background: rgba(255,255,255,0.16); }
+.wtl-date.on { background: #1e88e5; border-color: #1e88e5; color: #fff; }
+.wtl-date i { font-style: normal; font-size: 0.8em; margin-left: 4px; color: #ffd54f; }

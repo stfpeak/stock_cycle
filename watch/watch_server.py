@@ -92,22 +92,28 @@ def _is_text(ctype):
     return any((ctype or '').startswith(t) for t in _TEXT_TYPES)
 
 
-_trading_day_cache = {'date': None, 'ok': False}
+_trading_day_cache = {'date': None, 'ok': False, 'try': 0.0}
 
 
 def _is_trading_day_today():
-    """今天是否 A 股交易日：问主服务（它有交易日历；/api/ladder_dates 在交易日 9:00 后返回今天）。每个日期只成功问一次；
-    问不到时按「工作日」兜底并在下次重试。"""
+    """今天是否 A 股交易日：问主服务（/api/ladder_dates 在交易日 9:25 后才返回今天，之前回退上一交易日）。
+    「是」随时可定论；「否」要 9:30 后才定论并缓存（9:30 前不能把"还没到 9:25"当成休市缓存一整天——
+    否则 9:15~9:25 期间启动 / 首次询问会让后台热点缓存刷新整天停摆）。未定论时 9:30 前 5s 重试一次，
+    问不到时按「工作日」兜底。"""
     now = datetime.now(timezone(timedelta(hours=8)))
     today = now.strftime('%Y-%m-%d')
-    if _trading_day_cache['date'] == today:
-        return _trading_day_cache['ok']
+    c = _trading_day_cache
+    if c['date'] == today:
+        return c['ok']
+    if time.time() - c['try'] < 5:
+        return now.weekday() < 5
+    c['try'] = time.time()
     try:
         r = _session.get(UPSTREAM + '/api/ladder_dates?n=1', timeout=5)
         ok = r.status_code == 200 and r.json()[-1:] == [today]
-        if now.hour >= 9:             # 9:00 前主服务返回的是上一交易日，不能据此定论
-            _trading_day_cache.update(date=today, ok=ok)
-        return ok
+        if ok or now.hour * 60 + now.minute >= 9 * 60 + 30:
+            c.update(date=today, ok=ok)
+        return ok or (now.weekday() < 5 and now.hour * 60 + now.minute < 9 * 60 + 30)   # 9:30 前未定论：工作日先按交易日处理
     except Exception:
         return now.weekday() < 5
 
