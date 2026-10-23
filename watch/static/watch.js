@@ -146,6 +146,7 @@
             '<div class="wyd-headbar"><h3 class="wyd-title">🔥 那些异动的20cm <span class="count-badge">近20日 · 创业板 / 科创板 大涨&gt;10% · 与轨迹同一套题材分类</span> <span class="wd-count" id="watchYd20Count"></span> <span class="wd-count" id="watchYdSortNote"></span></h3></div>' +
             '<div class="wyd-quote">主力堆好柴，等火来，情绪是火。</div>' +
             '<div class="wyd-filter" id="watchYdFilter">' +
+              '<span class="wyd-f-group"><b>利好因子加权</b><span class="wyd-f-chip wyd-f-factor" id="watchYdFactorBtn" onclick="watchYdFactorToggle()" title="今日涨停标签 × 今日涨停标签 的交叉：近20日大涨股里同时带这两个标签的股票（今日涨停的自带组合不推荐）">⚡ <span id="watchYdFactorCnt">0</span> 组</span></span>' +
               '<span class="wyd-f-group"><b>市场</b>' +
                 '<span class="wyd-f-chip" onclick="watchYdFilterToggle(\'boards\',\'创\',this)">创</span>' +
                 '<span class="wyd-f-chip" onclick="watchYdFilterToggle(\'boards\',\'科\',this)">科</span></span>' +
@@ -163,6 +164,7 @@
               '<span class="wyd-f-stat" id="watchYdStat"></span>' +
               '<div class="wyd-search"><input id="watchYdSearch" type="text" placeholder="搜索题材 / 股票名称 / 代码" autocomplete="off" spellcheck="false"><div class="wyd-sug" id="watchYdSug"></div></div>' +
               '<span class="wyd-f-reset" onclick="watchYdFilterReset()">↻ 重置</span></div>' +
+            '<div class="wyd-factor" id="watchYdFactor" style="display:none"></div>' +
             '<div id="watchYd20Body"><div class="lt-trajectory-loading">加载中...</div></div></div>';
     }
 
@@ -214,6 +216,7 @@
                 return;
             }
             _themeWindStrengthData = arr[2];
+            if (window.watchYdFactorRender) watchYdFactorRender();
             body.innerHTML = renderThemeWindStrength(arr[1], arr[2]);
             [].forEach.call(document.querySelectorAll('#twWindStrengthSection .tws-tl-scroll, #watchPromoSection .tws-tl-scroll'),
                 function (el, i) { if (scrolls[i]) el.scrollLeft = scrolls[i]; });

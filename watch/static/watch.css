@@ -1280,3 +1280,23 @@
 /* K线走势 / 异动走势 弹框：加宽，平铺的图更大 */
 .kline-modal.tmm-theme-kline-modal { width: 92vw !important; max-width: 1760px !important; padding: 16px 16px !important; }
 .kline-modal.tmm-theme-kline-modal .concept-kline-grid { gap: 8px; }
+
+/* ===== 利好因子加权 ===== */
+.wyd-f-chip.wyd-f-factor { color: #ffb38f; border-color: rgba(255,122,69,0.5); font-weight: 700; }
+.wyd-f-chip.wyd-f-factor.on { color: #ffb38f; background: rgba(255,122,69,0.16); border-color: #ff7a45; }
+.wyd-factor { margin: 0 0 12px; padding: 10px 12px; border-radius: 10px; background: linear-gradient(135deg, rgba(255,122,69,0.08), rgba(255,255,255,0.03)); border: 1px solid rgba(255,122,69,0.3); }
+.wyd-factor-head { font-weight: 800; font-size: 0.85em; color: #ffb38f; margin-bottom: 8px; }
+.wyd-factor-head small { font-weight: 500; color: #8b97ab; margin-left: 6px; }
+.wyd-f-none { color: #8b97ab; font-size: 0.82em; }
+.wyd-factor-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(440px, 1fr)); gap: 6px; }
+.wyd-fx { display: flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 8px; cursor: pointer; font-size: 0.8em;
+    background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); transition: background .15s, border-color .15s; }
+.wyd-fx:hover { background: rgba(255,255,255,0.1); }
+.wyd-fx.on { background: rgba(255,122,69,0.2); border-color: #ff7a45; }
+.wyd-fx-rank { flex: 0 0 auto; min-width: 18px; text-align: center; color: #ffd700; font-size: 0.9em; }
+.wyd-fx-tag { flex: 0 0 auto; padding: 1px 8px; border-radius: 10px; font-weight: 700; color: #e8eef8; background: rgba(79,195,247,0.16); border: 1px solid rgba(79,195,247,0.4); white-space: nowrap; }
+.wyd-fx-tag i { font-style: normal; margin-left: 4px; color: #ff7875; font-size: 0.85em; }
+.wyd-fx-tag small { margin-left: 4px; color: #8bdcff; font-size: 0.8em; font-weight: 500; }
+.wyd-fx em { font-style: normal; color: #8b97ab; }
+.wyd-fx-score { flex: 0 0 auto; padding: 0 6px; border-radius: 8px; color: #3a2a00; background: #ffd666; font-weight: 800; font-size: 0.85em; }
+.wyd-fx-stocks { flex: 1; min-width: 0; color: #cbd5e1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

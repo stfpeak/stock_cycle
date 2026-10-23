@@ -905,7 +905,7 @@ function watchRenderYd20() {
         _watchYdNavs.push(list.map(function(x) { return {name: x.name, code: x.code}; }));
         var c = {lb: 0, first: 0, surge: 0, broken: 0};
         list.forEach(function(x) { c[x.status]++; });
-        h += '<div class="wyd-block" id="' + blockId + '" data-t="' + _kplEsc(r.name.toLowerCase()) + '" style="--th-h:' + hue + '">' +
+        h += '<div class="wyd-block" id="' + blockId + '" data-t="' + _kplEsc(r.name.toLowerCase()) + '" data-tn="' + _kplEsc(r.name) + '" style="--th-h:' + hue + '">' +
             '<div class="wyd-side"><div class="lt-th-name wyd-name">' +
             (r.name === '未归类' ? _kplEsc(r.name) : '<span class="lt-tag-link" title="点击查看该题材的涨停节奏（题材复盘）" onclick="watchOpenTheme(\x27' + nm + '\x27)">' + _kplEsc(r.name) + '</span>') +
             ' <span class="lt-th-total">' + list.length + '</span></div>' +
@@ -924,7 +924,7 @@ function watchRenderYd20() {
             var trKey = st.trend ? (st.trend === 'yin' ? 'n' : 'y') + Math.min(st.trend_n, 4) : '';
             var trTxt = !st.trend ? '' : (st.trend === 'yin' ? st.trend_n + '阴' : (st.trend_n === 1 ? '首阳' : st.trend_n + '阳'));
             var trTip = !st.trend ? '' : (st.trend === 'yin' ? '连续第 ' + st.trend_n + ' 个阴线' : '阴线之后第 ' + st.trend_n + ' 个阳线' + (st.trend_n === 1 ? '（阴线回调后的首阳）' : ''));
-            h += '<div class="wyd-card wyd-' + st.status + '" data-n="' + _kplEsc((st.name + ' ' + st.code).toLowerCase()) + '" data-b="' + watchBoardOf(st.code) + '" data-tr="' + trKey + '" data-gap="' + st.gap + '"' +
+            h += '<div class="wyd-card wyd-' + st.status + '" data-n="' + _kplEsc((st.name + ' ' + st.code).toLowerCase()) + '" data-c="' + st.code + '" data-b="' + watchBoardOf(st.code) + '" data-tr="' + trKey + '" data-gap="' + st.gap + '"' +
                 (cardId ? ' id="' + cardId + '"' : '') + ' title="' + _kplEsc(snm + ' ' + st.code + '｜' + trTip + '｜近20日大涨：' + tip) + '" onclick="openDsStockFromRhythm(\x27' + snm + '\x27, \x27' + st.code + '\x27, \x27\x27, _watchYdNavs[' + navIdx + '], ' + si + ')">' +
                 '<div class="wyd-c-top"><i class="lt-board lt-board-' + watchBoardKey(st.code) + '">' + watchBoardOf(st.code) + '</i>' +
                 '<span class="wyd-c-name">' + _kplEsc(snm) + '</span><code>' + st.code + '</code><span class="wyd-badge wyd-b-' + st.status + '">' + watchYdLabel(st) + '</span></div>' +
@@ -934,6 +934,7 @@ function watchRenderYd20() {
         h += '</div></div>';
     });
     body.innerHTML = h;
+    watchYdFactorRender();
     watchYdFilter();
 }
 
@@ -958,7 +959,7 @@ function watchYdSuggest() {
 }
 /* 过滤：市场（创/科）、阴阳（首阳 / x阳 / x阴）、断板天数 ≤ N、搜索（题材 / 股票）；各组不选 = 不限制。
  * 搜题材名 → 显示该题材全部股票；搜股票名称/代码 → 只显示命中的卡片；再与其余条件取交集。 */
-var _wydF = {boards: {}, trends: {}};
+var _wydF = {boards: {}, trends: {}, combo: ''};
 function watchYdFilterToggle(group, key, el) {
     var m = _wydF[group];
     if (m[key]) delete m[key]; else m[key] = 1;
@@ -966,8 +967,9 @@ function watchYdFilterToggle(group, key, el) {
     watchYdFilter();
 }
 function watchYdFilterReset() {
-    _wydF = {boards: {}, trends: {}};
-    [].forEach.call(document.querySelectorAll('#watchYdFilter .wyd-f-chip.on'), function(e) { e.classList.remove('on'); });
+    _wydF = {boards: {}, trends: {}, combo: ''};
+    watchYdFactorRender();
+    [].forEach.call(document.querySelectorAll('#watchYdFilter .wyd-f-chip.on:not(.wyd-f-factor)'), function(e) { e.classList.remove('on'); });
     var n = document.getElementById('watchYdBreak'), q = document.getElementById('watchYdSearch');
     if (n) n.value = '';
     if (q) q.value = '';
@@ -981,13 +983,15 @@ function watchYdFilter() {
     var q = inp.value.trim().toLowerCase(), shown = 0;
     var nb = document.getElementById('watchYdBreak'), maxBreak = nb && nb.value !== '' ? Number(nb.value) : null;
     var hasB = Object.keys(_wydF.boards).length > 0, hasT = Object.keys(_wydF.trends).length > 0;
-    var active = !!q || hasB || hasT || maxBreak !== null, seen = {};
+    var combo = _wydF.combo && (window._watchYdCombos || {})[_wydF.combo];
+    var active = !!q || hasB || hasT || maxBreak !== null || !!combo, seen = {};
     var old = body.querySelector('.wyd-nomatch');
     if (old) old.remove();
     [].forEach.call(body.querySelectorAll('.wyd-block'), function(b) {
         var themeHit = !q || b.getAttribute('data-t').indexOf(q) >= 0, n = 0;
+        var comboBlock = !combo || combo.tags.indexOf(b.getAttribute('data-tn')) >= 0;
         [].forEach.call(b.querySelectorAll('.wyd-card'), function(c) {
-            var ok = (themeHit || c.getAttribute('data-n').indexOf(q) >= 0) &&
+            var ok = comboBlock && (!combo || combo.codes[c.getAttribute('data-c')]) && (themeHit || c.getAttribute('data-n').indexOf(q) >= 0) &&
                 (!hasB || _wydF.boards[c.getAttribute('data-b')]) &&
                 (!hasT || _wydF.trends[c.getAttribute('data-tr')]) &&
                 (maxBreak === null || Number(c.getAttribute('data-gap')) <= maxBreak);
@@ -1024,3 +1028,107 @@ document.addEventListener('mousedown', function(e) {
     if (it) { e.preventDefault(); watchYdPick(Number(it.getAttribute('data-i'))); return; }
     if (!(e.target && e.target.closest && e.target.closest('.wyd-search'))) { var b = document.getElementById('watchYdSug'); if (b) b.classList.remove('on'); }
 });
+
+
+/* ===== 利好因子加权 =====
+ * 热门标签 = 「细分题材晋级」最新日有涨停的标签。两两组合 A + B（A 分数更高），在下方「近20日大涨股」里找同时带 A、B 的股票
+ * （标签 = 该股在本章节出现的题材行）。自带组合不推荐：今日涨停且今日标签同时含 A、B 的股票（例：粤芯半导自带 芯片+次新股）不计入；
+ * 剔除后没有股票的组合不显示。
+ * 加权分（每次刷新 / 有新涨停时随数据重算）：
+ *   标签分 = 早盘分 + 数量分
+ *     早盘分 = 40 × (1 − 该标签今日最早封板的交易分钟数 / 240)，9:25 封板满分 40，15:00 为 0（午休不计）
+ *     数量分 = 12 × √(今日涨停数 + 今日大涨数)，数量越多越高（今日大涨 = 创/科 今日涨幅>10% 未涨停）
+ *   组合分 = 标签 A 分 + 标签 B 分；按组合分从高到低排序。 */
+function watchYdTradeMin(t) {      // HHMMSS → 距 9:25 的交易分钟（午休 11:30~13:00 不计）
+    t = Number(t);
+    if (!t || t >= 999999) return null;
+    var m = Math.floor(t / 10000) * 60 + Math.floor(t / 100) % 100;
+    if (m > 780) m -= 90; else if (m > 690) m = 690;
+    return Math.max(0, m - 565);
+}
+function watchYdFmtTime(t) {
+    t = Number(t);
+    return t && t < 999999 ? ('0' + Math.floor(t / 10000)).slice(-2) + ':' + ('0' + Math.floor(t / 100) % 100).slice(-2) : '--';
+}
+function watchYdFactors() {
+    var shown = window._watchYdShown || {}, data = (typeof _themeWindStrengthData !== 'undefined') ? _themeWindStrengthData : null;
+    var days = data && data.promotion && data.promotion.days;
+    if (!days || !days.length) return [];
+    var today = days[days.length - 1], info = {}, todayTags = {};
+    (today.themes || []).forEach(function(t) {
+        var first = 999999;
+        (t.stocks || []).forEach(function(st) {
+            if (st.first_time && st.first_time < first) first = st.first_time;
+            (todayTags[st.code] = todayTags[st.code] || {})[t.theme] = 1;
+        });
+        var n = t.cnt || (t.stocks || []).length;
+        if (n > 0) info[t.theme] = {cnt: n, first: first, surge: 0};     // 今日没有涨停的不算热门标签
+    });
+    var codeTags = {}, tags = [];
+    Object.keys(shown).forEach(function(t) {
+        if (t === '未归类' || !info[t]) return;
+        tags.push(t);
+        shown[t].forEach(function(st) {
+            (codeTags[st.code] = codeTags[st.code] || {})[t] = 1;
+            if (st.status === 'surge') info[t].surge++;          // 今日大涨（gap=0 且未涨停）
+        });
+    });
+    tags.forEach(function(t) {
+        var i = info[t], m = watchYdTradeMin(i.first);
+        i.early = m === null ? 0 : 40 * (1 - Math.min(m, 240) / 240);
+        i.num = 12 * Math.sqrt(i.cnt + i.surge);
+        i.score = i.early + i.num;
+    });
+    var out = [];
+    for (var i = 0; i < tags.length; i++) {
+        for (var j = i + 1; j < tags.length; j++) {
+            var a = tags[i], b = tags[j];
+            if (info[b].score > info[a].score || (info[b].score === info[a].score && b < a)) { var x = a; a = b; b = x; }
+            var stocks = shown[a].filter(function(st) {
+                var tt = todayTags[st.code];
+                return codeTags[st.code][b] && !(tt && tt[a] && tt[b]);
+            });
+            if (!stocks.length) continue;
+            out.push({a: a, b: b, ia: info[a], ib: info[b], score: info[a].score + info[b].score, stocks: stocks});
+        }
+    }
+    out.sort(function(p, q) { return (q.score - p.score) || (q.stocks.length - p.stocks.length) || (p.a < q.a ? -1 : 1); });
+    return out;
+}
+function watchYdFactorRender() {
+    var box = document.getElementById('watchYdFactor');
+    if (!box) return;
+    var list = watchYdFactors(), cnt = document.getElementById('watchYdFactorCnt');
+    window._watchYdCombos = {};
+    if (cnt) cnt.textContent = list.length;
+    if (_wydF.combo && !list.some(function(c) { return c.a + '|' + c.b === _wydF.combo; })) _wydF.combo = '';
+    if (!list.length) { box.innerHTML = '<div class="wyd-f-none">暂无符合条件的组合（今日涨停标签交叉后，近20日大涨股里没有同时带两个标签、且非今日涨停自带的股票）</div>'; return; }
+    function tagHtml(t, i) {
+        return '<span class="wyd-fx-tag" title="' + _kplEsc(t + '：今日涨停 ' + i.cnt + ' + 大涨 ' + i.surge + '，最早封板 ' + watchYdFmtTime(i.first) + '，标签分 ' + i.score.toFixed(1) + '（早盘 ' + i.early.toFixed(1) + ' + 数量 ' + i.num.toFixed(1) + '）') + '">' +
+            _kplEsc(t) + '<i>' + (i.cnt + i.surge) + '</i><small>' + watchYdFmtTime(i.first) + '</small></span>';
+    }
+    box.innerHTML = '<div class="wyd-factor-head">⚡ 利好因子加权 <small>今日有涨停的标签 × 标签，近20日大涨股交叉命中 · 点击一组只看该组合 · 加权分 = 两标签分之和（标签分 = 涨停越早越高 + 涨停/大涨数量越多越高）· 随刷新实时重算</small></div><div class="wyd-factor-list">' +
+        list.map(function(c, i) {
+            var key = c.a + '|' + c.b;
+            window._watchYdCombos[key] = {tags: [c.a, c.b], codes: {}};
+            c.stocks.forEach(function(st) { window._watchYdCombos[key].codes[st.code] = 1; });
+            var names = c.stocks.slice(0, 6).map(function(st) { return _kplEsc(st.name); }).join('、') + (c.stocks.length > 6 ? ' 等' + c.stocks.length + '只' : '');
+            return '<div class="wyd-fx' + (_wydF.combo === key ? ' on' : '') + '" data-k="' + _kplEsc(key) + '" onclick="watchYdFactorPick(this)">' +
+                '<b class="wyd-fx-rank">' + (i + 1) + '</b>' + tagHtml(c.a, c.ia) + '<em>+</em>' + tagHtml(c.b, c.ib) +
+                '<span class="wyd-fx-score" title="加权分 = ' + c.ia.score.toFixed(1) + ' + ' + c.ib.score.toFixed(1) + '">' + c.score.toFixed(0) + '</span><span class="wyd-fx-stocks">' + names + '</span></div>';
+        }).join('') + '</div>';
+}
+function watchYdFactorPick(el) {
+    var key = el.getAttribute('data-k');
+    _wydF.combo = _wydF.combo === key ? '' : key;
+    [].forEach.call(document.querySelectorAll('#watchYdFactor .wyd-fx'), function(e) { e.classList.toggle('on', e.getAttribute('data-k') === _wydF.combo); });
+    watchYdFilter();
+    if (_wydF.combo) { var b = document.getElementById('watchYd20Body'); window.scrollTo({top: b.getBoundingClientRect().top + window.scrollY - 150, behavior: 'smooth'}); }
+}
+function watchYdFactorToggle() {
+    var box = document.getElementById('watchYdFactor'), btn = document.getElementById('watchYdFactorBtn');
+    if (!box) return;
+    var open = box.style.display === 'none';
+    box.style.display = open ? '' : 'none';
+    if (btn) btn.classList.toggle('on', open);
+}
