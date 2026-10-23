@@ -8451,6 +8451,154 @@ def _trajectory_decline_board(date_fmt, prev_limit_codes, threshold=-5.0):
     return board
 
 
+def _trajectory_yd20_board(dates_fmt, tag_totals, stocks_by_tag=None, surge_by_tag=None):
+    """「那些异动的20cm」：近 N 个交易日内出现过大涨（涨幅>10%，含20cm涨停）的创业板/科创板股票，
+    题材归属与轨迹完全一致：该股在轨迹窗口内出现过的所有题材行（涨停行 stocks_by_tag ∪ 大涨行 surge_by_tag）；
+    都不在轨迹里的才回退「最新涨停标签 ∪ 同花顺本地库」取前 2 个，仍无匹配归「未归类」。
+    状态：涨停价（>=19.5%）= 涨停，10%~19.5% = 大涨；最新日涨停=首板/N板，最新日大涨=大涨，否则=断N日。
+    返回 {tag: [{code,name,board,max_pct,max_date,last_date,cur_pct,days:[{date,pct}]}]}，题材顺序由前端按轨迹排序。"""
+    dates_fmt = [d for d in dates_fmt if d]
+    if not dates_fmt:
+        return {}
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db')
+    hits = {}   # code -> {date: pct}
+    names = {}
+    cur = {}
+    try:
+        conn = sqlite3.connect(db_path, timeout=5)
+        ph = ','.join('?' * len(dates_fmt))
+        for code, d, pct in conn.execute(
+                "SELECT stock_code, trade_date, change_pct FROM kline_daily WHERE trade_date IN (%s) AND change_pct > 10 AND change_pct < 21 "   # >21% 为新股上市首 5 日无涨跌幅限制，不计
+                "AND (stock_code LIKE '30%%' OR stock_code LIKE '68%%')" % ph, dates_fmt).fetchall():
+            hits.setdefault(str(code).zfill(6), {})[d] = float(pct)
+        latest = dates_fmt[-1]
+        for code, pct in conn.execute(
+                "SELECT stock_code, change_pct FROM kline_daily WHERE trade_date=? AND (stock_code LIKE '30%%' OR stock_code LIKE '68%%')",
+                (latest,)).fetchall():
+            cur[str(code).zfill(6)] = float(pct)
+        codes = sorted(hits)
+        for i in range(0, len(codes), 800):
+            b = codes[i:i + 800]
+            names.update({str(c).zfill(6): str(n or '').strip() for c, n in conn.execute(
+                'SELECT stock_code, stock_name FROM stocks WHERE stock_code IN (%s)' % ','.join('?' * len(b)), b).fetchall() if n})
+        conn.close()
+    except Exception as exc:
+        print('[涨停原因标签轨迹] 异动20cm日线读取失败: %s' % exc)
+    today_fmt = _bj_now().strftime('%Y-%m-%d')
+    if not cur:
+        # 收盘后日线库尚未补入最新日：用收盘落盘快照补齐，保证收盘后立即可用
+        for code, v in _close_snapshot_get(dates_fmt[-1]).items():
+            code = str(code).zfill(6)
+            if not (code.startswith('30') or code.startswith('68')) or code in cur:
+                continue
+            try:
+                pct = float(v[4])
+            except (TypeError, ValueError, IndexError):
+                continue
+            cur[code] = pct
+            names.setdefault(code, str(v[0] or ''))
+            if 10 < pct < 21:
+                hits.setdefault(code, {})[dates_fmt[-1]] = pct
+    if today_fmt in dates_fmt and _is_trading_hours():
+        live_rows = _trajectory_live_market_rows()
+        if live_rows:
+            for row in live_rows:
+                code = str((row or {}).get('stock_code') or '').strip().zfill(6)
+                if not (code.startswith('30') or code.startswith('68')):
+                    continue
+                try:
+                    pct = float(row.get('change_pct'))
+                except (TypeError, ValueError):
+                    continue
+                names.setdefault(code, str(row.get('stock_name') or ''))
+                cur[code] = pct
+                if 10 < pct < 21:
+                    hits.setdefault(code, {})[today_fmt] = pct
+                elif code in hits:
+                    hits[code].pop(today_fmt, None)
+    # 窗口内逐日涨跌幅（阴阳线：涨幅<0 为阴，否则为阳），用于「连续第几阴 / 阴线后第几阳（首阳）」
+    series = {}
+    try:
+        conn = sqlite3.connect(db_path, timeout=5)
+        codes = sorted(hits)
+        ph = ','.join('?' * len(dates_fmt))
+        for i in range(0, len(codes), 400):
+            b = codes[i:i + 400]
+            for code, d, pct in conn.execute(
+                    'SELECT stock_code, trade_date, change_pct FROM kline_daily WHERE trade_date IN (%s) AND stock_code IN (%s)'
+                    % (ph, ','.join('?' * len(b))), dates_fmt + b).fetchall():
+                series.setdefault(str(code).zfill(6), {})[d] = float(pct)
+        conn.close()
+    except Exception as exc:
+        print('[涨停原因标签轨迹] 异动20cm阴阳线读取失败: %s' % exc)
+    universe = set(tag_totals)
+    row_tags = {}
+    for src in (stocks_by_tag or {}, surge_by_tag or {}):
+        for tag, date_map in src.items():
+            for lst in date_map.values():
+                for st in lst:
+                    c = str(st.get('code') or '')
+                    if c.startswith('30') or c.startswith('68'):
+                        row_tags.setdefault(c, set()).add(tag)
+    out = {}
+    for code, days in hits.items():
+        if not days:
+            continue
+        name = names.get(code) or (_kpl_stock_index.get(code, {}) or {}).get('stock_name') or \
+            (_kph_industry_reverse.get(code, {}) or {}).get('name') or getattr(finder, 'stock_name_map', {}).get(code) or code
+        if name[:1] in ('N', 'C') or 'ST' in name.upper():
+            continue   # 新股首日 / ST 不计
+        max_date = max(days, key=lambda k: (days[k], k))
+        idx = {d: i for i, d in enumerate(dates_fmt)}
+        last_d = max(days)
+        last_i = idx[last_d]
+        gap = len(dates_fmt) - 1 - last_i     # 距最新交易日的断板天数
+        streak = 0
+        if days[last_d] >= 19.5:
+            k = last_i
+            while k >= 0 and days.get(dates_fmt[k], 0) >= 19.5:
+                streak += 1
+                k -= 1
+        if gap > 0:
+            status = 'broken'
+        elif streak >= 2:
+            status = 'lb'
+        elif streak == 1:
+            status = 'first'
+        else:
+            status = 'surge'
+        sr = dict(series.get(code) or {})
+        if code in cur and (today_fmt in dates_fmt and _is_trading_hours() or dates_fmt[-1] not in sr):
+            sr[dates_fmt[-1]] = cur[code]
+        seq = [sr[d] for d in dates_fmt if d in sr]
+        trend, trend_n = '', 0
+        if seq:
+            trend = 'yin' if seq[-1] < 0 else 'yang'
+            for v in reversed(seq):
+                if (v < 0) == (trend == 'yin'):
+                    trend_n += 1
+                else:
+                    break
+        item = {'trend': trend, 'trend_n': trend_n, 'streak': streak, 'gap': gap, 'status': status, 'code': code, 'name': name, 'board': _trajectory_board_of_code(code),
+                'max_pct': round(days[max_date], 2), 'max_date': max_date, 'last_date': last_d, 'last_pct': round(days[last_d], 2),
+                'cur_pct': round(cur[code], 2) if code in cur else None,
+                'days': [{'date': k, 'pct': round(days[k], 2)} for k in sorted(days)]}
+        tags = sorted(row_tags.get(code) or [], key=lambda t: (-tag_totals.get(t, 0), t))
+        if not tags:
+            try:
+                found = _trajectory_stock_row_tags(code, universe)
+            except Exception:
+                found = set()
+            tags = sorted(found, key=lambda t: (-tag_totals.get(t, 0), t))[:2] or ['未归类']
+        for t in tags:
+            out.setdefault(t, []).append(item)
+    order = {'lb': 0, 'first': 1, 'surge': 2, 'broken': 3}
+    for lst in out.values():
+        # 连板（连板数高→低）> 首板 > 大涨 > 断N日（断得短→长）；同级按最近一次涨幅
+        lst.sort(key=lambda x: (order[x['status']], -x['streak'] if x['status'] == 'lb' else (x['gap'] if x['status'] == 'broken' else 0), -x['last_pct']))
+    return out
+
+
 def _trajectory_attach_surge(date_codes, tag_totals, price_by_date, live_date_fmt, close_pending, kind='surge', per_tag_cap=0, hist=None):
     """把大涨(kind=surge)/未涨停涨幅>2%(kind=rise)的股票挂到轨迹已有题材行：按行总涨停次数取前 2 个行，无匹配则不展示。
     返回 {date: {tag: [stock]}}，stock 字段与涨停股一致，另带 is_surge/is_rise/change_pct/board。"""
@@ -43582,6 +43730,7 @@ class Handler(BaseHTTPRequestHandler):
                                         st['cur_pct'] = st.get('close_pct')
                     # 跌幅榜：最新日全市场跌幅超过 5% 的股票，按 KPL 题材（最新涨停标签）归类，全部列出；
                     # 题材按平均跌幅从大到小排，无 KPL 题材的归入末尾「未归类」。盘中取全市场实时涨幅，否则读本地日线。
+                    result['yd20'] = _trajectory_yd20_board(recent_fmt, tag_totals, sorted_stocks, surge_by_tag)
                     result['decline'] = _trajectory_decline_board(
                         recent_fmt[-1] if recent_fmt else '', limit_codes.get(reference_date, set()) if reference_date else set())
                 # 最新日没有任何涨停记录（启动期 KPL 日文件还在补拉/重建）时不缓存，避免把「只剩大涨/涨幅>2%」的残缺结果缓存 2 分钟

@@ -140,7 +140,30 @@
             '<h3 class="wd-head wz-head" onclick="watchToggleZtClass()" title="点击展开 / 折叠">' +
             '<span class="wd-arrow" id="watchZtClassArrow">▶</span>🗂 涨停分类 <span class="count-badge">近10日 · 涨停+大涨 · 按精选板块</span> ' +
             '<span class="wd-count" id="watchZtClassCount"></span></h3>' +
-            '<div id="watchZtClassBody" style="display:none"><div class="lt-trajectory-loading">加载中...</div></div></div>';
+            '<div id="watchZtClassBody" style="display:none"><div class="lt-trajectory-loading">加载中...</div></div></div>' +
+
+            '<div class="rt-section lt-trajectory-section" id="watchYd20Section">' +
+            '<div class="wyd-headbar"><h3 class="wyd-title">🔥 那些异动的20cm <span class="count-badge">近20日 · 创业板 / 科创板 大涨&gt;10% · 与轨迹同一套题材分类</span> <span class="wd-count" id="watchYd20Count"></span> <span class="wd-count" id="watchYdSortNote"></span></h3></div>' +
+            '<div class="wyd-quote">主力堆好柴，等火来，情绪是火。</div>' +
+            '<div class="wyd-filter" id="watchYdFilter">' +
+              '<span class="wyd-f-group"><b>市场</b>' +
+                '<span class="wyd-f-chip" onclick="watchYdFilterToggle(\'boards\',\'创\',this)">创</span>' +
+                '<span class="wyd-f-chip" onclick="watchYdFilterToggle(\'boards\',\'科\',this)">科</span></span>' +
+              '<span class="wyd-f-group" title="阳：距上一根阴线的第几个阳线（首阳 = 阴线回调后的第一根阳线）；阴：连续第几根阴线"><b>阴阳</b>' +
+                '<span class="wyd-f-chip wyd-f-first" onclick="watchYdFilterToggle(\'trends\',\'y1\',this)">首阳</span>' +
+                '<span class="wyd-f-chip wyd-f-yang" onclick="watchYdFilterToggle(\'trends\',\'y2\',this)">2阳</span>' +
+                '<span class="wyd-f-chip wyd-f-yang" onclick="watchYdFilterToggle(\'trends\',\'y3\',this)">3阳</span>' +
+                '<span class="wyd-f-chip wyd-f-yang" onclick="watchYdFilterToggle(\'trends\',\'y4\',this)">4阳+</span>' +
+                '<span class="wyd-f-sep"></span>' +
+                '<span class="wyd-f-chip wyd-f-yin" onclick="watchYdFilterToggle(\'trends\',\'n1\',this)">1阴</span>' +
+                '<span class="wyd-f-chip wyd-f-yin" onclick="watchYdFilterToggle(\'trends\',\'n2\',this)">2阴</span>' +
+                '<span class="wyd-f-chip wyd-f-yin" onclick="watchYdFilterToggle(\'trends\',\'n3\',this)">3阴</span>' +
+                '<span class="wyd-f-chip wyd-f-yin" onclick="watchYdFilterToggle(\'trends\',\'n4\',this)">4阴+</span></span>' +
+              '<span class="wyd-f-group"><b>断板天数</b> ≤ <input id="watchYdBreak" class="wyd-f-num" type="number" min="0" placeholder="不限" oninput="watchYdFilter()" title="留空=不限；填 5 = 只看距最新交易日断板不超过 5 个交易日的（连板 / 首板 / 大涨为 0）"></span>' +
+              '<span class="wyd-f-stat" id="watchYdStat"></span>' +
+              '<div class="wyd-search"><input id="watchYdSearch" type="text" placeholder="搜索题材 / 股票名称 / 代码" autocomplete="off" spellcheck="false"><div class="wyd-sug" id="watchYdSug"></div></div>' +
+              '<span class="wyd-f-reset" onclick="watchYdFilterReset()">↻ 重置</span></div>' +
+            '<div id="watchYd20Body"><div class="lt-trajectory-loading">加载中...</div></div></div>';
     }
 
     function tickBar() {
@@ -166,6 +189,7 @@
                     var dc = document.getElementById('watchDeclineCount');
                     if (dc && d.decline) dc.textContent = d.decline.total + ' 只 · ' + d.decline.themes.length + ' 个题材';
                     body.innerHTML = watchRenderTrajectory(d, 'twLtTrajectoryBody');
+                    watchRenderYd20();
                     var ts = document.getElementById('watchTrajTs');
                     if (ts) ts.textContent = lastTraj = fmtClock(bjNow());
                 }
@@ -627,6 +651,7 @@
         if (main.style.display !== 'none') sq.scrollY = window.scrollY;
         main.style.display = 'none';
         if (back) back.style.display = 'none';
+        watchFloatNavShow(false);
         sq.root.style.display = '';
         window.scrollTo(0, 0);
         sqLoadLadder(sq.ladderDate && sq.ladderDate !== sq.ladderLive ? sq.ladderDate : null);
@@ -645,6 +670,7 @@
         var main = document.getElementById('watchRoot'), back = document.getElementById('watchBackNav');
         main.style.display = '';
         if (back) back.style.display = '';
+        watchFloatNavShow(true);
         window.scrollTo(0, sq.scrollY || 0);
     };
     // K 线弹框：去掉「东财概念标签」；「开盘红行业 / 概念标签」改为「开盘啦」，下面补上新库里的 板块 与 tags
@@ -999,6 +1025,44 @@
         if (modal && modal.classList.contains('active') && typeof refreshTmmThemeKlines === 'function') refreshTmmThemeKlines();
     }
 
+    // ===== 悬浮导航（毛玻璃）：各章节快速跳转 + 滚动高亮当前章节 =====
+    var NAV_ITEMS = [['watchIndexSection', '大盘'], ['twWindStrengthSection', '板块强度'], ['watchReverseSection', '反推关注'],
+        ['watchDeclineSection', '跌幅'], ['watchSlotSection', '竞价报告'], ['twLtTrajectorySection', '涨停轨迹'],
+        ['watchPromoSection', '晋级'], ['watchZtClassSection', '涨停分类'], ['watchYd20Section', '异动20cm']];
+    window.watchFloatNavShow = function (on) {
+        var n = document.getElementById('watchFloatNav');
+        if (n) n.style.display = on ? '' : 'none';
+    };
+    function buildFloatNav() {
+        var nav = document.createElement('nav');
+        nav.id = 'watchFloatNav';
+        nav.innerHTML = NAV_ITEMS.map(function (it) {
+            return '<a data-sec="' + it[0] + '">' + it[1] + '</a>';
+        }).join('') + '<a class="wfn-top" data-top="1" title="回到顶部">↑</a>';
+        nav.addEventListener('click', function (e) {
+            var a = e.target.closest('a');
+            if (!a) return;
+            if (a.getAttribute('data-top')) { window.scrollTo({top: 0, behavior: 'smooth'}); return; }
+            var el = document.getElementById(a.getAttribute('data-sec'));
+            if (el) window.scrollTo({top: el.getBoundingClientRect().top + window.scrollY - 70, behavior: 'smooth'});
+        });
+        document.body.appendChild(nav);
+        var ticking = false;
+        function spy() {
+            ticking = false;
+            var cur = '';
+            NAV_ITEMS.forEach(function (it) {
+                var el = document.getElementById(it[0]);
+                if (el && el.getBoundingClientRect().top <= 120) cur = it[0];
+            });
+            [].forEach.call(nav.querySelectorAll('a[data-sec]'), function (a) {
+                a.classList.toggle('on', a.getAttribute('data-sec') === cur);
+            });
+        }
+        window.addEventListener('scroll', function () { if (!ticking) { ticking = true; requestAnimationFrame(spy); } }, {passive: true});
+        spy();
+    }
+
     function boot() {
         var container = document.querySelector('.container');
         if (!container) return;
@@ -1012,6 +1076,7 @@
         back.onclick = function () { watchGoNav(); };
         document.body.appendChild(back);
         renderShell(root);
+        buildFloatNav();
         currentTab = 'themewind';     // 主页面各轮询以此判断是否在可见页签
         _themeWindLoaded = true;
         tickBar();

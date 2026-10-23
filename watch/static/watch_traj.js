@@ -278,12 +278,21 @@ function watchThemeKlineBtn(tag, c) {
     add((c.stocksByTag[tag] && c.stocksByTag[tag][c.latest]) || []);
     add((c.surgeByTag[tag] && c.surgeByTag[tag][c.latest]) || []);
     add(c.riseByTag[tag] || []);
-    if (!hits.length) return '';
+    var yd = (c.yd20ByTag && c.yd20ByTag[tag]) || [];
+    if (!hits.length && !yd.length) return '';
     var safe = tag.replace(/'/g, '');
     var key = 'wt-' + safe;
-    _tmmThemeKlineOrder[key] = hits;
-    return '<div class="lt-th-kline"><button type="button" class="ms-tp-kline-btn" onclick="event.stopPropagation();_tmmOpenThemeKline(\x27' + safe + '\x27,\x27' + key +
-        '\x27)" title="查看 ' + _kplEsc(c.latest.slice(5)) + ' 涨停 / 大涨 / 涨幅>2% 股票的K线走势（' + hits.length + ' 只）">📈 K线走势</button></div>';
+    var h = '<div class="lt-th-kline">';
+    if (hits.length) {
+        _tmmThemeKlineOrder[key] = hits;
+        h += '<button type="button" class="ms-tp-kline-btn" onclick="event.stopPropagation();_tmmOpenThemeKline(\x27' + safe + '\x27,\x27' + key +
+            '\x27)" title="查看 ' + _kplEsc(c.latest.slice(5)) + ' 涨停 / 大涨 / 涨幅>2% 股票的K线走势（' + hits.length + ' 只）">📈 K线走势</button>';
+    }
+    if (yd.length) {
+        h += '<button type="button" class="ms-tp-kline-btn lt-yd-btn" onclick="event.stopPropagation();watchJumpYd20(' + c.idx[tag] +
+            ')" title="跳到页面底部「那些异动的20cm」：该题材近20个交易日大涨过的创业板 / 科创板股票（' + yd.length + ' 只）">🔥 异动20cm</button>';
+    }
+    return h + '</div>';
 }
 
 /* 题材操作思考标记：龙头 / 补涨 / 切换 / 套利。默认都不亮，点击点亮（可多选、可全不选），用来逼自己对每个题材想清楚怎么做。
@@ -582,7 +591,11 @@ function watchRenderTrajectory(data, bodyId) {
     watchMarksLoad(dates[0]);
     window._watchLiveQuotes = {};      // 本轮渲染以服务端当前涨幅为准，之后由实时轮询覆盖
     var sumCtx = {latest: dates[0], refDate: referenceDate, referenceByTag: referenceByTag, refSurgeByTag: refSurgeByTag,
-                  stocksByTag: stocksByTag, surgeByTag: surgeByTag, riseByTag: riseByTag, todayLimit: {}, refLimit: {}, refAll: {}};
+                  stocksByTag: stocksByTag, surgeByTag: surgeByTag, riseByTag: riseByTag, todayLimit: {}, refLimit: {}, refAll: {},
+                  yd20ByTag: data.yd20 || {}, idx: {}};
+    sortedTags.forEach(function(t, i) { sumCtx.idx[t] = i; });
+    window._watchSortedTags = sortedTags.slice();
+    window._watchYd20 = data.yd20 || {};
     Object.keys(referenceByTag).forEach(function(t) { (referenceByTag[t] || []).forEach(function(x) { sumCtx.refLimit[x.code] = 1; sumCtx.refAll[x.code] = 1; }); });
     Object.keys(refSurgeByTag).forEach(function(t) { (refSurgeByTag[t] || []).forEach(function(x) { sumCtx.refAll[x.code] = 1; }); });
     window._watchTodayLimit = sumCtx.todayLimit;
@@ -823,3 +836,191 @@ function watchRenderTrajectory(data, bodyId) {
     return html;
 }
 
+
+
+/* ===== 那些异动的20cm：近20个交易日大涨（>10%）过的创业板/科创板股票，按 KPL 题材归类，题材顺序与「涨停原因标签轨迹」一致 ===== */
+function watchJumpYd20(i) {
+    var el = document.getElementById('wyd-row-' + i) || document.getElementById('watchYd20Section');
+    if (!el) return;
+    el.scrollIntoView({behavior: 'smooth', block: 'start'});
+    el.classList.remove('lt-row-flash'); void el.offsetWidth; el.classList.add('lt-row-flash');
+}
+var _watchYdNavs = [];
+function watchYd20Kline(name) {
+    var list = (window._watchYdShown || window._watchYd20 || {})[name] || [];
+    var key = 'wyd-' + name.replace(/'/g, '');
+    _tmmThemeKlineOrder[key] = list.map(function(x) { return {stock_name: x.name, stock_code: x.code}; });
+    _tmmOpenThemeKline(name.replace(/'/g, ''), key);
+}
+var _WYD_ORDER = {lb: 0, first: 1, surge: 2, broken: 3};
+function watchYdSort(a, b) {
+    return (_WYD_ORDER[a.status] - _WYD_ORDER[b.status]) ||
+        (a.status === 'lb' ? b.streak - a.streak : (a.status === 'broken' ? a.gap - b.gap : 0)) || (b.last_pct - a.last_pct);
+}
+function watchYdLabel(st) { return st.status === 'lb' ? st.streak + '板' : (st.status === 'first' ? '首板' : (st.status === 'surge' ? '大涨' : '断' + st.gap + '日')); }
+function watchRenderYd20() {
+    var body = document.getElementById('watchYd20Body');
+    if (!body) return;
+    var raw = window._watchYd20 || {}, order = (window._watchSortedTags || []).slice();
+    // 只保留轨迹里实际展示的题材行；只属于未展示题材（被排除/超出60行）的股票并入「未归类」
+    var yd = {}, shown = {}, orphan = {};
+    order.forEach(function(t) { if (raw[t] && raw[t].length) { yd[t] = raw[t]; raw[t].forEach(function(x) { shown[x.code] = 1; }); } });
+    Object.keys(raw).forEach(function(t) {
+        if (yd[t]) return;
+        raw[t].forEach(function(x) { if (!shown[x.code]) orphan[x.code] = x; });
+    });
+    // 排序：盘中按当日涨幅（高→低）；收盘后沿用后端的 连板 > 首板 > 大涨 > 断N日
+    var live = typeof _twsRefreshGate === 'function' && _twsRefreshGate();
+    var orphanList = Object.keys(orphan).map(function(c) { return orphan[c]; }).sort(watchYdSort);
+    if (orphanList.length) yd['未归类'] = orphanList;
+    if (live) {
+        Object.keys(yd).forEach(function(t) {
+            yd[t] = yd[t].slice().sort(function(a, b) { return (b.cur_pct == null ? -999 : b.cur_pct) - (a.cur_pct == null ? -999 : a.cur_pct); });
+        });
+    }
+    window._watchYdShown = yd;
+    var note = document.getElementById('watchYdSortNote');
+    if (note) note.textContent = live ? '盘中按当日涨幅排序' : '按 连板 > 首板 > 大涨 > 断板 排序';
+    var rows = [];
+    order.forEach(function(t, i) { if (yd[t]) rows.push({name: t, i: i}); });
+    if (yd['未归类']) rows.push({name: '未归类', i: -1});
+    window._watchYdIndex = [];
+    if (!rows.length) { body.innerHTML = '<div class="lt-trajectory-loading">近20个交易日暂无大涨的创业板 / 科创板股票</div>'; return; }
+    _watchYdNavs = [];
+    var HUES = [212, 350, 38, 138, 270, 18, 178, 320];
+    var uniq = {}, firstCard = {};
+    rows.forEach(function(r) { yd[r.name].forEach(function(x) { uniq[x.code] = 1; }); });
+    var cnt = document.getElementById('watchYd20Count');
+    if (cnt) cnt.textContent = Object.keys(uniq).length + ' 只 · ' + rows.length + ' 个题材';
+    function fmt(v) { v = Number(v); return (v > 0 ? '+' : '') + v.toFixed(2) + '%'; }
+    function cls(v) { return Number(v) >= 0 ? 'lt-change-up' : 'lt-change-down'; }
+    var h = '';
+    rows.forEach(function(r, k) {
+        var list = yd[r.name];
+        var hue = HUES[(r.i >= 0 ? r.i : k) % HUES.length];
+        var nm = r.name.replace(/'/g, '');
+        var blockId = 'wyd-row-' + (r.i >= 0 ? r.i : 'x' + k);
+        window._watchYdIndex.push({type: 'theme', name: r.name, id: blockId, n: list.length});
+        var navIdx = _watchYdNavs.length;
+        _watchYdNavs.push(list.map(function(x) { return {name: x.name, code: x.code}; }));
+        var c = {lb: 0, first: 0, surge: 0, broken: 0};
+        list.forEach(function(x) { c[x.status]++; });
+        h += '<div class="wyd-block" id="' + blockId + '" data-t="' + _kplEsc(r.name.toLowerCase()) + '" style="--th-h:' + hue + '">' +
+            '<div class="wyd-side"><div class="lt-th-name wyd-name">' +
+            (r.name === '未归类' ? _kplEsc(r.name) : '<span class="lt-tag-link" title="点击查看该题材的涨停节奏（题材复盘）" onclick="watchOpenTheme(\x27' + nm + '\x27)">' + _kplEsc(r.name) + '</span>') +
+            ' <span class="lt-th-total">' + list.length + '</span></div>' +
+            '<div class="wyd-stat"><span class="wyd-s-lb">连板 <b>' + c.lb + '</b></span><span class="wyd-s-first">首板 <b>' + c.first + '</b></span><span class="wyd-s-surge">大涨 <b>' + c.surge + '</b></span><span class="wyd-s-broken">断 <b>' + c.broken + '</b></span></div>' +
+            '<div class="wyd-btns"><button type="button" class="ms-tp-kline-btn" onclick="watchYd20Kline(\x27' + nm + '\x27)" title="查看该题材近20个交易日大涨过的创业板 / 科创板股票K线走势（' + list.length + ' 只）">📈 异动走势</button>' +
+            (r.i >= 0 ? '<button type="button" class="ms-tp-kline-btn wyd-up" onclick="watchJumpTheme(' + r.i + ')" title="回到轨迹中的该题材">↑ 轨迹</button>' : '') + '</div></div>' +
+            '<div class="wyd-grid">';
+        list.forEach(function(st, si) {
+            var snm = (st.name || '').replace(/'/g, '');
+            var cardId = '';
+            if (!firstCard[st.code]) {
+                firstCard[st.code] = cardId = 'wyd-c-' + st.code;
+                window._watchYdIndex.push({type: 'stock', name: st.name, code: st.code, id: cardId, theme: r.name});
+            }
+            var tip = st.days.map(function(d) { return d.date.slice(5) + ' ' + fmt(d.pct); }).join('  ');
+            var trKey = st.trend ? (st.trend === 'yin' ? 'n' : 'y') + Math.min(st.trend_n, 4) : '';
+            var trTxt = !st.trend ? '' : (st.trend === 'yin' ? st.trend_n + '阴' : (st.trend_n === 1 ? '首阳' : st.trend_n + '阳'));
+            var trTip = !st.trend ? '' : (st.trend === 'yin' ? '连续第 ' + st.trend_n + ' 个阴线' : '阴线之后第 ' + st.trend_n + ' 个阳线' + (st.trend_n === 1 ? '（阴线回调后的首阳）' : ''));
+            h += '<div class="wyd-card wyd-' + st.status + '" data-n="' + _kplEsc((st.name + ' ' + st.code).toLowerCase()) + '" data-b="' + watchBoardOf(st.code) + '" data-tr="' + trKey + '" data-gap="' + st.gap + '"' +
+                (cardId ? ' id="' + cardId + '"' : '') + ' title="' + _kplEsc(snm + ' ' + st.code + '｜' + trTip + '｜近20日大涨：' + tip) + '" onclick="openDsStockFromRhythm(\x27' + snm + '\x27, \x27' + st.code + '\x27, \x27\x27, _watchYdNavs[' + navIdx + '], ' + si + ')">' +
+                '<div class="wyd-c-top"><i class="lt-board lt-board-' + watchBoardKey(st.code) + '">' + watchBoardOf(st.code) + '</i>' +
+                '<span class="wyd-c-name">' + _kplEsc(snm) + '</span><code>' + st.code + '</code><span class="wyd-badge wyd-b-' + st.status + '">' + watchYdLabel(st) + '</span></div>' +
+                (st.cur_pct != null ? '<div class="wyd-c-bot"><small>最新</small><span class="' + cls(st.cur_pct) + '">' + fmt(st.cur_pct) + '</span>' +
+                    (trTxt ? '<span class="wyd-tr wyd-tr-' + st.trend + (st.trend === 'yang' && st.trend_n === 1 ? ' first' : '') + '" title="' + trTip + '">' + trTxt + '</span>' : '') + '</div>' : '') + '</div>';
+        });
+        h += '</div></div>';
+    });
+    body.innerHTML = h;
+    watchYdFilter();
+}
+
+/* 搜索框：题材 / 股票名称 / 代码 自动补全，范围 = 本章节下面所有的题材和股票 */
+function watchYdSuggest() {
+    var inp = document.getElementById('watchYdSearch'), box = document.getElementById('watchYdSug');
+    if (!inp || !box) return;
+    var q = inp.value.trim().toLowerCase();
+    if (!q) { box.classList.remove('on'); box.innerHTML = ''; return; }
+    var idx = window._watchYdIndex || [];
+    var hit = idx.filter(function(x) { return x.name.toLowerCase().indexOf(q) >= 0 || (x.code && x.code.indexOf(q) >= 0); });
+    hit.sort(function(a, b) {
+        var pa = a.name.toLowerCase().indexOf(q) === 0 ? 0 : 1, pb = b.name.toLowerCase().indexOf(q) === 0 ? 0 : 1;
+        return pa - pb || (a.type === b.type ? 0 : (a.type === 'theme' ? -1 : 1));
+    });
+    hit = hit.slice(0, 12);
+    box.innerHTML = hit.length ? hit.map(function(x, i) {
+        return '<div class="wyd-sug-i" data-i="' + idx.indexOf(x) + '"><em>' + (x.type === 'theme' ? '题材' : '个股') + '</em><span>' + _kplEsc(x.name) + '</span>' +
+            '<small>' + (x.type === 'theme' ? x.n + ' 只' : x.code + ' · ' + _kplEsc(x.theme)) + '</small></div>';
+    }).join('') : '<div class="wyd-sug-none">没有匹配的题材或股票</div>';
+    box.classList.add('on');
+}
+/* 过滤：市场（创/科）、阴阳（首阳 / x阳 / x阴）、断板天数 ≤ N、搜索（题材 / 股票）；各组不选 = 不限制。
+ * 搜题材名 → 显示该题材全部股票；搜股票名称/代码 → 只显示命中的卡片；再与其余条件取交集。 */
+var _wydF = {boards: {}, trends: {}};
+function watchYdFilterToggle(group, key, el) {
+    var m = _wydF[group];
+    if (m[key]) delete m[key]; else m[key] = 1;
+    if (el) el.classList.toggle('on', !!m[key]);
+    watchYdFilter();
+}
+function watchYdFilterReset() {
+    _wydF = {boards: {}, trends: {}};
+    [].forEach.call(document.querySelectorAll('#watchYdFilter .wyd-f-chip.on'), function(e) { e.classList.remove('on'); });
+    var n = document.getElementById('watchYdBreak'), q = document.getElementById('watchYdSearch');
+    if (n) n.value = '';
+    if (q) q.value = '';
+    var sg = document.getElementById('watchYdSug');
+    if (sg) sg.classList.remove('on');
+    watchYdFilter();
+}
+function watchYdFilter() {
+    var inp = document.getElementById('watchYdSearch'), body = document.getElementById('watchYd20Body');
+    if (!inp || !body) return;
+    var q = inp.value.trim().toLowerCase(), shown = 0;
+    var nb = document.getElementById('watchYdBreak'), maxBreak = nb && nb.value !== '' ? Number(nb.value) : null;
+    var hasB = Object.keys(_wydF.boards).length > 0, hasT = Object.keys(_wydF.trends).length > 0;
+    var active = !!q || hasB || hasT || maxBreak !== null, seen = {};
+    var old = body.querySelector('.wyd-nomatch');
+    if (old) old.remove();
+    [].forEach.call(body.querySelectorAll('.wyd-block'), function(b) {
+        var themeHit = !q || b.getAttribute('data-t').indexOf(q) >= 0, n = 0;
+        [].forEach.call(b.querySelectorAll('.wyd-card'), function(c) {
+            var ok = (themeHit || c.getAttribute('data-n').indexOf(q) >= 0) &&
+                (!hasB || _wydF.boards[c.getAttribute('data-b')]) &&
+                (!hasT || _wydF.trends[c.getAttribute('data-tr')]) &&
+                (maxBreak === null || Number(c.getAttribute('data-gap')) <= maxBreak);
+            c.style.display = ok ? '' : 'none';
+            if (ok) { n++; seen[c.getAttribute('data-n')] = 1; }
+        });
+        b.style.display = n ? '' : 'none';
+        if (n) shown++;
+    });
+    var st = document.getElementById('watchYdStat');
+    if (st) st.innerHTML = active ? '匹配 <b>' + Object.keys(seen).length + '</b> 只 · ' + shown + ' 个题材' : '';
+    if (active && !shown) body.insertAdjacentHTML('afterbegin', '<div class="lt-trajectory-loading wyd-nomatch">没有符合当前过滤条件的题材或股票</div>');
+}
+function watchYdPick(i) {
+    var x = (window._watchYdIndex || [])[i];
+    var box = document.getElementById('watchYdSug');
+    if (box) box.classList.remove('on');
+    var inp = document.getElementById('watchYdSearch');
+    if (!x || !inp) return;
+    inp.value = x.name;
+    watchYdFilter();
+    var sec = document.getElementById('watchYd20Body');
+    window.scrollTo({top: sec.getBoundingClientRect().top + window.scrollY - 150, behavior: 'smooth'});
+}
+document.addEventListener('input', function(e) { if (e.target && e.target.id === 'watchYdSearch') { watchYdFilter(); watchYdSuggest(); } });
+document.addEventListener('focusin', function(e) { if (e.target && e.target.id === 'watchYdSearch') watchYdSuggest(); });
+document.addEventListener('keydown', function(e) {
+    if (!e.target || e.target.id !== 'watchYdSearch') return;
+    if (e.key === 'Enter') { var f = document.querySelector('#watchYdSug .wyd-sug-i'); if (f) watchYdPick(Number(f.getAttribute('data-i'))); }
+    else if (e.key === 'Escape') { document.getElementById('watchYdSug').classList.remove('on'); }
+});
+document.addEventListener('mousedown', function(e) {
+    var it = e.target && e.target.closest && e.target.closest('#watchYdSug .wyd-sug-i');
+    if (it) { e.preventDefault(); watchYdPick(Number(it.getAttribute('data-i'))); return; }
+    if (!(e.target && e.target.closest && e.target.closest('.wyd-search'))) { var b = document.getElementById('watchYdSug'); if (b) b.classList.remove('on'); }
+});
