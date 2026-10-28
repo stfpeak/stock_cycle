@@ -1300,3 +1300,22 @@
 .wyd-fx em { font-style: normal; color: #8b97ab; }
 .wyd-fx-score { flex: 0 0 auto; padding: 0 6px; border-radius: 8px; color: #3a2a00; background: #ffd666; font-weight: 800; font-size: 0.85em; }
 .wyd-fx-stocks { flex: 1; min-width: 0; color: #cbd5e1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ===== 异动涨停与20cm：每题材上（主板）下（创/科）两部分，虚线分割 ===== */
+.wyd-parts { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.wyd-split { border-top: 1px dashed rgba(148, 163, 184, .45); margin: 10px 0; }
+
+/* 主板 / 创科 分割线标识 */
+.wyd-split { position: relative; height: 0; }
+.wyd-split span { position: absolute; left: 0; top: -9px; padding: 0 8px; font-size: 0.7em; font-weight: 700; color: #9fb0c8; background: #141a29; border-radius: 8px; letter-spacing: .5px; }
+.wyd-split-top { display: none; }
+.wyd-grid-gem:not(:first-child) { margin-top: 0; }
+/* 收藏星标 */
+.wyd-star { flex: 0 0 auto; cursor: pointer; font-size: 1.15em; line-height: 1; color: #6b7a90; padding: 0 1px; transition: color .15s, transform .15s; }
+.wyd-star:hover { color: #ffd666; transform: scale(1.2); }
+.wyd-star.on { color: #ffc23d; text-shadow: 0 0 8px rgba(255,194,61,.6); }
+/* 我的收藏模块 */
+.wyd-fav { margin: 0 0 12px; border-radius: 10px; border: 1px solid rgba(255,194,61,0.3); background: rgba(255,194,61,0.04); padding: 6px 12px; }
+.wyd-fav-head { margin: 4px 0; font-size: 0.88em; color: #ffc23d; cursor: pointer; }
+#watchYdFavBody { margin-top: 8px; }
+.wyd-kl-board .kpl-kline-colbtn i { font-style: normal; margin-left: 4px; opacity: .75; }

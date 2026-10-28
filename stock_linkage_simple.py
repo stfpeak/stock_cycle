@@ -8452,7 +8452,8 @@ def _trajectory_decline_board(date_fmt, prev_limit_codes, threshold=-5.0):
 
 
 def _trajectory_yd20_board(dates_fmt, tag_totals, stocks_by_tag=None, surge_by_tag=None):
-    """「那些异动的20cm」：近 N 个交易日内出现过大涨（涨幅>10%，含20cm涨停）的创业板/科创板股票，
+    """「那些异动的涨停与20cm」：近 N 个交易日内出现过大涨（涨幅>10%，含20cm涨停）的创业板/科创板股票，
+    以及出现过涨停（>=9.8%）的主板（00/60）股票（主板没有「大涨」状态：连板 / 首板 / 断N日），
     题材归属与轨迹完全一致：该股在轨迹窗口内出现过的所有题材行（涨停行 stocks_by_tag ∪ 大涨行 surge_by_tag）；
     都不在轨迹里的才回退「最新涨停标签 ∪ 同花顺本地库」取前 2 个，仍无匹配归「未归类」。
     状态：涨停价（>=19.5%）= 涨停，10%~19.5% = 大涨；最新日涨停=首板/N板，最新日大涨=大涨，否则=断N日。
@@ -8464,16 +8465,28 @@ def _trajectory_yd20_board(dates_fmt, tag_totals, stocks_by_tag=None, surge_by_t
     hits = {}   # code -> {date: pct}
     names = {}
     cur = {}
+
+    def _is_gem(code):
+        return code.startswith('30') or code.startswith('68')
+
+    def _is_main(code):
+        return code.startswith('00') or code.startswith('60')
+
+    def _is_hit(code, pct):
+        # 创/科：涨幅 10%~21%（>21% 为新股上市首 5 日无涨跌幅限制，不计）；主板：涨停（>=9.8%，<11% 排除新股首日）
+        return (10 < pct < 21) if _is_gem(code) else (9.8 <= pct < 11 if _is_main(code) else False)
     try:
         conn = sqlite3.connect(db_path, timeout=5)
         ph = ','.join('?' * len(dates_fmt))
         for code, d, pct in conn.execute(
-                "SELECT stock_code, trade_date, change_pct FROM kline_daily WHERE trade_date IN (%s) AND change_pct > 10 AND change_pct < 21 "   # >21% 为新股上市首 5 日无涨跌幅限制，不计
-                "AND (stock_code LIKE '30%%' OR stock_code LIKE '68%%')" % ph, dates_fmt).fetchall():
+                "SELECT stock_code, trade_date, change_pct FROM kline_daily WHERE trade_date IN (%s) AND "
+                "((change_pct > 10 AND change_pct < 21 AND (stock_code LIKE '30%%' OR stock_code LIKE '68%%')) "
+                "OR (change_pct >= 9.8 AND change_pct < 11 AND (stock_code LIKE '00%%' OR stock_code LIKE '60%%')))" % ph, dates_fmt).fetchall():
             hits.setdefault(str(code).zfill(6), {})[d] = float(pct)
         latest = dates_fmt[-1]
         for code, pct in conn.execute(
-                "SELECT stock_code, change_pct FROM kline_daily WHERE trade_date=? AND (stock_code LIKE '30%%' OR stock_code LIKE '68%%')",
+                "SELECT stock_code, change_pct FROM kline_daily WHERE trade_date=? AND (stock_code LIKE '30%%' OR stock_code LIKE '68%%' "
+                "OR stock_code LIKE '00%%' OR stock_code LIKE '60%%')",
                 (latest,)).fetchall():
             cur[str(code).zfill(6)] = float(pct)
         codes = sorted(hits)
@@ -8489,7 +8502,7 @@ def _trajectory_yd20_board(dates_fmt, tag_totals, stocks_by_tag=None, surge_by_t
         # 收盘后日线库尚未补入最新日：用收盘落盘快照补齐，保证收盘后立即可用
         for code, v in _close_snapshot_get(dates_fmt[-1]).items():
             code = str(code).zfill(6)
-            if not (code.startswith('30') or code.startswith('68')) or code in cur:
+            if not (_is_gem(code) or _is_main(code)) or code in cur:
                 continue
             try:
                 pct = float(v[4])
@@ -8497,14 +8510,14 @@ def _trajectory_yd20_board(dates_fmt, tag_totals, stocks_by_tag=None, surge_by_t
                 continue
             cur[code] = pct
             names.setdefault(code, str(v[0] or ''))
-            if 10 < pct < 21:
+            if _is_hit(code, pct):
                 hits.setdefault(code, {})[dates_fmt[-1]] = pct
     if today_fmt in dates_fmt and _is_trading_hours():
         live_rows = _trajectory_live_market_rows()
         if live_rows:
             for row in live_rows:
                 code = str((row or {}).get('stock_code') or '').strip().zfill(6)
-                if not (code.startswith('30') or code.startswith('68')):
+                if not (_is_gem(code) or _is_main(code)):
                     continue
                 try:
                     pct = float(row.get('change_pct'))
@@ -8512,7 +8525,7 @@ def _trajectory_yd20_board(dates_fmt, tag_totals, stocks_by_tag=None, surge_by_t
                     continue
                 names.setdefault(code, str(row.get('stock_name') or ''))
                 cur[code] = pct
-                if 10 < pct < 21:
+                if _is_hit(code, pct):
                     hits.setdefault(code, {})[today_fmt] = pct
                 elif code in hits:
                     hits[code].pop(today_fmt, None)
@@ -8538,7 +8551,7 @@ def _trajectory_yd20_board(dates_fmt, tag_totals, stocks_by_tag=None, surge_by_t
             for lst in date_map.values():
                 for st in lst:
                     c = str(st.get('code') or '')
-                    if c.startswith('30') or c.startswith('68'):
+                    if _is_gem(c) or _is_main(c):
                         row_tags.setdefault(c, set()).add(tag)
     out = {}
     for code, days in hits.items():
@@ -8554,9 +8567,10 @@ def _trajectory_yd20_board(dates_fmt, tag_totals, stocks_by_tag=None, surge_by_t
         last_i = idx[last_d]
         gap = len(dates_fmt) - 1 - last_i     # 距最新交易日的断板天数
         streak = 0
-        if days[last_d] >= 19.5:
+        lim = 19.5 if _is_gem(code) else 9.8      # 20cm 涨停价 / 10cm 涨停
+        if days[last_d] >= lim:
             k = last_i
-            while k >= 0 and days.get(dates_fmt[k], 0) >= 19.5:
+            while k >= 0 and days.get(dates_fmt[k], 0) >= lim:
                 streak += 1
                 k -= 1
         if gap > 0:

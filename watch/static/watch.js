@@ -61,7 +61,8 @@
             promo.innerHTML = (_twsRenderThemePromotion(d) || '').replace('（4日连续观察 · 题材为主 · 按涨停时间）', '（4日连续观察 · 板块 + tags 题材 · 按涨停时间）') ||
                 '<div class="lt-trajectory-loading">暂无细分题材晋级数据</div>';
         }
-        return '<div class="tws-summary">' + _twsRenderTimeline(d) + '</div>';
+        // 连板涨停表现：与 6688 题材地图同款（同一个 _twsRenderLadder），置于今日涨停时间轴之前
+        return '<div class="tws-summary">' + (_twsRenderLadder(d) || '') + _twsRenderTimeline(d) + '</div>';
     };
 
     function bjNow() {
@@ -143,11 +144,12 @@
             '<div id="watchZtClassBody" style="display:none"><div class="lt-trajectory-loading">加载中...</div></div></div>' +
 
             '<div class="rt-section lt-trajectory-section" id="watchYd20Section">' +
-            '<div class="wyd-headbar"><h3 class="wyd-title">🔥 那些异动的20cm <span class="count-badge">近20日 · 创业板 / 科创板 大涨&gt;10% · 与轨迹同一套题材分类</span> <span class="wd-count" id="watchYd20Count"></span> <span class="wd-count" id="watchYdSortNote"></span></h3></div>' +
+            '<div class="wyd-headbar"><h3 class="wyd-title">🔥 那些异动的涨停与20cm <span class="count-badge">近20日 · 主板涨停 + 创业板 / 科创板 大涨&gt;10% · 与轨迹同一套题材分类 · 每题材上主板 / 下创科</span> <span class="wd-count" id="watchYd20Count"></span> <span class="wd-count" id="watchYdSortNote"></span></h3></div>' +
             '<div class="wyd-quote">主力堆好柴，等火来，情绪是火。</div>' +
             '<div class="wyd-filter" id="watchYdFilter">' +
               '<span class="wyd-f-group"><b>利好因子加权</b><span class="wyd-f-chip wyd-f-factor" id="watchYdFactorBtn" onclick="watchYdFactorToggle()" title="今日涨停标签 × 今日涨停标签 的交叉：近20日大涨股里同时带这两个标签的股票（今日涨停的自带组合不推荐）">⚡ <span id="watchYdFactorCnt">0</span> 组</span></span>' +
               '<span class="wyd-f-group"><b>市场</b>' +
+                '<span class="wyd-f-chip" onclick="watchYdFilterToggle(\'boards\',\'主\',this)">主</span>' +
                 '<span class="wyd-f-chip" onclick="watchYdFilterToggle(\'boards\',\'创\',this)">创</span>' +
                 '<span class="wyd-f-chip" onclick="watchYdFilterToggle(\'boards\',\'科\',this)">科</span></span>' +
               '<span class="wyd-f-group" title="阳：距上一根阴线的第几个阳线（首阳 = 阴线回调后的第一根阳线）；阴：连续第几根阴线"><b>阴阳</b>' +
@@ -165,6 +167,9 @@
               '<div class="wyd-search"><input id="watchYdSearch" type="text" placeholder="搜索题材 / 股票名称 / 代码" autocomplete="off" spellcheck="false"><div class="wyd-sug" id="watchYdSug"></div></div>' +
               '<span class="wyd-f-reset" onclick="watchYdFilterReset()">↻ 重置</span></div>' +
             '<div class="wyd-factor" id="watchYdFactor" style="display:none"></div>' +
+            '<div class="wyd-fav" id="watchYdFavSection">' +
+              '<h3 class="wd-head wyd-fav-head" onclick="watchYdFavOpen()" title="点击展开 / 折叠"><span class="wd-arrow" id="watchYdFavArrow">▶</span>⭐ 我的收藏 <span class="count-badge">点卡片右上角 ☆ 收藏 · 取消即移除 · 按题材分类</span> <span class="wd-count" id="watchYdFavCount"></span></h3>' +
+              '<div id="watchYdFavBody" style="display:none"></div></div>' +
             '<div id="watchYd20Body"><div class="lt-trajectory-loading">加载中...</div></div></div>';
     }
 
@@ -1031,7 +1036,7 @@
     // ===== 悬浮导航（毛玻璃）：各章节快速跳转 + 滚动高亮当前章节 =====
     var NAV_ITEMS = [['watchIndexSection', '大盘'], ['twWindStrengthSection', '板块强度'], ['watchReverseSection', '反推关注'],
         ['watchDeclineSection', '跌幅'], ['watchSlotSection', '竞价报告'], ['twLtTrajectorySection', '涨停轨迹'],
-        ['watchPromoSection', '晋级'], ['watchZtClassSection', '涨停分类'], ['watchYd20Section', '异动20cm']];
+        ['watchPromoSection', '晋级'], ['watchZtClassSection', '涨停分类'], ['watchYd20Section', '涨停与20cm']];
     window.watchFloatNavShow = function (on) {
         var n = document.getElementById('watchFloatNav');
         if (n) n.style.display = on ? '' : 'none';
