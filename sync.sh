@@ -35,6 +35,7 @@ do_sync() {
     echo ""
 
     rsync_to \
+        --exclude="watch/state/" \
         --include="*.py" \
         --include="*.json" \
         --include="*.sh" \
