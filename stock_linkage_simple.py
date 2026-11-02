@@ -12,6 +12,7 @@ import sys
 import json
 import sqlite3
 import threading
+import math
 import socket
 import bisect
 import time
@@ -7088,7 +7089,7 @@ def _sina_full_market():
             continue
         rows[code] = {'stock_code': code, 'stock_name': str(x.get('name') or ''), 'price': _traj_num(x.get('trade')),
                       'change_pct': _traj_num(x.get('changepercent')), 'open': _traj_num(x.get('open')),
-                      'pre_close': _traj_num(x.get('settlement'))}
+                      'pre_close': _traj_num(x.get('settlement')), 'high': _traj_num(x.get('high'))}
     if len(rows) < total * 0.9:
         raise RuntimeError('新浪全市场不完整: %s/%s' % (len(rows), total))
     return list(rows.values())
@@ -7102,7 +7103,8 @@ def _em_full_market():
         if len(code) != 6 or not code.isdigit():
             continue
         rows[code] = {'stock_code': code, 'stock_name': str(x.get('f14') or ''), 'price': _traj_num(x.get('f2')),
-                      'change_pct': _traj_num(x.get('f3')), 'open': _traj_num(x.get('f17')), 'pre_close': _traj_num(x.get('f18'))}
+                      'change_pct': _traj_num(x.get('f3')), 'open': _traj_num(x.get('f17')), 'pre_close': _traj_num(x.get('f18')),
+                      'high': _traj_num(x.get('f15'))}
     if len(rows) < 5000:
         raise RuntimeError('东方财富全市场不完整: %s' % len(rows))
     return list(rows.values())
@@ -7549,11 +7551,102 @@ def _as_status(t, yizi):
     return '大低开'
 
 
+# ===================== 情绪报团（盯盘页 9999） =====================
+# 近 30 个交易日：主板有过 4 连板、创业板/科创板有过 2 连板（20cm 涨停）的股票；离「最近一次达标连板」断板越近越靠前（仍在板上 = 0）。
+_EMO_DAYS = 30
+_EMO_NEED = {'main': 4, 'gem': 2}
+
+
+def _emo_build():
+    anchor = _traj_anchor_ymd()
+    days = [d for d in _trading_days if d <= anchor][-_EMO_DAYS:]
+    dates = ['%s-%s-%s' % (d[:4], d[4:6], d[6:]) for d in days]
+    if not dates:
+        return {'dates': [], 'items': []}
+    is_gem = lambda c: c[:2] in ('30', '68')
+    is_main = lambda c: c[:2] in ('00', '60')
+    is_hit = lambda c, p: (19.5 <= p < 21) if is_gem(c) else ((9.8 <= p < 11) if is_main(c) else False)
+    hits, names, cur = {}, {}, {}
+    try:
+        conn = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db'), timeout=5)
+        ph = ','.join('?' * len(dates))
+        for code, d, pct in conn.execute(
+                "SELECT stock_code, trade_date, change_pct FROM kline_daily WHERE trade_date IN (%s) AND "
+                "((change_pct >= 19.5 AND change_pct < 21 AND (stock_code LIKE '30%%' OR stock_code LIKE '68%%')) "
+                "OR (change_pct >= 9.8 AND change_pct < 11 AND (stock_code LIKE '00%%' OR stock_code LIKE '60%%')))" % ph, dates).fetchall():
+            hits.setdefault(str(code).zfill(6), set()).add(d)
+        for code, pct in conn.execute("SELECT stock_code, change_pct FROM kline_daily WHERE trade_date=?", (dates[-1],)).fetchall():
+            cur[str(code).zfill(6)] = float(pct)
+        names = {str(c).zfill(6): str(n or '').strip() for c, n in conn.execute('SELECT stock_code, stock_name FROM stocks').fetchall() if n}
+        conn.close()
+    except Exception as exc:
+        print('[情绪报团] 日线读取失败: %s' % exc)
+    latest = dates[-1]
+    if not cur:      # 日线库还没补入最新日：收盘快照兜底
+        for code, v in _close_snapshot_get(latest).items():
+            code = str(code).zfill(6)
+            try:
+                pct = float(v[4])
+            except (TypeError, ValueError, IndexError):
+                continue
+            cur[code] = pct
+            names.setdefault(code, str(v[0] or ''))
+            if is_hit(code, pct):
+                hits.setdefault(code, set()).add(latest)
+    if latest == _bj_now().strftime('%Y-%m-%d') and _is_trading_hours():
+        for row in _trajectory_live_market_rows() or []:
+            code = str((row or {}).get('stock_code') or '').strip().zfill(6)
+            pct = _traj_num(row.get('change_pct'))
+            if pct is None or not (is_gem(code) or is_main(code)):
+                continue
+            cur[code] = pct
+            names.setdefault(code, str(row.get('stock_name') or ''))
+            if is_hit(code, pct):
+                hits.setdefault(code, set()).add(latest)
+            elif code in hits:
+                hits[code].discard(latest)
+    idx = {d: i for i, d in enumerate(dates)}
+    items = []
+    for code, ds in hits.items():
+        need = _EMO_NEED['gem' if is_gem(code) else 'main']
+        name = names.get(code) or (_kpl_stock_index.get(code, {}) or {}).get('stock_name') or code
+        if name[:1] in ('N', 'C') or 'ST' in name.upper():
+            continue
+        pos = sorted(idx[d] for d in ds if d in idx)
+        best = None            # 最近一次达标的连板段 (起, 止)
+        run_s = prev = None
+        for i in pos + [None]:
+            if i is not None and prev is not None and i == prev + 1:
+                prev = i
+                continue
+            if run_s is not None and prev - run_s + 1 >= need:
+                best = (run_s, prev)
+            run_s = prev = i
+        if not best:
+            continue
+        lt = _kpl_stock_latest_tag.get(code) or {}
+        tags = _tws_mab_tags({'plate_name': lt.get('plate_name', ''), 'reason_tag': lt.get('tag', ''), 'reason_brief': lt.get('reason_brief', '')})
+        items.append({'code': code, 'name': name, 'board': _trajectory_board_of_code(code), 'streak': best[1] - best[0] + 1,
+                      'start_date': dates[best[0]], 'end_date': dates[best[1]], 'gap': len(dates) - 1 - best[1],
+                      'cur_pct': round(cur[code], 2) if code in cur else None, 'tags': tags[:8], 'brief': (lt.get('reason_brief') or '')[:60]})
+    items.sort(key=lambda x: (x['gap'], -x['streak'], x['code']))
+    return {'dates': dates, 'items': items, 'need': _EMO_NEED}
+
+
+def _emo_get():
+    live = _is_trading_hours()
+    got = _get_cached('emo_group', ttl=(30 if live else 300))
+    if got is None:
+        got = _emo_build()
+        _set_cache('emo_group', got)
+    return got
+
+
 # ===================== 反推关注（盯盘页·今日涨停时间轴下方） =====================
 # 今日每只首板股：取它在界面上显示的 KPL 题材（板块 M + 涨停理由/简述拆分的标签，即 _tws_mab_tags），
 # 去匹配上一交易日首板与 2 板股的 KPL 板块 / 标签 / 简述（任一关键词相同，或关键词出现在对方简述里），
 # 列出关联股及其昨日首封时间。反推只对「关联股尚未涨停」成立：关联股在首板之前已涨停的剔除，之后才涨停的标「反推兑现」；
-# 题材在该首板之前已有 3 板晋级股的，题材已明牌，整只首板不再反推。
+# 昨日同题材涨停股（任意板数）今日已先于该首板涨停的，题材已明牌，整只首板不叫反推；结果按涨停时间排序后再按题材分组。
 _RW_NOISE = {'首板', '首版', '重启', '晋级', '未分类', '其他'}
 
 
@@ -7605,16 +7698,15 @@ def _rw_build(d, day):
 
     today = {st['code']: st for g in d['days'][day]['groups'] for st in g['stocks'] if st['kind'] == 'zt' and not _sq_is_st(st['name'])}
     prevs = [pack(st, rows_p) for g in d['days'][prev]['groups'] for st in g['stocks']
-             if st['kind'] == 'zt' and st['lb'] in (1, 2) and not _sq_is_st(st['name'])]
-    highs = [pack(st, rows_t) for st in today.values() if int(st['lb']) >= 3]      # 今日已晋级 3 板及以上的股票
+             if st['kind'] == 'zt' and not _sq_is_st(st['name'])]
     items, bright = [], []
     for code, st in today.items():
         if int(st['lb']) != 1:
             continue
         a = pack(st, rows_t)
         a_sec = _as_sec(st['first_time'])
-        # 该题材在这个首板之前已有 3 板晋级的股票 → 题材已明牌，不再反推
-        hi = [h for h in highs if _as_sec(h['ft']) <= a_sec and _rw_match(a, h)]
+        # 该题材昨日涨停的任一关联股（首板/2板/3板…）今日已在这只首板之前（或同时）涨停 → 题材已明牌，不叫反推
+        hi = [b for b in prevs if b['code'] != code and today.get(b['code']) and _as_sec(today[b['code']]['first_time']) <= a_sec and _rw_match(a, b)]
         if hi:
             bright.append({'code': code, 'name': st['name'], 'by': hi[0]['name']})
             continue
@@ -7638,8 +7730,25 @@ def _rw_build(d, day):
         items.append({'code': code, 'name': st['name'], 'board': st['board'], 'time': _as_hm(st['first_time']), 'ft': _as_sec(st['first_time']),
                       'pct': st.get('pct'), 'mab': a['mab'], 'brief': (rows_t.get(code) or {}).get('reason_brief') or '',
                       'matches': ms[:14], 'n_match': len(ms)})
-    items.sort(key=lambda x: (-x['ft'], x['code']))
-    return {'date': day, 'prev': prev, 'items': items, 'bright': bright, 'is_live': day == live_day}
+    # 按首封时间从早到晚排序，再按题材分组（与细分题材晋级同思路）：每只首板归入「全体首板里出现次数最多」的关键词，
+    # 板块（p）优先于标签；组按组内最早涨停时间排序，组内按涨停时间。
+    items.sort(key=lambda x: (x['ft'], x['code']))
+    freq = {}
+    for it in items:
+        for x in it['mab']:
+            if len(x['t']) >= 2 and x['t'] not in _RW_NOISE:
+                freq[x['t']] = freq.get(x['t'], 0) + 1
+    gmap = {}
+    for it in items:
+        cands = [x for x in it['mab'] if len(x['t']) >= 2 and x['t'] not in _RW_NOISE]
+        cands.sort(key=lambda x: (-freq[x['t']], 0 if x['p'] else 1))
+        it['theme'] = cands[0]['t'] if cands else '其他'
+        gmap.setdefault(it['theme'], []).append(it)
+    groups = [{'theme': t, 'n': len(v), 'ft': v[0]['ft'], 'n_match': sum(1 for i in v if i['n_match'])} for t, v in gmap.items()]
+    groups.sort(key=lambda g: (g['ft'], g['theme']))
+    order = {g['theme']: i for i, g in enumerate(groups)}
+    items.sort(key=lambda x: (order[x['theme']], x['ft'], x['code']))
+    return {'date': day, 'prev': prev, 'items': items, 'groups': groups, 'bright': bright, 'is_live': day == live_day}
 
 
 def _rw_get(day=None):
@@ -8613,6 +8722,252 @@ def _trajectory_yd20_board(dates_fmt, tag_totals, stocks_by_tag=None, surge_by_t
     return out
 
 
+# ===================== 今日20cm强势套利（盯盘页 9999 · 强势套利页上半部分） =====================
+# 今日创业板/科创板：涨幅>0 且 现价>开盘价；最高价涨幅>=7% 的票记录首次突破 7% 的时间（新浪1分钟线，找到后固定缓存）。
+# 标识：涨停(>=19.5%) > 强势SSS(现价涨幅>10%) > 强势(最高价突破7% 且 现价涨幅>5%) > 关注(现价涨幅>3%)。题材归属与「异动20cm」一致。
+_strong_t7_cache = {}
+_strong_t7_lock = threading.Lock()
+_STRONG_BREAK_PCT = 7.0
+
+
+def _strong20_t7_fetch(date_fmt, code, pre_close, need10=False):
+    """新浪1分钟线里首次最高价涨幅>=7% / >=10% 的分钟，返回 (t7, t10)（HHMMSS 整数，没到则 None）。找到后固定缓存。"""
+    key = (date_fmt, code)
+    with _strong_t7_lock:
+        got = _strong_t7_cache.get(key)
+    if got and ((got['t7'] is not None and (not need10 or got['t10'] is not None)) or time.time() - got['ts'] < 25):
+        return got['t7'], got['t10']
+    t7 = t10 = None
+    try:
+        sym = ('sh' if code.startswith('68') else 'sz') + code
+        r = requests.get('https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20x=/CN_MarketDataService.getKLineData',
+                         params={'symbol': sym, 'scale': 1, 'ma': 'no', 'datalen': 250}, headers={'User-Agent': 'Mozilla/5.0'}, timeout=6)
+        m = re.search(r'\((\[.*\])\)', r.text, re.S)
+        bars = json.loads(m.group(1)) if m else []
+        thr7 = round(pre_close * (1 + _STRONG_BREAK_PCT / 100.0), 2)
+        thr10 = round(pre_close * 1.10, 2)
+        for b in bars:
+            day = str(b.get('day') or '')
+            if not day.startswith(date_fmt):
+                continue
+            hi = round(float(b.get('high') or 0), 2)
+            hh = day[11:19].split(':')
+            tt = int(hh[0]) * 10000 + int(hh[1]) * 100 + int(hh[2])
+            if t7 is None and hi >= thr7:
+                t7 = tt
+            if t10 is None and hi > thr10:
+                t10 = tt
+            if t7 is not None and t10 is not None:
+                break
+    except Exception as exc:
+        print('[强势套利] %s 分钟线失败: %s' % (code, str(exc)[:80]))
+    with _strong_t7_lock:
+        _strong_t7_cache[key] = {'t7': t7, 't10': t10, 'ts': time.time()}
+    return t7, t10
+
+
+def _trajectory_strong20(dates_fmt, tag_totals, stocks_by_tag=None, surge_by_tag=None):
+    """返回 {'date','live','total','tags':{tag:[{code,name,board,price,open,pre_close,pct,high,high_pct,t7,level}]}}，
+    每个题材内按现价涨幅从高到低；level ∈ 涨停 / 强势SSS / 强势 / 关注 / ''。"""
+    dates_fmt = [d for d in dates_fmt if d]
+    if not dates_fmt:
+        return {'date': '', 'live': False, 'total': 0, 'tags': {}}
+    latest = dates_fmt[-1]
+    today_fmt = _bj_now().strftime('%Y-%m-%d')
+    live = latest == today_fmt and _is_trading_hours()
+    quotes = {}      # code -> (name, price, open, pre_close, pct, high)
+    is_gem = lambda c: c.startswith('30') or c.startswith('68')
+    if live:
+        for row in _trajectory_live_market_rows() or []:
+            code = str((row or {}).get('stock_code') or '').strip().zfill(6)
+            if not is_gem(code):
+                continue
+            pr, op, pc, pct, hi = (_traj_num(row.get(k)) for k in ('price', 'open', 'pre_close', 'change_pct', 'high'))
+            if pr and op and pc and pct is not None:
+                quotes[code] = (str(row.get('stock_name') or ''), pr, op, pc, pct, hi)
+    else:
+        try:
+            conn = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'stocks_kline.db'), timeout=5)
+            names = {str(c).zfill(6): str(n or '').strip() for c, n in conn.execute(
+                "SELECT stock_code, stock_name FROM stocks WHERE stock_code LIKE '30%' OR stock_code LIKE '68%'").fetchall()}
+            for code, op, hi, cl, pc, pct in conn.execute(
+                    "SELECT stock_code, open, high, close, prev_close, change_pct FROM kline_daily WHERE trade_date=? "
+                    "AND (stock_code LIKE '30%' OR stock_code LIKE '68%')", (latest,)).fetchall():
+                code = str(code).zfill(6)
+                if op and cl and pc and pct is not None:
+                    quotes[code] = (names.get(code, ''), float(cl), float(op), float(pc), float(pct), float(hi) if hi else None)
+            conn.close()
+        except Exception as exc:
+            print('[强势套利] 日线读取失败: %s' % exc)
+        if not quotes:
+            for code, v in _close_snapshot_get(latest).items():
+                code = str(code).zfill(6)
+                if is_gem(code) and v[1] and v[2] and v[3]:
+                    quotes[code] = (str(v[0] or ''), float(v[2]), float(v[1]), float(v[3]), float(v[4]), None)
+    cands = {}
+    for code, (name, pr, op, pc, pct, hi) in quotes.items():
+        name = name or (_kpl_stock_index.get(code, {}) or {}).get('stock_name') or \
+            (_kph_industry_reverse.get(code, {}) or {}).get('name') or getattr(finder, 'stock_name_map', {}).get(code) or code
+        if pct <= 0 or pr <= op or name[:1] in ('N', 'C') or 'ST' in name.upper():
+            continue
+        hp = round((hi / pc - 1) * 100, 2) if hi and pc else pct
+        hp = max(hp, pct)
+        cands[code] = {'code': code, 'name': name, 'board': _trajectory_board_of_code(code), 'price': round(pr, 2), 'open': round(op, 2),
+                       'pre_close': round(pc, 2), 'pct': round(pct, 2), 'high': round(hi, 2) if hi else None, 'high_pct': hp, 't7': None, 't10': None}
+    need = [c for c, x in cands.items() if x['high_pct'] >= _STRONG_BREAK_PCT]
+    if need:
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for c, (t7, t10) in zip(need, ex.map(lambda c: _strong20_t7_fetch(latest, c, cands[c]['pre_close'], cands[c]['high_pct'] > 10), need)):
+                cands[c]['t7'] = t7
+                cands[c]['t10'] = t10
+    for x in cands.values():
+        if x['pct'] >= 19.5:
+            x['level'] = '涨停'
+        elif x['pct'] > 10:
+            x['level'] = '强势SSS'
+        elif x['high_pct'] >= _STRONG_BREAK_PCT and x['pct'] > 5:
+            x['level'] = '强势'
+        elif x['pct'] > 3:
+            x['level'] = '关注'
+        else:
+            x['level'] = ''
+    universe = set(tag_totals)
+    row_tags = {}
+    for src in (stocks_by_tag or {}, surge_by_tag or {}):
+        for tag, date_map in src.items():
+            for lst in date_map.values():
+                for st in lst:
+                    c = str(st.get('code') or '')
+                    if is_gem(c):
+                        row_tags.setdefault(c, set()).add(tag)
+    out = {}
+    for code, x in cands.items():
+        tags = sorted(row_tags.get(code) or [], key=lambda t: (-tag_totals.get(t, 0), t))
+        if not tags:
+            try:
+                found = _trajectory_stock_row_tags(code, universe)
+            except Exception:
+                found = set()
+            tags = sorted(found, key=lambda t: (-tag_totals.get(t, 0), t))[:2] or ['未归类']
+        for t in tags:
+            out.setdefault(t, []).append(x)
+    for lst in out.values():
+        lst.sort(key=lambda x: (-x['pct'], x['code']))
+    return {'date': latest, 'live': live, 'total': len(cands), 'tags': out}
+
+
+# ===================== 题材强度（盯盘页 9999 · 强势套利页） =====================
+# 把「涨停 / 大涨 / 强势」按权重折算成题材得分，并按时间还原「从开盘到现在」的得分曲线与排名：
+#   首板涨停 1.0；N 连板 = 1.0 + min(0.6, 0.35·ln N)（2板1.24 · 3板1.38 · 5板1.56 · 封顶1.6，高板只是小幅加成，不会一只高板拉高整个题材）；
+#   大涨（创/科 >10% 未封板）算首板 = 1.0；强势（最高价破7% 且现价>5%）= 0.5；关注(>3%) 不计分。
+#   每只票在同一题材内只按「当前所处最高层级」计一次：涨停 > 大涨 > 强势；各题材独立计分（同一只票可同时计入它的多个题材）。
+#   题材得分 = 各票得分之和（广度优先：3 只首板 3.0 > 1 只 8 连板 1.6）；展示分 = 100·(1−e^(−原始分/30))，仅用于直观，不影响排名。
+#   历史曲线：每只票按「达到当前层级的时刻」入账（涨停=首封时间，大涨=首次突破10%，强势=首次突破7%），在每个 5 分钟点上累计；
+#   已炸板 / 回落出局的票不再计入（所以曲线末端 = 当前真实强度）。
+#   增强标识：近 30 分钟得分增量 ≥ max(1.0, 20%·30分钟前得分) 且近 15 分钟仍在涨 → 'up'（持续增强）；30 分钟前为 0 而现在 ≥1.5 → 'new'（新启动）；得分较 30 分钟前下降 → 'down'。
+_STR_W_ZT, _STR_W_SURGE, _STR_W_STRONG = 1.0, 1.0, 0.5
+_STR_SCALE = 30.0
+
+
+def _strength_w_zt(lb):
+    lb = max(1, int(lb or 1))
+    return _STR_W_ZT + (min(0.6, 0.35 * math.log(lb)) if lb >= 2 else 0.0)
+
+
+def _strength_grid(live_now_hhmm=None):
+    """5 分钟时间点（HHMM 整数）：09:30~11:30、13:05~15:00；盘中只取到当前，并追加「当前」点。"""
+    pts = []
+    for m in range(9 * 60 + 30, 11 * 60 + 31, 5):
+        pts.append(m)
+    for m in range(13 * 60 + 5, 15 * 60 + 1, 5):
+        pts.append(m)
+    if live_now_hhmm is not None:
+        now_m = live_now_hhmm
+        pts = [m for m in pts if m <= now_m]
+        if not pts or pts[-1] != now_m:
+            pts.append(now_m)
+    return pts
+
+
+def _trajectory_strength(dates_fmt, tag_totals, stocks_by_tag, surge_by_tag, strong20):
+    latest = dates_fmt[-1] if dates_fmt else ''
+    if not latest:
+        return {}
+    live = bool(strong20 and strong20.get('live'))
+    now = _bj_now()
+    grid = _strength_grid(now.hour * 60 + now.minute if live else None)
+    cand = {}           # code -> strong20 item
+    for lst in (strong20 or {}).get('tags', {}).values():
+        for x in lst:
+            cand[x['code']] = x
+    to_min = lambda t: None if t is None else (int(t) // 10000) * 60 + (int(t) // 100) % 100 + (1 if int(t) % 100 else 0)
+    tags = {}
+    for tag in tag_totals:
+        ev = {}         # code -> (kind, weight, minute|None, lb)
+        for st in ((stocks_by_tag.get(tag) or {}).get(latest) or []):
+            code = str(st.get('code') or '')
+            ft = st.get('first_time')
+            lb = st.get('lianban') or 1
+            ev[code] = ('zt', _strength_w_zt(lb), 9 * 60 + 30 if (ft is not None and ft < 93000) else to_min(ft if (ft and ft < 999999) else None), lb)
+        for st in ((surge_by_tag.get(tag) or {}).get(latest) or []):
+            code = str(st.get('code') or '')
+            if code in ev or _trajectory_board_of_code(code) not in ('创', '科'):
+                continue
+            x = cand.get(code)
+            ev[code] = ('surge', _STR_W_SURGE, to_min(x.get('t10')) if x else None, 1)
+        for x in (strong20 or {}).get('tags', {}).get(tag, []):
+            code = x['code']
+            if code in ev:
+                continue
+            lv = x.get('level')
+            if lv == '涨停':
+                ev[code] = ('zt', _strength_w_zt(1), to_min(x.get('t10') or x.get('t7')), 1)
+            elif lv == '强势SSS':
+                ev[code] = ('surge', _STR_W_SURGE, to_min(x.get('t10')), 1)
+            elif lv == '强势':
+                ev[code] = ('strong', _STR_W_STRONG, to_min(x.get('t7')), 1)
+        if not ev:
+            continue
+        series = []
+        for g in grid:
+            tot = 0.0
+            for kind, w, m, lb in ev.values():
+                if (m is not None and m <= g) or (m is None and g == grid[-1]):
+                    tot += w
+            series.append(round(tot, 2))
+        parts = {'zt': 0, 'lb': 0, 'surge': 0, 'strong': 0, 'zt_pts': 0.0, 'surge_pts': 0.0, 'strong_pts': 0.0}
+        for kind, w, m, lb in ev.values():
+            parts[kind] += 1
+            parts[kind + '_pts'] = round(parts[kind + '_pts'] + w, 2)
+            if kind == 'zt' and lb >= 2:
+                parts['lb'] += 1
+        tags[tag] = {'raw': series[-1], 'series': series, 'parts': parts}
+    # 各时间点排名
+    names = list(tags)
+    for k in range(len(grid)):
+        ordr = sorted(names, key=lambda t: (-tags[t]['series'][k], t))
+        for r, t in enumerate(ordr, 1):
+            tags[t].setdefault('rank_series', []).append(r if tags[t]['series'][k] > 0 else None)
+    back = lambda n: max(0, len(grid) - 1 - n)       # 往前 n 个 5 分钟点
+    for t, v in tags.items():
+        s = v['series']
+        now_s, s15, s30 = s[-1], s[back(3)], s[back(6)]
+        v['score'] = round(100 * (1 - math.exp(-now_s / _STR_SCALE)), 1)
+        v['d15'], v['d30'] = round(now_s - s15, 2), round(now_s - s30, 2)
+        v['rank'] = v['rank_series'][-1]
+        v['rank30'] = v['rank_series'][back(6)]
+        if s30 <= 0 and now_s >= 1.5:
+            v['trend'] = 'new'
+        elif v['d30'] >= max(1.0, 0.2 * s30) and v['d15'] > 0:
+            v['trend'] = 'up'
+        elif v['d30'] < 0:
+            v['trend'] = 'down'
+        else:
+            v['trend'] = 'flat'
+    return {'date': latest, 'live': live, 'times': ['%02d:%02d' % (m // 60, m % 60) for m in grid], 'tags': tags,
+            'weights': {'zt': _STR_W_ZT, 'surge': _STR_W_SURGE, 'strong': _STR_W_STRONG, 'lb_cap': 0.6}, 'scale': _STR_SCALE}
+
+
 def _trajectory_attach_surge(date_codes, tag_totals, price_by_date, live_date_fmt, close_pending, kind='surge', per_tag_cap=0, hist=None):
     """把大涨(kind=surge)/未涨停涨幅>2%(kind=rise)的股票挂到轨迹已有题材行：按行总涨停次数取前 2 个行，无匹配则不展示。
     返回 {date: {tag: [stock]}}，stock 字段与涨停股一致，另带 is_surge/is_rise/change_pct/board。"""
@@ -9550,19 +9905,22 @@ def _build_market_sentiment():
     # 非交易时段优先取腾讯行情的最新快照：levistock 的东方财富接口在
     # 盘前/盘后偶尔会返回上一交易日旧值，不能只凭“请求成功”判断数据新鲜。
     # 交易时段仍优先使用 levistock 实时指数，失败再走同一备用源。
-    if not realtime:
+    # 盘中同样先取腾讯：响应快且与股票同频（东财 push2delay 常 502/超时拖慢整个接口）。
+    if True:
         try:
             indices = _fetch_market_indices_fallback()
             if indices:
                 result['indices'] = indices
-                result['data_source'] = '腾讯行情最新收盘'
+                result['data_source'] = '腾讯行情实时' if realtime else '腾讯行情最新收盘'
                 fresh = True
                 indices_fresh = True
-                indices_source = '腾讯行情最新收盘'
+                indices_source = result['data_source']
         except Exception:
             pass
 
-    if not result['indices']:
+    # 注意：result['indices'] 已预填上一次快照，不能用它判断「是否还需要取数」，
+    # 否则盘中永远不会重新拉指数（只有收盘分支会刷新）。以 indices_fresh 为准。
+    if not indices_fresh:
         try:
             indices = lk.market_index_em()
             if isinstance(indices, list) and indices:
@@ -9572,7 +9930,7 @@ def _build_market_sentiment():
                 indices_source = 'levistock实时指数'
         except Exception:
             pass
-    if not result['indices']:
+    if not indices_fresh:
         try:
             indices = _fetch_market_indices_fallback()
             if indices:
@@ -43745,6 +44103,15 @@ class Handler(BaseHTTPRequestHandler):
                     # 跌幅榜：最新日全市场跌幅超过 5% 的股票，按 KPL 题材（最新涨停标签）归类，全部列出；
                     # 题材按平均跌幅从大到小排，无 KPL 题材的归入末尾「未归类」。盘中取全市场实时涨幅，否则读本地日线。
                     result['yd20'] = _trajectory_yd20_board(recent_fmt, tag_totals, sorted_stocks, surge_by_tag)
+                    try:
+                        result['strong20'] = _trajectory_strong20(recent_fmt, tag_totals, sorted_stocks, surge_by_tag)
+                    except Exception as exc:
+                        print('[强势套利] 构建失败: %s' % exc)
+                    try:
+                        result['strength'] = _trajectory_strength(recent_fmt, tag_totals, sorted_stocks, surge_by_tag, result.get('strong20'))
+                    except Exception as exc:
+                        import traceback
+                        print('[题材强度] 构建失败: %s' % traceback.format_exc())
                     result['decline'] = _trajectory_decline_board(
                         recent_fmt[-1] if recent_fmt else '', limit_codes.get(reference_date, set()) if reference_date else set())
                 # 最新日没有任何涨停记录（启动期 KPL 日文件还在补拉/重建）时不缓存，避免把「只剩大涨/涨幅>2%」的残缺结果缓存 2 分钟
@@ -43915,6 +44282,9 @@ class Handler(BaseHTTPRequestHandler):
                 rest = [x for x in stocks[:8] + plates[:6] + tags[:6] if x not in exact]
                 items = (exact + rest)[:20]
             self._respond_json(items, cors_headers)
+
+        elif path == '/api/emotion_group':
+            self._respond_json(_emo_get(), cors_headers)
 
         elif path == '/api/reverse_watch':
             self._respond_json(_rw_get(query.get('date', [''])[0].strip() or None), cors_headers)

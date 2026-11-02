@@ -108,9 +108,16 @@
             '<span class="rt-refresh-icon" onclick="manualRefreshTws()" title="刷新">↻</span></h3>' +
             '<div id="twWindStrengthBody"><div class="loading">加载中...</div></div></div>' +
 
+            '<div class="rt-section lt-trajectory-section" id="watchEmoSection">' +
+            '<h3 class="wd-head" onclick="watchToggleEmo()" title="点击展开 / 折叠">' +
+            '<span class="wd-arrow" id="watchEmoArrow">▶</span>🤝 情绪报团 <span class="count-badge">近30日 主板4连板 / 创·科2连板 · 断板越近越靠前</span> ' +
+            '<span class="wd-count" id="watchEmoCount"></span>' +
+            '<span class="rt-refresh-icon" onclick="event.stopPropagation();watchLoadEmo(true)" title="刷新">↻</span></h3>' +
+            '<div id="watchEmoBody" style="display:none"><div class="lt-trajectory-loading">加载中...</div></div></div>' +
+
             '<div class="rt-section lt-trajectory-section" id="watchReverseSection">' +
             '<h3 class="wd-head" style="color:#22d3ee;" onclick="watchToggleReverse()" title="点击展开 / 折叠">' +
-            '<span class="wd-arrow" id="watchReverseArrow">▶</span>🔎 反推关注 <span class="count-badge">首板涨停 → 昨日同题材尚未涨停的首板 / 2板</span> ' +
+            '<span class="wd-arrow" id="watchReverseArrow">▶</span>🔎 反推关注 <span class="count-badge">首板涨停 → 昨日同题材尚未涨停的涨停股</span> ' +
             '<span class="wd-count" id="watchReverseCount"></span>' +
             '<span class="rt-refresh-icon" onclick="event.stopPropagation();watchLoadReverse()" title="刷新">↻</span></h3>' +
             '<div id="watchReverseBody" style="display:none"><div class="lt-trajectory-loading">加载中...</div></div></div>' +
@@ -197,6 +204,7 @@
                     if (dc && d.decline) dc.textContent = d.decline.total + ' 只 · ' + d.decline.themes.length + ' 个题材';
                     body.innerHTML = watchRenderTrajectory(d, 'twLtTrajectoryBody');
                     watchRenderYd20();
+                    if (window.watchSaRender) watchSaRender();
                     var ts = document.getElementById('watchTrajTs');
                     if (ts) ts.textContent = lastTraj = fmtClock(bjNow());
                 }
@@ -949,21 +957,108 @@
         if (cnt) cnt.textContent = d.date + ' · 可反推首板 ' + items.filter(function (x) { return x.n_match; }).length + ' 只' + (nb ? ' · 已明牌排除 ' + nb : '');
         body.innerHTML = '<div class="rw-bar"><label class="as-chk"><input type="checkbox" ' + (rw.onlyMatch ? 'checked' : '') +
             ' onchange="watchReverseOnly(this.checked)">只看有关联的首板</label><span class="rw-hint">首板涨停 → 按 KPL 板块 / 标签 / 简述反推 ' + asEsc(d.prev || '上一交易日') +
-            ' 尚未涨停的首板 / 2 板；<b class="rw-hot">金色</b>=首板之后该关联股也涨停（反推兑现）；题材已有 3 板晋级则不反推' +
+            ' 尚未涨停的涨停股（首板/2板/3板…）；<b class="rw-hot">金色</b>=首板之后该关联股也涨停（反推兑现）；昨日同题材涨停股已先涨停则不叫反推；按涨停时间排序并按题材分组' +
             (nb ? '（排除：' + d.bright.slice(0, 6).map(function (x) { return asEsc(x.name) + '←' + asEsc(x.by); }).join('、') + (nb > 6 ? ' 等' : '') + '）' : '') + '</span></div>' +
-            (shown.length ? shown.map(function (x) {
+            (shown.length ? shown.map(function (x, i) {
+                var gh = '';
+                if (!i || shown[i - 1].theme !== x.theme) {
+                    var gn = shown.filter(function (y) { return y.theme === x.theme; }).length;
+                    gh = '<div class="rw-grp"><b>' + asEsc(x.theme) + '</b><span>' + gn + ' 只 · 最早 ' + asEsc(x.time) + '</span></div>';
+                }
                 var tags = (x.mab || []).slice(0, 4).map(function (t) { return '<em class="rw-tag' + (t.p ? ' m' : '') + '">' + asEsc(t.t) + '</em>'; }).join('');
                 var ms = x.matches.length ? x.matches.slice(0, 8).map(function (m) {
                     var hit = m.hits.map(function (h) { return h.k + '·' + h.t; }).join(' / ');
-                    return '<span class="rw-m' + (m.today ? ' hot' : '') + '" title="' + asEsc(hit) + '"><span class="rw-lv">' + (m.lb >= 2 ? '2板' : '首板') + '</span>' + rwStk(m) +
+                    return '<span class="rw-m' + (m.today ? ' hot' : '') + '" title="' + asEsc(hit) + '"><span class="rw-lv">' + (m.lb >= 2 ? m.lb + '板' : '首板') + '</span>' + rwStk(m) +
                         '<span class="rw-ft">昨' + asEsc(m.time) + '</span>' + (m.today ? '<b class="rw-td">兑现 ' + asEsc(m.today.time) + '</b>' : '') +
                         '<i class="rw-hit">' + asEsc(m.hits[0].t) + '</i></span>';
                 }).join('') + (x.matches.length > 8 || x.n_match > x.matches.length ? '<span class="rw-more">+' + (Math.max(x.n_match, x.matches.length) - 8) + '</span>' : '') :
                     '<span class="as-nf">无关联</span>';
-                return '<div class="rw-card"><div class="rw-a" title="' + asEsc(x.brief || '') + '"><b class="rw-time">' + asEsc(x.time) + '</b>' + rwStk(x, 'rw-self') +
+                return gh + '<div class="rw-card"><div class="rw-a" title="' + asEsc(x.brief || '') + '"><b class="rw-time">' + asEsc(x.time) + '</b>' + rwStk(x, 'rw-self') +
                     (x.pct !== null && x.pct !== undefined ? '<span class="as-t ' + asTCls(x.pct) + '">' + asT(x.pct) + '</span>' : '') + tags + '</div><div class="rw-ms">' + ms + '</div></div>';
             }).join('') : '<div class="as-none">暂无可反推的首板。</div>');
     }
+    // ===================== 情绪报团（反推关注上方） =====================
+    var emo = {sig: '', navs: [], data: null};
+    window.watchToggleEmo = function () {
+        var wrap = document.getElementById('watchEmoBody'), arrow = document.getElementById('watchEmoArrow');
+        if (!wrap) return;
+        var open = wrap.style.display === 'none';
+        wrap.style.display = open ? '' : 'none';
+        if (arrow) arrow.textContent = open ? '▼' : '▶';
+    };
+    var emoMuted = {};        // 取消关注名单：保存在服务器（/api/emo_muted），各设备共用
+    function emoPost(body) {
+        return fetch('/api/emo_muted', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+            .then(function (r) { return r.json(); }).then(function (d) { if (d && d.muted) emoMuted = d.muted; })
+            .catch(function (e) { console.error('保存情绪报团关注状态失败:', e); });
+    }
+    window.watchEmoMute = function (code, ev) {      // 小图标：默认全部选中（关注）；取消后沉到所在板块部分的最下面，再选中回到上面
+        if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+        var muted = !emoMuted[code];
+        if (muted) emoMuted[code] = Date.now(); else delete emoMuted[code];
+        if (emo.data) emoRender(emo.data);
+        emoPost({code: code, muted: muted});
+    };
+    function emoCard(x, i, nav) {
+        var nm = asEsc(x.name), pc = x.cur_pct, muted = !!emoMuted[x.code];
+        var gap = x.gap === 0 ? '<b class="emo-on">仍在板上</b>' : '<span class="emo-gap">' + x.gap + ' 日前断板</span>';
+        var tags = (x.tags || []).map(function (t) { return '<em class="rw-tag' + (t.p ? ' m' : '') + '">' + asEsc(t.t) + '</em>'; }).join('');
+        return '<div class="emo-card' + (muted ? ' muted' : '') + '" title="' + asEsc(x.brief || '') + '" onclick="openDsStockFromRhythm(\'' + nm.replace(/'/g, '') + '\',\'' + x.code + '\',\'\',watchEmoNav(),' + nav + ')">' +
+            '<div class="emo-h"><span class="emo-chk' + (muted ? '' : ' on') + '" title="' + (muted ? '已取消关注，点击恢复' : '关注中，点击取消关注（沉到最下面）') + '" onclick="watchEmoMute(\'' + x.code + '\', event)">' + (muted ? '☐' : '☑') + '</span>' +
+            '<i class="wz-bd wz-bd-' + asEsc(x.board) + '">' + asEsc(x.board) + '</i><b class="emo-nm">' + nm + '</b><code>' + x.code + '</code>' +
+            '<span class="emo-lb">' + x.streak + '连板</span>' +
+            (pc !== null && pc !== undefined ? '<span class="emo-pct ' + (pc >= 0 ? 'sa-up' : 'sa-down') + '">' + (pc > 0 ? '+' : '') + Number(pc).toFixed(2) + '%</span>' : '') + '</div>' +
+            '<div class="emo-m">' + gap + '<span class="emo-dt">' + asEsc(x.start_date.slice(5)) + (x.start_date !== x.end_date ? ' ~ ' + asEsc(x.end_date.slice(5)) : '') + '</span></div>' +
+            '<div class="emo-tags">' + tags + '</div>' +
+            (muted ? '' : '<div class="emo-imgs"><img class="kline-img" loading="lazy" src="' + sinaKlineImg(x.code) + '" onerror="retryImg(this)">' +
+            '<img class="kline-img min" loading="lazy" src="' + sinaMinImg(x.code) + '" onerror="retryImg(this)"></div>') + '</div>';      // 已取消关注的卡片不加载日K / 分时图
+    }
+    function emoRender(d) {
+        var body = document.getElementById('watchEmoBody'), cnt = document.getElementById('watchEmoCount');
+        if (!body) return;
+        emo.data = d;
+        var items = d.items || [];
+        // 新进来（含重新进入榜单）的票一律默认关注：已不在当前榜单里的取消记录清掉，并保存最新选择
+        if (items.length) {
+            var inList = {}, changed = false;
+            items.forEach(function (x) { inList[x.code] = 1; });
+            Object.keys(emoMuted).forEach(function (c) { if (!inList[c]) { delete emoMuted[c]; changed = true; } });
+            if (changed) emoPost({keep: Object.keys(inList)});
+        }
+        var mains = items.filter(function (x) { return x.board === '主'; }), gems = items.filter(function (x) { return x.board !== '主'; });
+        if (cnt) cnt.textContent = items.length + ' 只 · 主板 ' + mains.length + ' · 创/科 ' + gems.length;
+        // 点击卡片的左右切换顺序 = 页面顺序（主板关注 → 主板取消 → 创科关注 → 创科取消）
+        var parts = [], order = [];
+        [['main', '主板 · 近30日4连板（10cm）', mains], ['gem', '创业板 / 科创板 · 近30日2连板（20cm）', gems]].forEach(function (p) {
+            var on = p[2].filter(function (x) { return !emoMuted[x.code]; }), off = p[2].filter(function (x) { return emoMuted[x.code]; });
+            parts.push({k: p[0], title: p[1], on: on, off: off});
+            on.concat(off).forEach(function (x) { order.push({name: x.name, code: x.code}); });
+        });
+        emo.navs = [order];
+        if (!items.length) { body.innerHTML = '<div class="as-none">近30个交易日暂无符合条件的股票。</div>'; return; }
+        var n = 0;
+        body.innerHTML = parts.map(function (p) {
+            if (!p.on.length && !p.off.length) return '';
+            var h = '<div class="emo-part emo-part-' + p.k + '"><div class="emo-part-title">' + asEsc(p.title) + ' <span>' + p.on.length + ' 只关注' + (p.off.length ? ' · ' + p.off.length + ' 只已取消' : '') + '</span></div>';
+            h += '<div class="emo-grid">' + p.on.map(function (x) { return emoCard(x, 0, n++); }).join('') + '</div>';
+            if (p.off.length) h += '<div class="emo-off-title">已取消关注 · ' + p.off.length + '（点 ☐ 恢复）</div><div class="emo-grid">' + p.off.map(function (x) { return emoCard(x, 0, n++); }).join('') + '</div>';
+            return h + '</div>';
+        }).join('');
+    }
+    window.watchEmoNav = function () { return emo.navs[0] || []; };
+    window.watchLoadEmo = function (force) {
+        return Promise.all([
+            fetch('/api/emotion_group?_t=' + Date.now()).then(function (r) { return r.json(); }),
+            fetch('/api/emo_muted?_t=' + Date.now()).then(function (r) { return r.json(); }).catch(function () { return null; })
+        ]).then(function (arr) {
+            var d = arr[0];
+            if (arr[1] && arr[1].muted) emoMuted = arr[1].muted;
+            var sig = JSON.stringify([(d.items || []).map(function (x) { return [x.code, x.gap, x.streak, x.cur_pct]; }), Object.keys(emoMuted).sort()]);
+            if (!force && sig === emo.sig) return;        // 数据没变不重绘，避免 K线 / 分时图每 30s 重新加载
+            emo.sig = sig;
+            emoRender(d);
+        }).catch(function (e) { console.error('刷新情绪报团失败:', e); });
+    };
     window.watchToggleReverse = function () {
         var wrap = document.getElementById('watchReverseBody'), arrow = document.getElementById('watchReverseArrow');
         if (!wrap) return;
@@ -1012,6 +1107,7 @@
                 watchRefreshTrajectory();
                 watchRefreshIndices();
                 watchLoadReverse();
+        watchLoadEmo();
             }).catch(function (e) { finish('❌ 请求失败: ' + e, false); });
         }
         fetch('/api/refresh_latest?start=1&_t=' + Date.now()).then(function (r) { return r.json(); })
@@ -1029,12 +1125,13 @@
         if (window.watchSqTick) watchSqTick();
         if (window.watchSlotTick) watchSlotTick();
         watchLoadReverse();
+        watchLoadEmo();
         var modal = document.getElementById('tmmThemeKlineModal');
         if (modal && modal.classList.contains('active') && typeof refreshTmmThemeKlines === 'function') refreshTmmThemeKlines();
     }
 
     // ===== 悬浮导航（毛玻璃）：各章节快速跳转 + 滚动高亮当前章节 =====
-    var NAV_ITEMS = [['watchIndexSection', '大盘'], ['twWindStrengthSection', '板块强度'], ['watchReverseSection', '反推关注'],
+    var NAV_ITEMS = [['watchIndexSection', '大盘'], ['twWindStrengthSection', '板块强度'], ['watchEmoSection', '情绪报团'], ['watchReverseSection', '反推关注'],
         ['watchDeclineSection', '跌幅'], ['watchSlotSection', '竞价报告'], ['twLtTrajectorySection', '涨停轨迹'],
         ['watchPromoSection', '晋级'], ['watchZtClassSection', '涨停分类'], ['watchYd20Section', '涨停与20cm']];
     window.watchFloatNavShow = function (on) {
@@ -1094,6 +1191,7 @@
         watchRefreshTrajectory();
         watchRefreshIndices();
         watchLoadReverse();
+        watchLoadEmo();
         setInterval(tick, REFRESH_MS);
         document.addEventListener('visibilitychange', function () { if (!document.hidden) tick(); });
     }

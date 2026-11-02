@@ -81,7 +81,7 @@ function watchRenderTimeline(twsData, boxId, searchMode) {
         axis += '<span class="tws-tl-tick" style="left:' + (mpos[mi] / AXIS_LEN * 100).toFixed(2) + '%">' + marks[mi] + '</span>';
     }
     axis += '<span class="tws-tl-lunch" style="left:' + (125 / AXIS_LEN * 100).toFixed(2) + '%;width:' + (15 / AXIS_LEN * 100).toFixed(2) + '%">午休</span>';
-    var h = '<div id="' + boxId + '" class="tws-tl-box"><div class="tws-summary-sec-head">' + (histDay ? '⏱ 涨停时间轴 · ' + histDay.date + '（历史）' : '⏱ 今日涨停时间轴（9:25~15:00）') + '<button class="wz-tl-sq" onclick="watchOpenStockQuery()" title="个股查询">🔍 个股查询</button></div>';
+    var h = '<div id="' + boxId + '" class="tws-tl-box"><div class="tws-summary-sec-head">' + (histDay ? '⏱ 涨停时间轴 · ' + histDay.date + '（历史）' : '⏱ 今日涨停时间轴（9:25~15:00）') + '<button class="wz-tl-sq" onclick="watchOpenStockQuery()" title="个股查询">🔍 个股查询</button><button class="wz-tl-sq wz-tl-sa" onclick="watchOpenStrongArb()" title="今日20cm强势套利">⚡ 强势套利</button></div>';
     h += '<div class="tws-tl-scroll"><div class="tws-timeline" style="min-width:' + MIN_W + 'px">';
     h += '<div class="tws-tl-axis">' + axis + '</div>';
     for (var li = 0; li < lanes.length; li++) {
@@ -289,8 +289,8 @@ function watchThemeKlineBtn(tag, c) {
             '\x27)" title="查看 ' + _kplEsc(c.latest.slice(5)) + ' 涨停 / 大涨 / 涨幅>2% 股票的K线走势（' + hits.length + ' 只）">📈 K线走势</button>';
     }
     if (yd.length) {
-        h += '<button type="button" class="ms-tp-kline-btn lt-yd-btn" onclick="event.stopPropagation();watchJumpYd20(' + c.idx[tag] +
-            ')" title="跳到页面底部「那些异动的涨停与20cm」：该题材近20个交易日涨停过的主板 / 大涨过的创业板、科创板股票（' + yd.length + ' 只）">🔥 异动涨停/20cm</button>';
+        h += '<button type="button" class="ms-tp-kline-btn lt-yd-btn" onclick="event.stopPropagation();watchOpenStrongArb(' + c.idx[tag] +
+            ')" title="跳到「强势套利」页的该题材：今日创 / 科强势套利 + 近20个交易日大涨过的创业板、科创板股票（' + yd.length + ' 只）">🔥 异动涨停/20cm</button>';
     }
     return h + '</div>';
 }
@@ -383,6 +383,18 @@ function watchRebalanceRef() {
     });
 }
 
+/* 最近一次有效涨幅：盘中刷新间隙服务端偶尔不带实时涨幅，沿用上一次的数值（新数据到达即覆盖），绝不显示「待收盘」。 */
+function watchLastPct(code, v) {
+    var ok = function(x) { return x !== null && x !== undefined && x !== '' && isFinite(Number(x)); };
+    var m = window._watchLastPctMap = window._watchLastPctMap || {};
+    if (ok(v)) { m[code] = Number(v); return m[code]; }
+    var q = (window._watchQuoteCache || {})[code];
+    if (q && ok(q.change_pct)) { m[code] = Number(q.change_pct); return m[code]; }
+    var l = (window._watchLiveQuotes || {})[code];
+    if (ok(l)) return Number(l);
+    return ok(m[code]) ? m[code] : null;
+}
+
 /* 实时涨幅轮询（分叉自主页面 _ltTrajectoryPollLivePct）：逻辑不变，额外把拿到的实时涨幅记下并触发参考列重新分栏。 */
 function watchPollLivePct() {
     if (_ltTrajectoryLivePctBusy) return;
@@ -473,14 +485,18 @@ function watchThemeSummary(tag, c, bodyId) {
         var tl = c.todayLimit[code];
         if (!tl) return '';
         var tm = (tl.first_time && tl.first_time < 999999) ? '<i class="lt-th-time">' + _kplLevelFormatTime(tl.first_time) + '</i>' : '';
-        var pct = tl.close_pending ? '<b class="lt-change-pending' + liveAttrs(code) + '">待收盘</b>'
+        var lp = tl.close_pending ? watchLastPct(code, tl.cur_pct) : null;
+        var pct = tl.close_pending ? (lp === null ? '<b class="lt-change-flat' + liveAttrs(code) + '">--</b>' : '<b class="' + pcls(lp) + liveAttrs(code) + '">' + fmt(lp) + '</b>')
             : (tl.close_pct === null || tl.close_pct === undefined ? '' : '<b class="' + pcls(tl.close_pct) + '">' + fmt(tl.close_pct) + '</b>');
         return tm + pct;
     }
     function baseResult(s) {
         var tl = c.todayLimit[s.code];
         if (tl) return limitInfo(s.code) + '<em class="lt-th-up">' + (s.is_surge ? '涨停' : '晋级' + (tl.lianban >= 2 ? tl.lianban + '板' : '')) + '</em>';
-        if (s.close_pending) return '<b class="lt-change-pending' + liveAttrs(s.code) + '">待收盘</b>';
+        if (s.close_pending) {
+            var bp = watchLastPct(s.code, s.cur_pct);
+            return bp === null ? '<b class="lt-change-flat' + liveAttrs(s.code) + '">--</b>' : '<b class="' + pcls(bp) + liveAttrs(s.code) + '">' + fmt(bp) + '</b>';
+        }
         return '<b class="' + pcls(s.close_pct) + '">' + fmt(s.close_pct) + '</b>';
     }
     var html = '';
@@ -596,6 +612,9 @@ function watchRenderTrajectory(data, bodyId) {
     sortedTags.forEach(function(t, i) { sumCtx.idx[t] = i; });
     window._watchSortedTags = sortedTags.slice();
     window._watchYd20 = data.yd20 || {};
+    window._watchStrong20 = data.strong20 || null;
+    window._watchTrajData = data;
+    window._watchStrength = data.strength || null;
     Object.keys(referenceByTag).forEach(function(t) { (referenceByTag[t] || []).forEach(function(x) { sumCtx.refLimit[x.code] = 1; sumCtx.refAll[x.code] = 1; }); });
     Object.keys(refSurgeByTag).forEach(function(t) { (refSurgeByTag[t] || []).forEach(function(x) { sumCtx.refAll[x.code] = 1; }); });
     window._watchTodayLimit = sumCtx.todayLimit;
@@ -770,10 +789,10 @@ function watchRenderTrajectory(data, bodyId) {
                         var qc = (window._watchQuoteCache || {})[sCode] || {};
                         var hasNum = function(v) { return v !== null && v !== undefined && v !== '' && isFinite(Number(v)); };
                         var openVal = hasNum(s.open_pct) ? s.open_pct : (s.close_pending && hasNum(qc.open_pct) ? qc.open_pct : null);
-                        var liveVal = !s.close_pending ? s.close_pct : (hasNum(s.cur_pct) ? s.cur_pct : (hasNum(qc.change_pct) ? qc.change_pct : null));
+                        var liveVal = watchLastPct(sCode, !s.close_pending ? s.close_pct : s.cur_pct);
                         var openText = fmtPct(openVal);
-                        var closeText = (s.close_pending && !hasNum(liveVal)) ? '待收盘' : fmtPct(liveVal);
-                        var closeClass = (s.close_pending && !hasNum(liveVal)) ? 'lt-change-pending' : pctClass(liveVal);
+                        var closeText = fmtPct(liveVal);
+                        var closeClass = pctClass(liveVal);
                         var priceDate = col.isReference ? dates[0] : d;
                         var openPending = s.close_pending && !hasNum(s.open_pct);
                         var liveOpenAttrs = openPending ? ' lt-trajectory-live-open" data-code="' + _kplEsc(sCode) + '" data-date="' + _kplEsc(priceDate) : '';

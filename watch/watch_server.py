@@ -24,6 +24,7 @@ WATCH_CERT / WATCH_KEY（TLS 证书与私钥；默认找 watch/certs/server.crt 
 """
 import gzip
 import hashlib
+import json
 import os
 import re
 import ssl
@@ -48,7 +49,7 @@ CERT_FILE = os.environ.get('WATCH_CERT') or os.path.join(_CERT_DIR, 'server.crt'
 KEY_FILE = os.environ.get('WATCH_KEY') or os.path.join(_CERT_DIR, 'server.key')
 
 PAGE_TTL = 30                      # 主页面 HTML 缓存秒数（页面是静态模板，数据走 /api）
-ASSETS = ('watch.css', 'watch_traj.js', 'watch.js')   # 注入顺序：样式 → 轨迹渲染器 → 页面组装
+ASSETS = ('watch.css', 'watch_traj.js', 'watch_strong.js', 'watch.js')   # 注入顺序：样式 → 轨迹渲染器 → 页面组装
 GZIP_MIN = 1200                    # 小于该字节数不压缩
 
 _session = requests.Session()
@@ -159,8 +160,8 @@ def _build_page(html):
         else:
             _log('警告：未找到「%s」启动请求，已保留（请检查 _TRIM_RULES）' % label)
     html = re.sub(r'<title>.*?</title>', '<title>实时盯盘</title>', html, count=1, flags=re.S)
-    inject = '<style>%s</style><script>%s</script><script>%s</script>' % (
-        _read_asset('watch.css'), _read_asset('watch_traj.js'), _read_asset('watch.js'))
+    inject = '<style>%s</style><script>%s</script><script>%s</script><script>%s</script>' % (
+        _read_asset('watch.css'), _read_asset('watch_traj.js'), _read_asset('watch_strong.js'), _read_asset('watch.js'))
     idx = html.rfind('</body>')
     return html[:idx] + inject + html[idx:] if idx >= 0 else html + inject
 
@@ -340,6 +341,19 @@ class Handler(BaseHTTPRequestHandler):
         e = _cache.get(path, query)
         self._send(e['status'], e['raw'], e['ctype'], gz=e['gz'])
 
+    def _emo_muted(self):
+        """情绪报团「取消关注」名单：保存在服务器（watch/state/emo_muted.json），各设备共用。
+        GET → {"muted": {code: 毫秒时间戳}}；POST {"code","muted"} 单只设置 / {"keep":[codes]} 清掉不在名单里的记录。"""
+        if self.command in ('GET', 'HEAD'):
+            return self._send(200, json.dumps({'muted': _emo_store.read()}, ensure_ascii=False).encode('utf-8'), 'application/json; charset=utf-8')
+        length = int(self.headers.get('Content-Length') or 0)
+        try:
+            req = json.loads(self.rfile.read(length).decode('utf-8') or '{}')
+        except ValueError:
+            return self._send(400, b'bad json', 'text/plain; charset=utf-8')
+        data = _emo_store.update(req)
+        return self._send(200, json.dumps({'muted': data}, ensure_ascii=False).encode('utf-8'), 'application/json; charset=utf-8')
+
     def _proxy(self):
         body = None
         length = int(self.headers.get('Content-Length') or 0)
@@ -370,6 +384,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static(path)
             if path == '/healthz':
                 return self._send(200, b'ok', 'text/plain; charset=utf-8')
+            if path == '/api/emo_muted':
+                return self._emo_muted()
             if path == '/api/refresh_latest':
                 _cache.entries.clear()     # 手动更新后丢弃热点接口缓存，下一次请求回源取新数据
                 return self._proxy()
@@ -384,6 +400,46 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     do_GET = do_POST = do_HEAD = _handle
+
+
+class _EmoStore:
+    """情绪报团取消关注名单的服务器端存储（JSON 文件，原子写）。"""
+    def __init__(self, path):
+        self.path = path
+        self.lock = threading.Lock()
+
+    def _load(self):
+        try:
+            with open(self.path, 'r', encoding='utf-8') as fh:
+                d = json.load(fh)
+            return d if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def read(self):
+        with self.lock:
+            return self._load()
+
+    def update(self, req):
+        with self.lock:
+            d = self._load()
+            code = str(req.get('code') or '').strip()
+            if code:
+                if req.get('muted'):
+                    d[code] = int(time.time() * 1000)
+                else:
+                    d.pop(code, None)
+            if isinstance(req.get('keep'), list):
+                keep = {str(c) for c in req['keep']}
+                d = {c: t for c, t in d.items() if c in keep}
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+            with open(self.path + '.tmp', 'w', encoding='utf-8') as fh:
+                json.dump(d, fh, ensure_ascii=False)
+            os.replace(self.path + '.tmp', self.path)
+            return d
+
+
+_emo_store = _EmoStore(os.path.join(_HERE, 'state', 'emo_muted.json'))
 
 
 class _Server(ThreadingHTTPServer):
