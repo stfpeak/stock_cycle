@@ -7460,7 +7460,12 @@ def _sq_ladder_get(day=None):
     try:
         with open(path, encoding='utf-8') as f:
             got = json.load(f)
-        if got.get('_ver') == _SQ_LADDER_VER and got.get('_mtime') == mt:
+        # 当日涨停原始数据在落盘之后才补齐（收盘后更新）时，旧落盘文件是空的/不全的：以 zt_data 文件时间为准重算
+        try:
+            ztm = os.stat(os.path.join(os.path.dirname(_SQ_LADDER_DIR), 'zt_data', day + '.json')).st_mtime
+        except OSError:
+            ztm = 0
+        if got.get('_ver') == _SQ_LADDER_VER and got.get('_mtime') == mt and ztm <= os.stat(path).st_mtime:
             got.update(dates=dates, live=live, is_live=False)
             return got
     except Exception:
@@ -10507,6 +10512,9 @@ def _build_theme_map(ndays=40):
             'first_time': (today_ft.get(sc, 999999) or 999999) if is_today else 999999,
             'p1': (round(p1, 2) if p1 is not None else None),
             'p2': (round(p2, 2) if p2 is not None else None),
+            # 最近一根K线日期及其前一根的涨跌幅：非交易时段（盘前/收盘后/休市）「今日」= 最近交易日，昨日 = 它的前一交易日
+            'p1_date': (_keys[-1] if _keys else None),
+            'p_prev': (round(bd[_keys[-2]], 2) if len(_keys) >= 2 and bd[_keys[-2]] is not None else None),
             'quote_change_pct': today_quotes.get(sc, {}).get('change_pct'),
             'prev_close': today_quotes.get(sc, {}).get('prev_close'),
             'src': last_record.get('_src', ''),

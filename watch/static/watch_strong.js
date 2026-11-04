@@ -222,6 +222,51 @@ function watchSaJumpName(name) {
     if (el) el.scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 
+
+/* ===== 轻量 DOM 对账：把 next 的子节点“就地”同步到 old 上 =====
+ * 带 key 的节点（id / 股票代码）按 key 匹配、必要时移动位置；其余按位置匹配；标签不同才替换。
+ * 图片只改 src（浏览器会继续显示旧图直到新图到位，不会先消失）。 */
+function saKey(n) {
+    if (n.nodeType !== 1) return '';
+    if (n.id) return 'i:' + n.id;
+    var c = n.getAttribute('data-c') || n.getAttribute('data-code');
+    if (c) return 'c:' + c + ':' + n.className;
+    if (n.classList.contains('concept-kline-cell')) { var e = n.querySelector('.sk-code'); if (e) return 'k:' + e.textContent; }
+    return '';
+}
+function saPatch(a, b) {
+    if (a.nodeType !== 1) { if (a.nodeValue !== b.nodeValue) a.nodeValue = b.nodeValue; return; }
+    var i, at;
+    for (i = a.attributes.length - 1; i >= 0; i--) {
+        at = a.attributes[i].name;
+        if (!b.hasAttribute(at) && !(at === 'style' && a.classList.contains('concept-kline-grid'))) a.removeAttribute(at);
+    }
+    for (i = 0; i < b.attributes.length; i++) {
+        at = b.attributes[i];
+        if (at.name === 'style' && a.classList.contains('concept-kline-grid')) continue;      // 用户调过的列数不被刷新冲掉
+        if (a.getAttribute(at.name) !== at.value) a.setAttribute(at.name, at.value);
+    }
+    if (a.nodeName !== 'IMG') saMorph(a, b);
+}
+function saMorph(oldP, newP) {
+    var keyed = {}, olds = [].slice.call(oldP.childNodes), news = [].slice.call(newP.childNodes), pos = 0;
+    olds.forEach(function(n) { var k = saKey(n); if (k && !keyed[k]) keyed[k] = n; });
+    news.forEach(function(nn) {
+        var k = saKey(nn), cur = oldP.childNodes[pos], hit = k ? keyed[k] : null;
+        if (hit && hit.parentNode === oldP) {
+            delete keyed[k];
+            if (hit !== cur) oldP.insertBefore(hit, cur || null);
+            saPatch(hit, nn);
+        } else if (!k && cur && !saKey(cur) && cur.nodeType === nn.nodeType && cur.nodeName === nn.nodeName) {
+            saPatch(cur, nn);
+        } else {
+            oldP.insertBefore(nn, cur || null);
+        }
+        pos++;
+    });
+    while (oldP.childNodes.length > pos) oldP.removeChild(oldP.lastChild);
+}
+
 function watchSaRender() {
     var root = document.getElementById('watchSaRoot'), body = document.getElementById('watchSaBody');
     if (!root || !body || root.style.display === 'none') return;
@@ -347,14 +392,18 @@ function watchSaRender() {
         var tt = nav && nav.querySelector('.lt-theme-nav-title small'); if (tt) tt.textContent = '已按强度得分排序 · 数字 = 涨停数 / 大涨数 / 强度分';
     }
     var sc = window.scrollY;
-    body.innerHTML = '';
-    body.insertAdjacentHTML('beforeend', saStrengthHtml(window._watchStrength, order));
-    body.insertAdjacentHTML('beforeend', saTopHtml(s, order));
-    if (nav) body.appendChild(nav);
+    // 先在离屏容器里拼出新内容，再与页面上现有 DOM 对账（saMorph）：股票没变的卡片只更新里面的文字 / 图，框本身不动；
+    // 新增 / 减少的卡片才增删，避免整页重建引起 K线 / 分时图消失再出现导致的页面跳动。
+    var next = document.createElement('div');
+    next.insertAdjacentHTML('beforeend', saStrengthHtml(window._watchStrength, order));
+    next.insertAdjacentHTML('beforeend', saTopHtml(s, order));
+    if (nav) next.appendChild(nav);
     var wrap = document.createElement('div');
     wrap.className = 'lt-trajectory-wrapper';
     wrap.appendChild(table);
-    body.appendChild(wrap);
+    next.appendChild(wrap);
+    if (!body._saDone) { body.innerHTML = ''; body._saDone = true; }
+    saMorph(body, next);
     window.scrollTo(0, sc);
     var ts = document.getElementById('watchSaTs');
     if (ts) ts.textContent = '更新 ' + (typeof fmtClock === 'function' ? fmtClock(typeof bjNow === 'function' ? bjNow() : new Date()) : new Date().toLocaleTimeString());
@@ -372,8 +421,8 @@ function watchOpenStrongArb(idx) {
         root = document.createElement('div');
         root.id = 'watchSaRoot';
         root.innerHTML = '<div class="sq2-bar"><button class="sq2-back" onclick="watchCloseStrongArb()">← 返回实时盯盘</button><h2>⚡ 今日20cm强势套利 <small id="watchSaCount"></small> <small id="watchSaTs"></small></h2>' +
-            '<span class="sa-legend">涨停 ≥19.5% · 强势SSS 现价&gt;10% · 强势 最高价突破7%且现价&gt;5% · 关注 现价&gt;3%</span></div><div id="watchSaBody"></div>' +
-            '<button type="button" class="sa-fab" onclick="window.scrollTo({top: 0, behavior: \'smooth\'})" title="回到顶部（题材导航）">↑ 回导航</button>';
+            '<span class="sa-legend">涨停 ≥19.5% · 强势SSS 现价&gt;10% · 强势 最高价突破7%且现价&gt;5% · 关注 现价&gt;3%</span>' + watchGoBtns('T') + '</div><div id="watchSaBody"></div>' +
+            '<button type="button" class="sa-fab" onclick="window.scrollTo({top: 0, behavior: \'smooth\'})" title="回到顶部">↑ 回顶部</button>';
         document.querySelector('.container').appendChild(root);
     }
     if (main.style.display !== 'none') _saScrollY = window.scrollY;

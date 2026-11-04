@@ -49,7 +49,7 @@ CERT_FILE = os.environ.get('WATCH_CERT') or os.path.join(_CERT_DIR, 'server.crt'
 KEY_FILE = os.environ.get('WATCH_KEY') or os.path.join(_CERT_DIR, 'server.key')
 
 PAGE_TTL = 30                      # 主页面 HTML 缓存秒数（页面是静态模板，数据走 /api）
-ASSETS = ('watch.css', 'watch_traj.js', 'watch_strong.js', 'watch.js')   # 注入顺序：样式 → 轨迹渲染器 → 页面组装
+ASSETS = ('watch.css', 'watch_traj.js', 'watch_strong.js', 'watch_n.js', 'watch.js')   # 注入顺序：样式 → 轨迹渲染器 → 页面组装
 GZIP_MIN = 1200                    # 小于该字节数不压缩
 
 _session = requests.Session()
@@ -160,8 +160,8 @@ def _build_page(html):
         else:
             _log('警告：未找到「%s」启动请求，已保留（请检查 _TRIM_RULES）' % label)
     html = re.sub(r'<title>.*?</title>', '<title>实时盯盘</title>', html, count=1, flags=re.S)
-    inject = '<style>%s</style><script>%s</script><script>%s</script><script>%s</script>' % (
-        _read_asset('watch.css'), _read_asset('watch_traj.js'), _read_asset('watch_strong.js'), _read_asset('watch.js'))
+    inject = '<style>%s</style><script>%s</script><script>%s</script><script>%s</script><script>%s</script>' % (
+        _read_asset('watch.css'), _read_asset('watch_traj.js'), _read_asset('watch_strong.js'), _read_asset('watch_n.js'), _read_asset('watch.js'))
     idx = html.rfind('</body>')
     return html[:idx] + inject + html[idx:] if idx >= 0 else html + inject
 

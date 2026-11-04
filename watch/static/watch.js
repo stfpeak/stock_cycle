@@ -282,8 +282,7 @@
         el.id = 'watchSqRoot';
         el.style.display = 'none';
         el.innerHTML =
-            '<div class="sq2-bar"><button class="sq2-back" data-sq-back="1">← 返回实时盯盘</button><h2>🔍 个股查询</h2></div>' +
-            '<div class="sq2-sec sq2-ladder" id="sq2Ladder"></div>' +
+            '<div class="sq2-bar"><button class="sq2-back" data-sq-back="1">← 返回实时盯盘</button><h2>🔍 个股查询</h2>' + watchGoBtns('S') + '</div>' +
             '<div class="sq2-search"><div class="sq2-box"><svg class="sq2-ico" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>' +
             '<input id="sq2Input" type="text" placeholder="输入股票名称 / 代码，或板块、tags 名称，如 华电辽能、600396、固态电池" autocomplete="off" spellcheck="false">' +
             '<button class="sq2-go" data-sq-go="1">搜索</button></div><div class="sq2-sug" id="sq2Sug"></div></div>' +
@@ -291,8 +290,10 @@
             '<div class="sq2-sec" id="sq2ThemeSec"><div class="sq2-title">题材复盘 <small>点击任意板块 / tags 名称（连板天梯、板块列、标签行均可），在此展示该题材近1个月的涨停节奏</small>' +
             '<button class="sq2-tagfilter-btn" data-sq-tagpanel="1" title="只按 tags 过滤涨停节奏里的股票">🏷 tags 过滤</button></div>' +
             '<div class="sq2-chiprow" id="sq2ThemeChips"></div><div class="sq2-tagpanel" id="sq2TagPanel" style="display:none"></div><div id="sq2ThemeBody"><div class="sq2-none sq2-theme-hint">未选择题材。点击上方任意板块 / tags 名称即可查看。</div></div></div>';
+        el.insertAdjacentHTML('beforeend', '<button type="button" class="sa-fab" onclick="window.scrollTo({top: 0, behavior: \'smooth\'})" title="回到顶部">↑ 回顶部</button>');
         el.addEventListener('click', sqOnClick);
         document.querySelector('.container').appendChild(el);
+        setTimeout(function () { sqFillFreq(); }, 0);
         var inp = el.querySelector('#sq2Input');
         inp.addEventListener('input', function () {
             clearTimeout(sq.timer);
@@ -500,6 +501,50 @@
                 '<div class="sq2-ldates">' + (d.dates || []).slice().reverse().map(function (x) {
                     return '<span class="sq2-dchip' + (x === d.date ? ' on' : '') + (x === d.live ? ' live' : '') + '" data-sq-ldate="' + sqEsc(x) + '">' + sqEsc(x.slice(5)) + (x === d.live ? '<i>盘中</i>' : '') + '</span>';
                 }).join('') + '</div><div class="sq2-ladder-rows">';
+            var freqFrom = h.length;
+            // 2 板及以上股票的「板块 / tags」频度统计：哪些题材属性在连板里最集中（= 可能在发酵）
+            (function () {
+                var pc = {}, tc = {}, total = 0;
+                (d.levels || []).forEach(function (l) {
+                    if (l.level < 2) return;
+                    (l.current || []).forEach(function (x) {
+                        total++;
+                        (x.plates || []).forEach(function (n) { var e = pc[n] || (pc[n] = {n: 0, hi: 0, names: []}); e.n++; e.hi = Math.max(e.hi, l.level); e.names.push(x.name + '(' + l.level + '板)'); });
+                        (x.tags || []).forEach(function (n) { var e = tc[n] || (tc[n] = {n: 0, hi: 0, names: []}); e.n++; e.hi = Math.max(e.hi, l.level); e.names.push(x.name + '(' + l.level + '板)'); });
+                    });
+                });
+                var chips = function (m, kind) {
+                    var arr = Object.keys(m).map(function (k) { return [k, m[k]]; });
+                    arr.sort(function (a, b) { return b[1].n - a[1].n || b[1].hi - a[1].hi; });
+                    return arr.filter(function (a) { return a[1].n >= 2; }).slice(0, 24).map(function (a) {
+                        return '<span class="sq2-freq-chip ' + (kind === 'plate' ? 'p' : 't') + '" data-sq-theme="' + kind + ':' + sqEsc(a[0]) + '" title="' + sqEsc(a[1].names.join('、')) + '">' + sqEsc(a[0]) + '<b>' + a[1].n + '</b><i>' + a[1].hi + '板</i></span>';
+                    }).join('') || '<span class="sq2-none">无出现 ≥2 次的属性</span>';
+                };
+                if (total) h += '<div class="sq2-freq"><div class="sq2-freq-title">🔬 2板及以上 属性频度统计 <small>' + total + ' 只连板股 · 数字 = 出现只数，红字 = 该属性里最高板 · 仅列出现 ≥2 次 · 悬停看股票，点击看题材复盘</small></div>' +
+                    '<div class="sq2-freq-row"><span class="sq2-freq-lab">板块</span>' + chips(pc, 'plate') + '</div>' +
+                    '<div class="sq2-freq-row"><span class="sq2-freq-lab">tags</span>' + chips(tc, 'tag') + '</div></div>';
+            })();
+            // 首板股票的「板块 / tags」频度统计：今日首板集中在哪些题材属性（首板扩散方向）
+            (function () {
+                var pc = {}, tc = {}, total = 0;
+                (d.first || []).forEach(function (g) {
+                    (g.stocks || []).forEach(function (x) {
+                        total++;
+                        (x.plates || []).forEach(function (n) { var e = pc[n] || (pc[n] = {n: 0, names: []}); e.n++; e.names.push(x.name); });
+                        (x.tags || []).forEach(function (n) { var e = tc[n] || (tc[n] = {n: 0, names: []}); e.n++; e.names.push(x.name); });
+                    });
+                });
+                var chips = function (m, kind) {
+                    var arr = Object.keys(m).map(function (k) { return [k, m[k]]; });
+                    arr.sort(function (a, b) { return b[1].n - a[1].n; });
+                    return arr.filter(function (a) { return a[1].n >= 2; }).slice(0, 60).map(function (a) {
+                        return '<span class="sq2-freq-chip ' + (kind === 'plate' ? 'p' : 't') + '" data-sq-theme="' + kind + ':' + sqEsc(a[0]) + '" title="' + sqEsc(a[1].names.join('、')) + '">' + sqEsc(a[0]) + '<b>' + a[1].n + '</b></span>';
+                    }).join('') || '<span class="sq2-none">无出现 ≥2 次的属性</span>';
+                };
+                if (total) h += '<div class="sq2-freq"><div class="sq2-freq-title">🌱 首板 属性频度统计 <small>' + total + ' 只首板股 · 数字 = 出现只数 · 仅列出现 ≥2 次 · 悬停看股票，点击看题材复盘</small></div>' +
+                    '<div class="sq2-freq-row"><span class="sq2-freq-lab">板块</span>' + chips(pc, 'plate') + '</div>' +
+                    '<div class="sq2-freq-row"><span class="sq2-freq-lab">tags</span>' + chips(tc, 'tag') + '</div></div>';
+            })();
             (d.levels || []).forEach(function (l) {
                 h += '<div class="tws-ladder-row"><div class="tws-ladder-level sc-lb' + (l.level >= 5 ? 'high' : l.level) + '">' + l.level + '板</div><div class="tws-ladder-groups">';
                 if (l.current.length) h += '<div class="tws-ladder-group"><span class="tws-ladder-label">' + (d.is_live ? '今日' : '当日') + l.level + '板</span><span class="tws-ladder-chips">' + l.current.map(function (x) { return sqLadderChip(x, false, l.level); }).join('') + '</span></div>';
@@ -514,6 +559,9 @@
                 });
                 h += '</div></div>';
             }
+            // 两个频度统计同时拷一份到个股查询页（替换「输入股票名称或代码开始查询」提示）
+            sq.freqHtml = h.slice(freqFrom);
+            sqFillFreq();
             // K线走势：直接复用 6688「今日涨停」的 K线卡片（题材筛选/列数/放大/刷新），数据=本日天梯里全部涨停股（连板 + 首板），按封板时间排序
             var zhits = [], zseen = {};
             var addHit = function (x) {
@@ -538,13 +586,37 @@
             if (!box.querySelector('.sq2-ladder-rows')) box.innerHTML = '<div class="sq2-title">📈 连板涨停表现</div><div class="sq2-none">加载失败，稍后自动重试 <a href="javascript:void(0)" data-sq-ldate="' + sqEsc(date || '') + '">立即重试</a></div>';
         });
     }
-    window.watchSqTick = function () {              // 30s 总时钟：个股查询页可见时，盘中实时日（或上次加载失败的日期）刷新天梯
-        if (!sq.root || sq.root.style.display === 'none') return;
+    // 「连板涨停表现」已挪到 N 页最上方：由 N 页调用挂载（天梯 DOM / 点击 / 刷新逻辑仍是这里这一份）
+    window.watchMountLadder = function (host) {
+        var box = document.getElementById('sq2Ladder');
+        if (!box) {
+            box = document.createElement('div');
+            box.className = 'sq2-sec sq2-ladder';
+            box.id = 'sq2Ladder';
+        }
+        if (box.parentNode !== host) { host.appendChild(box); box.style.display = ''; }
+        if (!host._sqBound) {
+            host._sqBound = true;
+            host.addEventListener('click', function (e) {
+                var th = e.target.closest && e.target.closest('[data-sq-theme]');
+                if (th && window.watchNBeforeTheme) { window.watchNBeforeTheme(); window.watchOpenStockQuery(''); return sqThemeShow(th.getAttribute('data-sq-theme'), true); }
+                sqOnClick(e);
+            });
+        }
+        sqLoadLadder(sq.ladderDate && sq.ladderDate !== sq.ladderLive ? sq.ladderDate : null);
+    };
+    function sqFillFreq() {
+        var r = document.getElementById('sq2Result');
+        if (r && sq.freqHtml && (r.querySelector('.lt-trajectory-loading') || r.querySelector('.sq2-freq-copy'))) r.innerHTML = '<div class="sq2-freq-copy">' + sq.freqHtml + '</div>';
+    }
+    window.watchSqTick = function () {              // 30s 总时钟：个股查询页或 N 页可见时，盘中实时日（或上次加载失败的日期）刷新天梯
+        var nr = document.getElementById('watchNRoot');
+        if ((!sq.root || sq.root.style.display === 'none') && (!nr || nr.style.display === 'none')) return;
         if (sq.ladderLive) sqLoadLadder(sq.ladderLive, true);
         else if (sq.ladderFailed !== undefined) sqLoadLadder(sq.ladderFailed || null, true);
     };
     function sqMarkTheme() {
-        [].forEach.call(document.querySelectorAll('#watchSqRoot [data-sq-theme]'), function (c) {
+        [].forEach.call(document.querySelectorAll('#watchSqRoot [data-sq-theme], #watchNRoot [data-sq-theme]'), function (c) {
             c.classList.toggle('on', !!sqTheme.key && c.getAttribute('data-sq-theme') === sqTheme.key);
         });
     }
@@ -629,7 +701,28 @@
         }
         _kplTradeDates = d.trade_dates || [];
         var secId = 'sq' + (++sqTheme.seq);
-        var html = _kplRenderRhythmGrid(shown, secId, secId + '-rhythm');
+        // 排序：连板股在上（原规则：最近连板日 → 最高板）；没有连板的（首板 / 大涨）先看最近一天，同一天涨停时间早的在前
+        var ftMap = {};
+        shown.forEach(function (r) { var ft = Number(r.first_time); if (r.date && r.stock_code && ft && ft < 999999) ftMap[r.date + r.stock_code] = ft; });
+        var origSort = window._kplSortRows;
+        window._kplSortRows = function (list) {
+            var ft = function (x) { return ftMap[x.lastDate + x.code] || 999999; };
+            list.sort(function (a, b) {
+                if (a.hasChain !== b.hasChain) return a.hasChain ? -1 : 1;
+                if (a.hasChain) {
+                    var ae = a.chainEndDate || '', be = b.chainEndDate || '';
+                    if (ae !== be) return ae > be ? -1 : 1;
+                    if (a.maxBoard !== b.maxBoard) return b.maxBoard - a.maxBoard;
+                } else {
+                    if (a.lastDate !== b.lastDate) return a.lastDate > b.lastDate ? -1 : 1;
+                    if (ft(a) !== ft(b)) return ft(a) - ft(b);
+                    if (a.maxBoard !== b.maxBoard) return b.maxBoard - a.maxBoard;
+                }
+                return a.name < b.name ? -1 : (a.name > b.name ? 1 : 0);
+            });
+        };
+        var html;
+        try { html = _kplRenderRhythmGrid(shown, secId, secId + '-rhythm'); } finally { window._kplSortRows = origSort; }
         var nStocks = {}; shown.forEach(function (r) { nStocks[r.stock_code] = 1; });
         body.innerHTML = '<div class="sq2-theme-head"><b>' + (sqTheme.kind === 'plate' ? '板块' : 'tag') + '：' + sqEsc(sqTheme.name) + '</b><span>匹配股票 ' + (d.members || 0) + ' 只（KPL 板块+标签+简介 · 不含ST）· 近1个月' +
             (sel.length ? ' · 已按 tags 过滤：' + sel.map(sqEsc).join('、') + '（' + Object.keys(nStocks).length + ' 只）' : '') + '</span></div>' +
@@ -670,7 +763,12 @@
         watchFloatNavShow(false);
         sq.root.style.display = '';
         window.scrollTo(0, 0);
-        sqLoadLadder(sq.ladderDate && sq.ladderDate !== sq.ladderLive ? sq.ladderDate : null);
+        if (!document.getElementById('sq2Ladder')) {
+            var hb = document.createElement('div');
+            hb.className = 'sq2-sec sq2-ladder'; hb.id = 'sq2Ladder'; hb.style.display = 'none';
+            sq.root.appendChild(hb);
+            sqLoadLadder(null);
+        } else sqFillFreq();
         if (query) { document.getElementById('sq2Input').value = query; sqSearch(query); }
         else document.getElementById('sq2Input').focus();
     };
