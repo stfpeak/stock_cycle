@@ -83,7 +83,7 @@ function watchRenderTimeline(twsData, boxId, searchMode) {
         axis += '<span class="tws-tl-tick" style="left:' + (mpos[mi] / AXIS_LEN * 100).toFixed(2) + '%">' + marks[mi] + '</span>';
     }
     axis += '<span class="tws-tl-lunch" style="left:' + (125 / AXIS_LEN * 100).toFixed(2) + '%;width:' + (15 / AXIS_LEN * 100).toFixed(2) + '%">午休</span>';
-    var h = '<div id="' + boxId + '" class="tws-tl-box"><div class="tws-summary-sec-head">' + (histDay ? '⏱ 涨停时间轴 · ' + histDay.date + '（历史）' : '⏱ 今日涨停时间轴（9:25~15:00）') + '<button class="wz-tl-sq wz-tl-ss" onclick="watchOpenStockQuery()" title="个股查询">S</button><button class="wz-tl-sq wz-tl-sn" onclick="watchOpenN()" title="涨停板数量 TOP10 + 进攻/防御/其他板块">N</button><button class="wz-tl-sq wz-tl-sa" onclick="watchOpenStrongArb()" title="今日20cm强势套利">T</button></div>';
+    var h = '<div id="' + boxId + '" class="tws-tl-box"><div class="tws-summary-sec-head">' + (histDay ? '⏱ 涨停时间轴 · ' + histDay.date + '（历史）' : '⏱ 今日涨停时间轴（9:25~15:00）') + '<button class="wz-tl-sq wz-tl-ss" onclick="watchOpenStockQuery()" title="个股查询">S</button><button class="wz-tl-sq wz-tl-sn" onclick="watchOpenN()" title="涨停板数量 TOP10 + 进攻/防御/其他板块">N</button><button class="wz-tl-sq wz-tl-sa" onclick="watchOpenStrongArb()" title="今日20cm强势套利">T</button><button class="wz-tl-sq wz-tl-sr" onclick="watchOpenR()" title="脉冲 / 异动（手机版）">R</button></div>';
     h += '<div class="tws-tl-scroll"><div class="tws-timeline" style="min-width:' + MIN_W + 'px">';
     h += '<div class="tws-tl-axis">' + axis + '</div>';
     for (var li = 0; li < lanes.length; li++) {

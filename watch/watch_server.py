@@ -49,7 +49,7 @@ CERT_FILE = os.environ.get('WATCH_CERT') or os.path.join(_CERT_DIR, 'server.crt'
 KEY_FILE = os.environ.get('WATCH_KEY') or os.path.join(_CERT_DIR, 'server.key')
 
 PAGE_TTL = 30                      # 主页面 HTML 缓存秒数（页面是静态模板，数据走 /api）
-ASSETS = ('watch.css', 'watch_traj.js', 'watch_strong.js', 'watch_n.js', 'watch.js')   # 注入顺序：样式 → 轨迹渲染器 → 页面组装
+ASSETS = ('watch.css', 'watch_traj.js', 'watch_strong.js', 'watch_n.js', 'watch_r.js', 'watch.js')   # 注入顺序：样式 → 轨迹渲染器 → 页面组装
 GZIP_MIN = 1200                    # 小于该字节数不压缩
 
 _session = requests.Session()
@@ -160,10 +160,45 @@ def _build_page(html):
         else:
             _log('警告：未找到「%s」启动请求，已保留（请检查 _TRIM_RULES）' % label)
     html = re.sub(r'<title>.*?</title>', '<title>实时盯盘</title>', html, count=1, flags=re.S)
-    inject = '<style>%s</style><script>%s</script><script>%s</script><script>%s</script><script>%s</script>' % (
-        _read_asset('watch.css'), _read_asset('watch_traj.js'), _read_asset('watch_strong.js'), _read_asset('watch_n.js'), _read_asset('watch.js'))
+    inject = '<style>%s</style><script>%s</script><script>%s</script><script>%s</script><script>%s</script><script>%s</script>' % (
+        _read_asset('watch.css'), _read_asset('watch_traj.js'), _read_asset('watch_strong.js'), _read_asset('watch_n.js'), _read_asset('watch_r.js'), _read_asset('watch.js'))
+    # 首屏闪现主页面：原页 2MB，浏览器边解析边渲染，等到末尾注入的 watch.css 才隐藏原内容。
+    # 这里把隐藏规则提前放进 <head>，并在 <body> 起始放一个加载占位（watch.js 启动后移除）。
+    early = '<style>.container > h1,.container > .tabs,.container > p.sub,.container > .tab-content{display:none !important}' \
+            '#watchSplash{position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;' \
+            'background:#0b111e;color:#8fa3c4;font:600 15px -apple-system,sans-serif;letter-spacing:.08em}</style>'
+    html = html.replace('</head>', early + '</head>', 1)
+    html = re.sub(r'(<body[^>]*>)', r'\1<div id="watchSplash">加载中…</div>', html, count=1)
     idx = html.rfind('</body>')
-    return html[:idx] + inject + html[idx:] if idx >= 0 else html + inject
+    html = html[:idx] + inject + html[idx:] if idx >= 0 else html + inject
+    return _externalize(html)
+
+
+_BLOBS = {}                         # 外置资源：文件名 → {raw, gz, ctype}（内容哈希命名，浏览器长期缓存）
+_BLOCK_RE = re.compile(r'<(script|style)>(.*?)</\1>', re.S)
+EXTERNALIZE_MIN = 20000
+
+
+def _externalize(html):
+    """把页面里 >20KB 的内联 <script>/<style> 抽成带内容哈希的外链：大头（约 1.4MB）只在首次访问时下载，
+    之后浏览器直接读缓存（immutable），再打开页面只需拉一个很小的 HTML + 数据接口。"""
+    def repl(m):
+        tag, body = m.group(1), m.group(2)
+        if len(body) < EXTERNALIZE_MIN:
+            return m.group(0)
+        ext = 'js' if tag == 'script' else 'css'
+        if tag == 'script':
+            body = body.replace('<\\/script', '</script')
+        else:
+            body = body.replace('<\\/style', '</style')
+        name = '%s.%s' % (hashlib.md5(body.encode('utf-8')).hexdigest()[:16], ext)
+        if name not in _BLOBS:
+            raw = body.encode('utf-8')
+            _BLOBS[name] = {'raw': raw, 'gz': _gzip(raw, 9),
+                            'ctype': ('application/javascript' if ext == 'js' else 'text/css') + '; charset=utf-8'}
+        return '<script src="%s_x/%s"></script>' % (STATIC_PREFIX, name) if tag == 'script' \
+            else '<link rel="stylesheet" href="%s_x/%s">' % (STATIC_PREFIX, name)
+    return _BLOCK_RE.sub(repl, html)
 
 
 def get_page():
@@ -378,8 +413,13 @@ class Handler(BaseHTTPRequestHandler):
         parts = urlsplit(self.path)
         path = parts.path
         try:
-            if path in ('/', '/index.html') and self.command in ('GET', 'HEAD'):
+            if path in ('/', '/index.html', '/r') and self.command in ('GET', 'HEAD'):
                 return self._index()
+            if path.startswith(STATIC_PREFIX + '_x/') and self.command in ('GET', 'HEAD'):
+                b = _BLOBS.get(os.path.basename(path))
+                if not b:
+                    return self._send(404, b'not found', 'text/plain; charset=utf-8')
+                return self._send(200, b['raw'], b['ctype'], gz=b['gz'], cache='public, max-age=31536000, immutable')
             if path.startswith(STATIC_PREFIX) and self.command in ('GET', 'HEAD'):
                 return self._static(path)
             if path == '/healthz':

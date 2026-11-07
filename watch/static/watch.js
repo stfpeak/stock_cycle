@@ -1278,7 +1278,14 @@
         back.title = '回到表格上方的题材导航';
         back.onclick = function () { watchGoNav(); };
         document.body.appendChild(back);
+        var ROnly = location.pathname === '/r';          // 独立链接 /r：直接进入手机脉冲页，不加载盯盘主页的重型数据
+        window.__watchROnly = ROnly;
         renderShell(root);
+        if (ROnly) {
+            watchOpenR();
+            var sp0 = document.getElementById('watchSplash'); if (sp0) sp0.remove();
+            return;
+        }
         buildFloatNav();
         currentTab = 'themewind';     // 主页面各轮询以此判断是否在可见页签
         _themeWindLoaded = true;
@@ -1292,6 +1299,9 @@
         watchLoadEmo();
         setInterval(tick, REFRESH_MS);
         document.addEventListener('visibilitychange', function () { if (!document.hidden) tick(); });
+        var sp = document.getElementById('watchSplash'); if (sp) sp.remove();
+        var go = (location.search.match(/[?&]go=([NTSR])/) || [])[1];      // 从 /r 页跳 N/T/S：/?go=N
+        if (go) setTimeout(function () { watchGoPage(go); }, 300);
     }
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

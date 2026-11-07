@@ -144,15 +144,15 @@
 
     // S / N / T 三页顶部右侧互跳按钮
     window.watchGoBtns = function (me) {
-        var d = {S: ['ss', '个股查询'], N: ['sn', '涨停板数量 TOP10 + 板块'], T: ['sa', '今日20cm强势套利']};
-        return '<span class="wz-go">' + ['S', 'N', 'T'].filter(function (k) { return k !== me; }).map(function (k) {
+        var d = {S: ['ss', '个股查询'], N: ['sn', '涨停板数量 TOP10 + 板块'], T: ['sa', '今日20cm强势套利'], R: ['sr', '脉冲 / 异动（手机版）']};
+        return '<span class="wz-go">' + ['S', 'N', 'T', 'R'].filter(function (k) { return k !== me; }).map(function (k) {
             return '<button type="button" class="wz-tl-sq wz-tl-' + d[k][0] + '" onclick="watchGoPage(\'' + k + '\')" title="跳转到：' + d[k][1] + '">' + k + '</button>';
         }).join('') + '</span>';
     };
     window.watchGoPage = function (to) {
-        ['watchSqRoot', 'watchNRoot', 'watchSaRoot'].forEach(function (id) { var e = document.getElementById(id); if (e) e.style.display = 'none'; });
+        ['watchSqRoot', 'watchNRoot', 'watchSaRoot', 'watchRRoot'].forEach(function (id) { var e = document.getElementById(id); if (e) e.style.display = 'none'; });
         clearInterval(nTimer);
-        if (to === 'S') watchOpenStockQuery(); else if (to === 'N') watchOpenN(); else watchOpenStrongArb();
+        if (to === 'S') watchOpenStockQuery(); else if (to === 'N') watchOpenN(); else if (to === 'R') watchOpenR(); else watchOpenStrongArb();
     };
 
     function box() { return document.getElementById('kplThemeMapContainer'); }
