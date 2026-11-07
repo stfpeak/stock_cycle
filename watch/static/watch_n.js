@@ -166,6 +166,7 @@
         _tmmCaptureCollapsed(c);
         c.innerHTML = _tmmRender(data);
         _tmmRestoreCollapsed(c);
+        if (nPending && Date.now() - nPending.ts < 8000) setTimeout(function () { if (nPending) nJump(nPending.name); }, 50);   // 刚打开时数据重绘会改变布局：重绘后再对一次位置
         var ts = document.getElementById('watchNTs');
         if (ts) ts.textContent = '更新 ' + new Date().toLocaleTimeString('zh-CN', {hour12: false, timeZone: 'Asia/Shanghai'});
     }
@@ -185,6 +186,35 @@
 
     window.watchNReload = function () { load(true); };
 
+    // 跳到 N 页中的某个题材：先找细分题材行（.tmm-theme-chip 名称精确 → 包含），再找板块卡片（.tmm-plate-link）；展开被折叠的卡片并闪一下
+    function nJump(name) {
+        var c = box(); if (!c || !name) return false;
+        var chips = [].slice.call(c.querySelectorAll('.tmm-theme-chip')), plates = [].slice.call(c.querySelectorAll('.tmm-plate-link'));
+        var txt = function (el) { var n = el.firstChild; return ((n && n.nodeType === 3 ? n.textContent : el.textContent) || '').trim(); };
+        var hit = null, kind = '';
+        chips.some(function (e) { if (txt(e) === name) { hit = e; kind = 'row'; return true; } });
+        if (!hit) plates.some(function (e) { if (txt(e) === name) { hit = e; kind = 'card'; return true; } });
+        if (!hit) chips.some(function (e) { var t = txt(e); if (t && (t.indexOf(name) >= 0 || name.indexOf(t) >= 0)) { hit = e; kind = 'row'; return true; } });
+        if (!hit) plates.some(function (e) { var t = txt(e); if (t && (t.indexOf(name) >= 0 || name.indexOf(t) >= 0)) { hit = e; kind = 'card'; return true; } });
+        if (!hit) return false;
+        var card = hit.closest('.tmm-card'); if (card) card.classList.remove('collapsed');
+        var target = kind === 'row' ? (hit.closest('.tmm-theme-row') || hit) : (card || hit);
+        target.scrollIntoView({behavior: 'smooth', block: 'center'});
+        target.classList.remove('lt-row-flash'); void target.offsetWidth; target.classList.add('lt-row-flash');
+        return true;
+    }
+    var nPending = null;
+    window.watchNJumpTheme = function (name) {
+        nPending = {name: name, ts: Date.now()};
+        var tries = 0, iv = setInterval(function () {           // 等 N 页数据渲染出来（首次打开要拉 /api/theme_map）
+            tries++;
+            if (!nPending || nPending.name !== name) return clearInterval(iv);
+            if (box() && box().querySelector('.tmm-card') && Date.now() - nPending.ts > 700) {
+                clearInterval(iv);
+                if (!nJump(name)) { nPending = null; if (typeof showToast === 'function') showToast('N 页中暂无题材「' + name + '」（可能被过滤条件隐藏，或今日无涨停）', 'info'); }
+            } else if (tries > 40) { clearInterval(iv); nPending = null; }
+        }, 200);
+    };
     window.watchOpenN = function () {
         var main = document.getElementById('watchRoot'), back = document.getElementById('watchBackNav');
         var root = document.getElementById('watchNRoot');

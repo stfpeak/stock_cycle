@@ -8771,6 +8771,128 @@ def _strong20_t7_fetch(date_fmt, code, pre_close, need10=False):
     return t7, t10
 
 
+# ===== 涨停类型（盯盘页时间轴 / 属性脉冲徽标）：一字 / 直线 / 换手 =====
+# 一字：首封 <= 9:25:30（竞价封板）。
+# 直线：非一字，且「封板那一分钟及之前共 5 根 1 分钟线」内，最低价 → 涨停价 的拉升幅度 >= 0.6 × 涨停幅度
+#       （主板 10% ≥ 6 个点；创/科 20% ≥ 12 个点；北 30% ≥ 18 个点）——盘中突然短时间从几个点直线拉到涨停。
+# 换手：其余。分钟线来自新浪（约 4 个交易日内），结果按 (日期, 代码) 永久缓存并落盘 data/seal_types/YYYY-MM-DD.json。
+_SEAL_RISE_RATIO = 0.6
+_SEAL_WINDOW_BARS = 5
+_seal_lock = threading.Lock()
+_seal_mem = {}            # date_fmt -> {code: {...}}
+_seal_bars_cache = {}     # code -> (ts, bars)
+
+
+def _seal_file(date_fmt):
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'seal_types', date_fmt + '.json')
+
+
+def _seal_day_map(date_fmt):
+    with _seal_lock:
+        m = _seal_mem.get(date_fmt)
+        if m is None:
+            try:
+                with open(_seal_file(date_fmt), 'r', encoding='utf-8') as f:
+                    m = json.load(f)
+            except Exception:
+                m = {}
+            _seal_mem[date_fmt] = m
+        return m
+
+
+def _seal_save(date_fmt):
+    try:
+        fp = _seal_file(date_fmt)
+        os.makedirs(os.path.dirname(fp), exist_ok=True)
+        with _seal_lock:
+            data = dict(_seal_mem.get(date_fmt) or {})
+        tmp = fp + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, fp)
+    except Exception as exc:
+        print('[涨停类型] 落盘失败: %s' % str(exc)[:80])
+
+
+def _seal_bars(code):
+    now = time.time()
+    got = _seal_bars_cache.get(code)
+    if got and now - got[0] < 45:
+        return got[1]
+    if code[:1] == '6':
+        sym = 'sh' + code
+    elif code[:1] in ('0', '3'):
+        sym = 'sz' + code
+    else:
+        return []
+    r = requests.get('https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20x=/CN_MarketDataService.getKLineData',
+                     params={'symbol': sym, 'scale': 1, 'ma': 'no', 'datalen': 1023},
+                     headers={'User-Agent': 'Mozilla/5.0', 'Referer': 'https://finance.sina.com.cn'}, timeout=8)
+    m = re.search(r'\((\[.*\])\)', r.text, re.S)
+    bars = json.loads(m.group(1)) if m else []
+    _seal_bars_cache[code] = (now, bars)
+    return bars
+
+
+def _seal_classify(date_fmt, code, ft):
+    """返回 {'k': 'yz'|'zx'|'hs', ...}；分钟线暂不可得返回 None（不缓存，下次再试）。"""
+    ft = int(ft or 0)
+    if 0 < ft <= 92530:
+        return {'k': 'yz', 'ft': ft}
+    lim = 30.0 if code[:1] in ('4', '8', '9') else (20.0 if code[:2] in ('30', '68') else 10.0)
+    day = [b for b in _seal_bars(code) if str(b.get('day') or '').startswith(date_fmt)]
+    if not day:
+        return None
+    try:
+        hi = [round(float(b['high']), 2) for b in day]
+        lo = [round(float(b['low']), 2) for b in day]
+    except Exception:
+        return None
+    limit_px = max(hi)
+    pre = limit_px / (1 + lim / 100.0)
+    i = next((k for k, h in enumerate(hi) if h >= limit_px - 0.001), None)
+    if i is None or pre <= 0:
+        return None
+    w0 = max(0, i - _SEAL_WINDOW_BARS + 1)
+    j = min(range(w0, i + 1), key=lambda k: (lo[k], -k))
+    rise = (limit_px - lo[j]) / pre * 100.0
+    frm = (lo[j] / pre - 1) * 100.0
+    k = 'zx' if rise >= lim * _SEAL_RISE_RATIO else 'hs'
+    return {'k': k, 'ft': ft, 'rise': round(rise, 1), 'from': round(frm, 1), 'lim': lim,
+            'mins': i - j + 1, 't': str(day[i].get('day') or '')[11:16]}
+
+
+def _seal_types(date_fmt, items):
+    """items: [(code, first_time)]；已算出的直接取缓存，其余并发取分钟线分类。返回 {code: info}。"""
+    dm = _seal_day_map(date_fmt)
+    out, todo = {}, []
+    for code, ft in items:
+        v = dm.get(code)
+        if v is not None and v.get('ft') == ft:
+            out[code] = v
+        else:
+            todo.append((code, ft))
+    if todo:
+        def run(it):
+            try:
+                return it[0], it[1], _seal_classify(date_fmt, it[0], it[1])
+            except Exception as exc:
+                print('[涨停类型] %s 失败: %s' % (it[0], str(exc)[:80]))
+                return it[0], it[1], None
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            res = list(ex.map(run, todo))
+        changed = False
+        for code, ft, v in res:
+            if v is not None:
+                with _seal_lock:
+                    dm[code] = v
+                out[code] = v
+                changed = True
+        if changed:
+            _seal_save(date_fmt)
+    return out
+
+
 def _trajectory_strong20(dates_fmt, tag_totals, stocks_by_tag=None, surge_by_tag=None):
     """返回 {'date','live','total','tags':{tag:[{code,name,board,price,open,pre_close,pct,high,high_pct,t7,level}]}}，
     每个题材内按现价涨幅从高到低；level ∈ 涨停 / 强势SSS / 强势 / 关注 / ''。"""
@@ -44387,6 +44509,23 @@ class Handler(BaseHTTPRequestHandler):
             # 不让手机首次打开盯盘时触发行情网络请求。
             day = query.get('date', [''])[0].strip().replace('-', '')
             self._respond_json(_auction_load_report(day), cors_headers)
+
+        elif path == '/api/zt_seal_types':
+            # 涨停类型（一字/直线/换手）：?date=YYYY-MM-DD&items=code:first_time,code:first_time...
+            try:
+                day = query.get('date', [''])[0].strip()
+                items = []
+                for part in query.get('items', [''])[0].split(','):
+                    if ':' in part:
+                        c, t = part.split(':', 1)
+                        if re.match(r'^\d{6}$', c) and t.isdigit():
+                            items.append((c, int(t)))
+                if not re.match(r'^\d{4}-\d{2}-\d{2}$', day) or not items:
+                    self._respond_json({'error': 'bad args', 'types': {}}, cors_headers)
+                else:
+                    self._respond_json({'date': day, 'types': _seal_types(day, items[:300])}, cors_headers)
+            except Exception as e:
+                self._respond_json({'error': str(e), 'types': {}}, cors_headers)
 
         elif path == '/api/zt_timeline_day':
             # 盯盘页「今日涨停时间轴」下方的日期切换：某个历史交易日的涨停时间轴（KPL 日文件）

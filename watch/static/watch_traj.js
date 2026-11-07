@@ -11,6 +11,8 @@ function watchRenderTimeline(twsData, boxId, searchMode) {
     var isMain = boxId === 'twTimelineBox' && !searchMode;     // 盯盘主页的时间轴：下方带日期切换
     var histDay = isMain && _watchTl.dsel && _watchTl.dayData && _watchTl.dayData.date === _watchTl.dsel ? _watchTl.dayData : null;
     if (histDay) twsData = histDay;
+    _watchSeal.on = isMain && !!(twsData && twsData.timeline && twsData.timeline.length);
+    if (_watchSeal.on) { var _sd = twsData.date; if (_watchSeal.date !== _sd) { _watchSeal.date = _sd; _watchSeal.map = {}; _watchSeal.tried = {}; } setTimeout(function () { watchSealEnsure(twsData.timeline, _sd); }, 0); }
     var AXIS_START = 25;   // 轴起点 = 距9:00分钟数（9:25）：A股9:25集合竞价后才产生涨停，9:00~9:25无数据，轴从9:25开始
     var LUNCH_CUT = 75;   // 午休 11:30~13:00 共 90 分钟，压缩成 15 分钟（少 75 分钟空白）
     var AXIS_LEN = 360 - AXIS_START - LUNCH_CUT;   // 轴总长 = 9:25~15:00 去掉压缩掉的午休 = 260 分钟（minute 基准距 9:00，150=11:30，240=13:00）
@@ -50,7 +52,7 @@ function watchRenderTimeline(twsData, boxId, searchMode) {
             } else {
                 mc = (it.theme || '').length * 10;
             }
-            var tw = (it.name || '').length * 13 + mc + 52;
+            var tw = (it.name || '').length * 13 + mc + 52 + 26;
             if (tw > w) w = tw;
         }
         return w;
@@ -101,9 +103,232 @@ function watchRenderTimeline(twsData, boxId, searchMode) {
     var cnt = {};
     tl.forEach(function (it) { watchTlTags(it).forEach(function (t) { cnt[t] = (cnt[t] || 0) + 1; }); });
     _watchTl.tags = Object.keys(cnt).sort(function (a2, b2) { return cnt[b2] - cnt[a2] || (a2 < b2 ? -1 : 1); }).map(function (t) { return {t: t, n: cnt[t]}; });
-    h += '</div>' + (isMain ? watchTlDatesHtml() : '') + '<div class="wtl-bar" id="watchTlBar">' + watchTlBarInner() + '</div></div>';
+    h += '</div>' + (isMain ? watchTlDatesHtml() + watchPulseHtml(tl, MIN_W, AXIS_START, AXIS_LEN, eff, marks, mpos, !histDay && !!twsData && twsData.trading === true) : '') + '<div class="wtl-bar" id="watchTlBar">' + watchTlBarInner() + '</div></div>';
     setTimeout(watchTlApply, 0);
+    if (isMain) { _watchFloat.curDate = twsData && twsData.date || ''; setTimeout(watchFloatRender, 0); }
     return h;
+}
+
+
+/* ===== 属性脉冲（今日涨停时间轴下方、日期条之后、标签筛选之前）=====
+ * 定义：同一属性（板块 / 题材标签，取 watchTlTags）的涨停股，按首次涨停时间排序，相邻两只间隔 ≤10 分钟（午休不计）就连成一条脉冲，
+ *      一条脉冲至少 2 只；间隔 >10 分钟则另起；之后零散的同属性单只涨停以空心点显示（说明该属性今天已出现过脉冲）。
+ * 图示：每个属性一行；横轴与时间轴同刻度（压缩午休）；脉冲 = 实心色条（长度=持续时长），条上圆点=每只票的涨停时刻，
+ *      条上方标「N只·时长」，条下方竖排支持票（名称+时刻，连板数加徽标）；空心点 = 单只。 */
+var _watchPulseMax = 10;
+/* 涨停类型：一字 = 首封 ≤9:25:30（竞价封板）；直线 = 非一字、封板那一分钟及之前 5 分钟内从最低点拉到涨停的幅度 ≥ 0.6×涨停幅度
+ * （主板≥6 点 / 创科≥12 点），即盘中突然短时间直线拉板；换手 = 其余。分钟线判定在服务端 /api/zt_seal_types（新浪 1 分钟线，约 4 个交易日内，结果落盘）。
+ * 异步取回前只显示「一字」，取回后整体重绘；取不到（太久远的日期）的股票不标类型。 */
+var _watchSeal = {date: '', map: {}, tried: {}, on: false};
+function watchSealEnsure(tl, date) {
+    var S = _watchSeal;
+    if (S.date !== date) { S.date = date; S.map = {}; S.tried = {}; }
+    var need = [], now = Date.now();
+    (tl || []).forEach(function (it) {
+        var ft = it.first_time;
+        if (!it.code || !ft || ft >= 999999 || S.map[it.code]) return;
+        if (S.tried[it.code] && now - S.tried[it.code] < 60000) return;
+        S.tried[it.code] = now; need.push(it.code + ':' + ft);
+    });
+    if (!need.length || !date) return;
+    fetch('/api/zt_seal_types?date=' + encodeURIComponent(date) + '&items=' + need.join(',')).then(function (r) { return r.json(); }).then(function (x) {
+        if (S.date !== date || !x || !x.types) return;
+        var n = 0; Object.keys(x.types).forEach(function (c) { if (!S.map[c]) { S.map[c] = x.types[c]; n++; } });
+        if (n) watchTlRerender();
+    }).catch(function () {});
+}
+function watchSealBadge(code, sec) {
+    var S = _watchSeal, e = S.on && S.map[code], k = e ? e.k : (sec != null && sec <= 33930 ? 'yz' : null);
+    if (!k) return '';
+    var t = {yz: '一字', zx: '直线', hs: '换手'}[k];
+    var tip = k === 'yz' ? '一字板：集合竞价封板'
+        : k === 'zx' ? '直线板：' + e.t + ' 封板，封板前 ' + e.mins + ' 分钟内从 ' + (e.from > 0 ? '+' : '') + e.from + '% 直线拉升 ' + e.rise + ' 个点到涨停'
+        : '换手板：封板前 5 分钟拉升 ' + (e ? e.rise : '?') + ' 个点，未达直线板标准（≥' + (e ? (e.lim * 0.6).toFixed(0) : '?') + ' 点）';
+    return '<u class="wpl-sl wpl-sl-' + k + '" title="' + tip + '">' + t + '</u>';
+}
+function watchPulseSec(it) {
+    var ft = it && it.first_time, s;
+    if (ft && ft >= 91500) s = Math.floor(ft / 10000) * 3600 + (Math.floor(ft / 100) % 100) * 60 + ft % 100;
+    else if (it && it.minute != null && it.minute < 9999) s = (540 + it.minute) * 60;
+    else return null;
+    return s;
+}
+function watchPulseFmt(s) { var m = Math.floor(s / 60); return (m < 600 ? '0' : '') + Math.floor(m / 60) + ':' + ('0' + (m % 60)).slice(-2); }
+function watchPulseCompute(tl) {
+    var by = {};
+    tl.forEach(function (it) {
+        var s = watchPulseSec(it); if (s == null) return;
+        var ts = s >= 46800 ? s - 5400 : (s > 41400 ? 41400 : s);          // 交易秒：13:00 起扣掉 90 分钟午休
+        var st = {code: it.code, name: it.name, s: s, ts: ts, lb: it.lianban || 0};
+        watchTlTags(it).forEach(function (t) { (by[t] = by[t] || []).push(st); });
+    });
+    var rows = [];
+    Object.keys(by).forEach(function (t) {
+        var arr = by[t].sort(function (a, b) { return a.ts - b.ts || (a.code < b.code ? -1 : 1); });
+        var seen = {}, list = arr.filter(function (x) { if (seen[x.code]) return false; seen[x.code] = 1; return true; });
+        var chains = [], cur = [];
+        list.forEach(function (x) {
+            if (cur.length && x.ts - cur[cur.length - 1].ts > 600) { chains.push(cur); cur = []; }
+            cur.push(x);
+        });
+        if (cur.length) chains.push(cur);
+        var pulses = chains.filter(function (c) { return c.length >= 2; }), singles = [];
+        chains.forEach(function (c) { if (c.length < 2) singles.push(c[0]); });
+        if (!pulses.length) return;
+        var n = 0; pulses.forEach(function (c) { n += c.length; });
+        rows.push({t: t, pulses: pulses, singles: singles, n: n, first: pulses[0][0].ts, big: Math.max.apply(null, pulses.map(function (c) { return c.length; }))});
+    });
+    rows.sort(function (a, b) { return a.first - b.first || b.big - a.big || b.n - a.n; });
+    return rows;
+}
+function watchPulseNowTs() {           // 北京时间当前「交易秒」（午休折叠）；非交易时段返回 null
+    var d = new Date(Date.now() + 8 * 3600000), s = d.getUTCHours() * 3600 + d.getUTCMinutes() * 60 + d.getUTCSeconds();
+    if (s < 33300 || s > 54000 || (s > 41400 && s < 46800)) return null;
+    return s >= 46800 ? s - 5400 : s;
+}
+function watchPulseHtml(tl, MIN_W, AXIS_START, AXIS_LEN, eff, marks, mpos, live) {
+    var rows = watchPulseCompute(tl), esc = function (x) { return String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); };
+    var nowTs = live ? watchPulseNowTs() : null;
+    var nPulse = 0, nHot = 0, nLive = 0;
+    rows.forEach(function (r) {
+        r.pulses.forEach(function (c) {
+            nPulse++; if (c.length >= 3) nHot++;
+            c.live = nowTs != null && nowTs - c[c.length - 1].ts <= 600; if (c.live) nLive++;
+        });
+    });
+    var open = !!_watchTl.pulseOpen;
+    var hue_ = function (t) { var h = 0; for (var k = 0; k < t.length; k++) h = (h * 31 + t.charCodeAt(k)) % 360; return h; };
+    var hots = [];                                     // 题材异动（脉冲≥3 只）：每个属性只取第一次出现的那条，按开始时间排
+    _watchTl.hot = {};
+    rows.forEach(function (r) {
+        r.pulses.forEach(function (c) { if (c.length >= 3) _watchTl.hot[r.t] = true; });
+        for (var k = 0; k < r.pulses.length; k++) if (r.pulses[k].length >= 3) { hots.push({t: r.t, c: r.pulses[k]}); break; }
+    });
+    hots.sort(function (a, b) { return a.c[0].ts - b.c[0].ts; });
+    // 浮窗清单：各属性首次题材异动 ∪ 当前仍在进行中的题材异动（同一属性再次异动也要能看到），按开始时间排
+    var fl = hots.slice();
+    rows.forEach(function (r) { r.pulses.forEach(function (c) { if (c.length >= 3 && c.live && !fl.some(function (x) { return x.c === c; })) fl.push({t: r.t, c: c, again: true}); }); });
+    fl.sort(function (a, b) { return a.c[0].ts - b.c[0].ts; });
+    _watchFloat.list = fl.map(function (x) { return {t: x.t, t0: watchPulseFmt(x.c[0].s), t1: watchPulseFmt(x.c[x.c.length - 1].s), n: x.c.length, live: !!x.c.live, again: !!x.again, hue: hue_(x.t)}; });
+    _watchFloat.live = nowTs != null; _watchFloat.date = _watchFloat.curDate || '';
+    var hotbar = '<div class="wpl-hotbar"><b>🔥 题材异动<small>（脉冲≥3只，各属性首次，按时间；点票名看K线/分时）</small></b>' + (hots.length ? hots.map(function (x) {
+        var c = x.c, t0 = watchPulseFmt(c[0].s), t1 = watchPulseFmt(c[c.length - 1].s);
+        return '<div class="wpl-hrow"><span class="wpl-hc' + (c.live ? ' live' : '') + '" style="--c:hsl(' + hue_(x.t) + ',62%,52%)" data-t="' + esc(x.t) + '" onclick="watchPulsePick(this.getAttribute(\'data-t\'))" title="点击：时间轴只高亮该属性"><em>' + esc(x.t) + '</em>' +
+            '<span>' + (t0 === t1 ? t0 : t0 + '~' + t1) + '</span><i>' + c.length + '只</i></span>' +
+            c.map(function (z) {
+                var bd = watchBoardOf(z.code);
+                return '<span class="wpl-hs" data-code="' + esc(z.code) + '" data-name="' + esc(String(z.name).replace(/'/g, '')) + '" onclick="_twsSumOpenStock(this)" title="点击查看 ' + esc(z.name) + ' K线 / 分时"><u class="wpl-bd wpl-bd-' + bd + '">' + bd + '</u>' + esc(z.name) +
+                    (z.lb > 1 ? '<em>' + z.lb + '板</em>' : '') + '<small>' + watchPulseFmt(z.s) + '</small>' + watchSealBadge(z.code, z.s) + '</span>';
+            }).join('') + '</div>';
+    }).join('') : '<span class="wpl-hint">今日暂无</span>') + '</div>';
+    var head = '<div class="wpl-head" onclick="watchPulseOpen()"><b><span class="wpl-arrow">' + (open ? '▼' : '▶') + '</span> ⚡ 属性脉冲</b>' +
+        '<button class="wtl-btn' + (_watchFloat.closed ? '' : ' on') + '" onclick="event.stopPropagation();watchFloatToggle()" title="浮动跟随框：随页面滚动一直显示当前题材异动，可拖动">📌 跟随框' + (_watchFloat.closed ? '（已关，点此打开）' : '') + '</button>' +
+        '<span class="wpl-sum">' + rows.length + ' 个属性 · ' + nPulse + ' 条脉冲' + (nHot ? ' · <em class="wpl-hotn">🔥 ' + nHot + ' 条题材异动</em>' : '') + (nLive ? ' · <em class="wpl-livn">● ' + nLive + ' 条进行中</em>' : '') + '</span>' +
+        (open ? '<span class="wpl-hint">同属性（板块/标签）涨停股相邻 ≤10 分钟连成一条脉冲（≥2 只，午休不计）· 色条长度=持续时长 · 白点=各票涨停时刻，名称在点正下方 · ○ 空心=单只涨停（该属性当天已有脉冲）· 🔥=题材异动（一条脉冲 ≥3 只）· 涨停类型：一字（竞价封板）/ 直线（封板前 5 分钟内从低位直拉涨停，主板≥6 点、创科≥12 点）/ 换手 · 呼吸灯=盘中进行中（距最后一只 ≤10 分钟，仍可能续接）</span>' : '<span class="wpl-hint">点击展开</span>') + '</div>';
+    if (!open) return '<div class="wpl-box wpl-closed" id="watchPulseBox">' + head + hotbar + '</div>';
+    if (!rows.length) return '<div class="wpl-box" id="watchPulseBox">' + head + '<div class="wpl-empty">暂无属性脉冲</div></div>';
+    var total = rows.length, show = _watchTl.pulseAll ? rows : rows.slice(0, _watchPulseMax);
+    var px = function (s) { return (eff(s / 60 - 540 < 25 ? 25 : s / 60 - 540) - AXIS_START) / AXIS_LEN * MIN_W; };
+    var axis = '';
+    for (var i = 0; i < marks.length; i++) axis += '<span class="wpl-tick" style="left:' + (mpos[i] / AXIS_LEN * MIN_W).toFixed(0) + 'px">' + marks[i] + '</span>';
+    axis += '<span class="wpl-lunch" style="left:' + (125 / AXIS_LEN * MIN_W).toFixed(0) + 'px;width:' + (15 / AXIS_LEN * MIN_W).toFixed(0) + 'px"></span>';
+    var body = '<div class="wpl-row wpl-axis"><div class="wpl-lab"></div><div class="wpl-track" style="width:' + MIN_W + 'px">' + axis + '</div></div>';
+    var BAR_Y = 17, CH_Y = 32, CH_H = 31;
+    function chip(x, st, lvl, hollow, col) {          // 名称芯片：左缘对齐圆点（圆点中心 = 竖线 = 芯片左缘 + 6），竖线从条连到芯片
+        var bd = watchBoardOf(st.code);
+        return '<i class="wpl-stem" style="left:' + x.toFixed(0) + 'px;top:' + (BAR_Y + 6) + 'px;height:' + (CH_Y + lvl * CH_H - BAR_Y - 6) + 'px;--c:' + col + '"></i>' +
+            '<div class="wpl-chip" data-code="' + esc(st.code) + '" data-name="' + esc(String(st.name).replace(/'/g, '')) + '" onclick="_twsSumOpenStock(this)" title="点击查看 ' + esc(st.name) + ' K线 / 分时" style="left:' + (x - 6).toFixed(0) + 'px;top:' + (CH_Y + lvl * CH_H) + 'px;--c:' + col + '"><div class="wpl-c1"><u class="wpl-bd wpl-bd-' + bd + '">' + bd + '</u><span class="wpl-cn">' + esc(st.name) + '</span>' +
+            (st.lb > 1 ? '<em>' + st.lb + '板</em>' : '') + '</div><div class="wpl-c2">' + watchPulseFmt(st.s) + watchSealBadge(st.code, st.s) + '</div></div>';
+    }
+    show.forEach(function (r) {
+        var hue = 0; for (var ci = 0; ci < r.t.length; ci++) hue = (hue * 31 + r.t.charCodeAt(ci)) % 360;
+        var col = 'hsl(' + hue + ',62%,52%)';
+        var bars = '', items = [];
+        r.pulses.forEach(function (c) {
+            var x0 = px(c[0].s), x1 = px(c[c.length - 1].s), bw = Math.max(x1 - x0, 12), dur = Math.round((c[c.length - 1].ts - c[0].ts) / 60);
+            var hot = c.length >= 3, dots = '';
+            c.forEach(function (x) { var xx = px(x.s); dots += '<i class="wpl-dot" style="left:' + (xx - x0 + 6).toFixed(0) + 'px"></i>'; items.push({x: xx, st: x}); });
+            bars += '<div class="wpl-cap' + (hot ? ' hot' : '') + '" style="left:' + (x0 - 6).toFixed(0) + 'px;--c:' + col + '">' + (hot ? '🔥' : '') + c.length + '只 · ' + (dur ? dur + '分' : '同刻') + (c.live ? ' <b class="wpl-now">进行中</b>' : '') + '</div>' +
+                '<div class="wpl-bar2' + (hot ? ' hot' : '') + (c.live ? ' live' : '') + '" style="left:' + (x0 - 6).toFixed(0) + 'px;width:' + (bw + 12).toFixed(0) + 'px;--c:' + col + '" title="' +
+                esc(r.t + ' 脉冲 ' + watchPulseFmt(c[0].s) + '~' + watchPulseFmt(c[c.length - 1].s) + '：' + c.map(function (z) { return z.name; }).join('、')) + '">' + dots + '</div>';
+        });
+        r.singles.forEach(function (x) {
+            var xx = px(x.s); items.push({x: xx, st: x, one: true});
+            bars += '<i class="wpl-dot wpl-hol" style="left:' + (xx - 6).toFixed(0) + 'px;top:' + BAR_Y + 'px;--c:' + col + '" title="' + esc(r.t + ' · 单只 · ' + x.name + ' ' + watchPulseFmt(x.s)) + '"></i>';
+        });
+        items.sort(function (a, b) { return a.x - b.x || a.st.ts - b.st.ts; });
+        var lvRight = [], chips = '';
+        items.forEach(function (it) {
+            var w = Math.max(30 + it.st.name.length * 12 + (it.st.lb > 1 ? 28 : 0), 78), l = 0;
+            while (l < lvRight.length && it.x - 6 < lvRight[l] + 3) l++;
+            lvRight[l] = it.x - 6 + w;
+            chips += chip(it.x, it.st, l, it.one, col);
+        });
+        var th = CH_Y + Math.max(lvRight.length, 1) * CH_H + 2;
+        body += '<div class="wpl-row"><div class="wpl-lab" style="--c:' + col + '"><b data-t="' + esc(r.t) + '" onclick="watchPulsePick(this.getAttribute(\'data-t\'))" title="点击：在时间轴上只高亮该属性的票">' + esc(r.t) + '</b>' +
+            '<span>' + r.pulses.length + '次脉冲 · ' + r.n + '只</span><a data-t="' + esc(r.t) + '" onclick="watchPulseGoTraj(this.getAttribute(\'data-t\'))" title="跳转到下方「涨停原因标签轨迹」中该题材">轨迹 ↘</a>' +
+            '<div class="wpl-go"><button type="button" class="wpl-gb wpl-gb-n" data-t="' + esc(r.t) + '" onclick="watchPulseGoN(this.getAttribute(\'data-t\'))" title="在 N 页（涨停板数量 TOP10 + 板块）中定位该题材">N</button>' +
+            '<button type="button" class="wpl-gb wpl-gb-t" data-t="' + esc(r.t) + '" onclick="watchPulseGoT(this.getAttribute(\'data-t\'))" title="在 T 页（今日20cm强势套利）中定位该题材">T</button></div></div>' +
+            '<div class="wpl-track" style="width:' + MIN_W + 'px;height:' + th + 'px">' + bars + chips + '</div></div>';
+    });
+    var more = total > _watchPulseMax ? '<button class="wtl-btn" onclick="watchPulseToggle()">' + (_watchTl.pulseAll ? '收起' : '展开全部 ' + total + ' 个属性') + '</button>' : '';
+    return '<div class="wpl-box" id="watchPulseBox">' + head + hotbar + '<div class="tws-tl-scroll wpl-scroll"><div class="wpl-inner">' + body + '</div></div>' + more + '</div>';
+}
+
+/* ===== 浮动跟随框：题材异动（各属性首次 ∪ 当前进行中），只显示 属性 / 时间段 / 只数；进行中的呼吸灯；可拖动、可关闭；
+ * 默认打开，页面每次刷新都重新出现（关闭状态不持久化，位置持久化）；关闭后在「属性脉冲」标题行的「📌 跟随框」按钮重新打开；收盘后显示最终结果（无呼吸灯）。 */
+var _watchFloat = {list: [], live: false, closed: false, date: '', curDate: ''};
+function watchFloatToggle() { _watchFloat.closed = !_watchFloat.closed; if (_watchFloat.closed) { var e = document.getElementById('watchFloat'); if (e) e.remove(); } else watchFloatRender(); watchTlRerender(); }
+function watchFloatRender() {
+    var F = _watchFloat, el = document.getElementById('watchFloat');
+    if (F.closed) { if (el) el.remove(); return; }
+    var esc = function (x) { return String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;'); };
+    var nLive = F.list.filter(function (x) { return x.live; }).length;
+    var body = F.list.length ? F.list.map(function (x) {
+        return '<div class="wfl-it' + (x.live ? ' live' : '') + '" style="--c:hsl(' + x.hue + ',62%,52%)"><em>' + esc(x.t) + '</em><span>' + (x.t0 === x.t1 ? x.t0 : x.t0 + '~' + x.t1) + '</span><i>' + x.n + '只</i>' + (x.live ? '<b>进行中</b>' : '') + '</div>';
+    }).join('') : '<div class="wfl-empty">暂无题材异动（脉冲 ≥3 只）</div>';
+    var sub = (F.live ? (nLive ? '<b class="wfl-lv">● 当前 ' + nLive + ' 个异动进行中</b>' : '盘中 · 暂无进行中') : '最终结果') + (F.date ? ' · ' + F.date.slice(5) : '');
+    var html = '<div class="wfl-head" title="按住拖动换位置"><b>🔥 题材异动</b><span class="wfl-x" onclick="watchFloatToggle()" title="关闭（可在「属性脉冲」标题行重新打开）">✕</span></div><div class="wfl-sub">' + sub + '</div><div class="wfl-body">' + body + '</div>';
+    if (!el) {
+        el = document.createElement('div'); el.id = 'watchFloat';
+        document.body.appendChild(el);
+        var pos = null; try { pos = JSON.parse(localStorage.getItem('watchFloatPos') || 'null'); } catch (e) {}
+        el.style.left = (pos ? pos.x : Math.max(8, window.innerWidth - 270)) + 'px'; el.style.top = (pos ? pos.y : 84) + 'px';
+        var drag = null;
+        el.addEventListener('pointerdown', function (e) {
+            if (!e.target.closest('.wfl-head') || e.target.closest('.wfl-x')) return;
+            drag = {dx: e.clientX - el.offsetLeft, dy: e.clientY - el.offsetTop}; el.setPointerCapture(e.pointerId); el.classList.add('drag'); e.preventDefault();
+        });
+        el.addEventListener('pointermove', function (e) {
+            if (!drag) return;
+            var x = Math.min(Math.max(0, e.clientX - drag.dx), window.innerWidth - 60), y = Math.min(Math.max(0, e.clientY - drag.dy), window.innerHeight - 40);
+            el.style.left = x + 'px'; el.style.top = y + 'px';
+        });
+        var end = function () { if (!drag) return; drag = null; el.classList.remove('drag'); try { localStorage.setItem('watchFloatPos', JSON.stringify({x: el.offsetLeft, y: el.offsetTop})); } catch (e) {} };
+        el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+        window.addEventListener('resize', function () { var x = Math.min(el.offsetLeft, Math.max(0, window.innerWidth - 60)), y = Math.min(el.offsetTop, Math.max(0, window.innerHeight - 40)); el.style.left = x + 'px'; el.style.top = y + 'px'; });
+    }
+    el.innerHTML = html;
+}
+function watchPulseGoN(t) { watchOpenN(); if (window.watchNJumpTheme) watchNJumpTheme(t); }
+function watchPulseGoT(t) {
+    var i = (window._watchSortedTags || []).indexOf(t);
+    if (i < 0 && typeof showToast === 'function') showToast('T 页中暂无题材「' + t + '」，已打开 T 页', 'info');
+    watchOpenStrongArb(i < 0 ? undefined : i);
+    if (i >= 0) [700, 1800].forEach(function (ms) {        // T 页打开后会立即重绘并恢复滚动位置：延后再对位两次
+        setTimeout(function () { var r = document.getElementById('watchSaRoot'); if (r && r.style.display !== 'none') watchSaJump(i); }, ms);
+    });
+}
+function watchPulseOpen() { _watchTl.pulseOpen = !_watchTl.pulseOpen; watchTlRerender(); }
+function watchPulseGoTraj(t) {
+    if (typeof watchJumpThemeByName === 'function' && watchJumpThemeByName(t)) return;
+    var el = document.getElementById('twLtTrajectoryBody'); if (el) el.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+function watchPulseToggle() { _watchTl.pulseAll = !_watchTl.pulseAll; watchTlRerender(); }
+function watchPulsePick(t) {
+    var T = _watchTl; T.all = false; T.sel = {}; T.sel[t] = true;
+    watchTlRefresh();
+    var el = document.getElementById('twTimelineBox'); if (el) el.scrollIntoView({block: 'nearest', behavior: 'smooth'});
 }
 
 /* ===== 今日涨停时间轴 · 标签筛选 =====
@@ -124,6 +349,7 @@ function watchTlRerender() {
     var box = document.getElementById('twTimelineBox');
     if (!box) return;
     var sc = box.querySelector('.tws-tl-scroll'), left = sc ? sc.scrollLeft : 0;
+    var pc = box.querySelector('.wpl-scroll'), pleft = pc ? pc.scrollLeft : 0;
     var live = (typeof _themeWindStrengthData !== 'undefined') ? _themeWindStrengthData : null;
     var html = watchRenderTimeline(live, 'twTimelineBox');
     var tmp = document.createElement('div');
@@ -131,6 +357,8 @@ function watchTlRerender() {
     if (tmp.firstChild) box.replaceWith(tmp.firstChild); else box.remove();
     var sc2 = document.querySelector('#twTimelineBox .tws-tl-scroll');
     if (sc2) sc2.scrollLeft = left;
+    var pc2 = document.querySelector('#twTimelineBox .wpl-scroll');
+    if (pc2) pc2.scrollLeft = pleft;
 }
 function watchTlPickDate(d) {
     var T = _watchTl, latest = T.dates[T.dates.length - 1];
@@ -159,6 +387,8 @@ function watchTlTags(it) {
 function watchTlChip(it, leftPct, q, mapSearch, searchMode) {
     var html = _twsTlChip(it, leftPct, q, mapSearch, searchMode);
     var tags = watchTlTags(it).join('|').replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+    var bd = watchSealBadge(it.code, watchPulseSec(it));
+    if (bd) html = html.replace('<span class="tws-tl-name">', bd + '<span class="tws-tl-name">');
     return html.replace('<span class="tws-tl-chip', '<span data-wtags="' + tags + '" class="tws-tl-chip');
 }
 function watchTlBarInner() {
@@ -170,7 +400,8 @@ function watchTlBarInner() {
         var on = all || T.sel[x.t];
         var hue = 0; for (var ci = 0; ci < x.t.length; ci++) hue = (hue * 31 + x.t.charCodeAt(ci)) % 360;
         var sty = on ? ' style="background:hsl(' + hue + ',55%,40%);border-color:hsl(' + hue + ',55%,52%);color:#fff;"' : '';
-        h += '<span class="wtl-tag' + (on ? ' on' : '') + '"' + sty + ' data-t="' + x.t.replace(/&/g, '&amp;').replace(/"/g, '&quot;') + '" onclick="watchTlToggle(this.getAttribute(\'data-t\'))">' + x.t.replace(/&/g, '&amp;').replace(/</g, '&lt;') + ' <i>' + x.n + '</i></span>';
+        var fire = T.hot && T.hot[x.t];
+        h += '<span class="wtl-tag' + (on ? ' on' : '') + (fire ? ' wtl-fire' : '') + '"' + sty + ' data-t="' + x.t.replace(/&/g, '&amp;').replace(/"/g, '&quot;') + '" onclick="watchTlToggle(this.getAttribute(\'data-t\'))">' + (fire ? '🔥' : '') + x.t.replace(/&/g, '&amp;').replace(/</g, '&lt;') + ' <i>' + x.n + '</i></span>';
     });
     return h + '</div>';
 }
@@ -806,11 +1037,17 @@ function watchRenderTrajectory(data, bodyId) {
                 }
                 if (col.latest && !col.isReference) {
                     html += '</div><div class="lt-latest-right"><div class="lt-sub-title">未涨停 &gt;2% · ' + riseStocks.length + '<span class="lt-sub-cap">开盘 / 现价</span></div>';
-                    if (riseStocks.length) {
+                    var riseMain = riseStocks.filter(function(x) { return watchBoardOf(x.code) === '主'; });
+                    var riseGem = riseStocks.filter(function(x) { return watchBoardOf(x.code) !== '主'; });
+                    var riseOrd = riseMain.concat(riseGem);          // 上：主板；下：创/科/北（20cm 系）
+                    var riseSub = function(t, n) { return '<div class="lt-rise-sub">' + t + ' · ' + n + '</div>'; };
+                    if (riseOrd.length) {
+                        html += riseSub('主板', riseMain.length) + (riseMain.length ? '' : '<div class="lt-rise-empty">—</div>');
                         var riseNavIdx = _ltTrajectoryStockNavs.length;
-                        _ltTrajectoryStockNavs.push(riseStocks.map(function(x) { return {name: x.name || '', code: x.code || ''}; }));
+                        _ltTrajectoryStockNavs.push(riseOrd.map(function(x) { return {name: x.name || '', code: x.code || ''}; }));
                         var riseNavRef = bodyId ? ('_ltTrajNavById[\x27' + bodyId + '\x27]') : '_ltTrajectoryStockNavs';
-                        riseStocks.forEach(function(x, xi) {
+                        riseOrd.forEach(function(x, xi) {
+                            if (xi === riseMain.length) html += riseSub('创/科/北', riseGem.length);
                             var rn = (x.name || '').replace(/'/g, '');
                             var xq = (window._watchQuoteCache || {})[x.code] || {};
                             var rv = Number(x.change_pct);
