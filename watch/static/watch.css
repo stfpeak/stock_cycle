@@ -1732,3 +1732,33 @@ body:has(#watchRRoot:not([style*="display: none"])) #watchFloat { display: none 
 @keyframes r-pmflash { 0%,60% { box-shadow: 0 0 0 2px #b39ddb, 0 0 18px rgba(179,157,219,.55); } 100% { box-shadow: 0 0 0 0 transparent; } }
 .r-toast { position: fixed; left: 50%; bottom: calc(40px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 100000; padding: 10px 16px; border-radius: 20px; background: rgba(30,40,62,.95); color: #e8edf5; font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .2s; }
 .r-toast.on { opacity: 1; }
+
+/* R 页 · 手机时间轴图（同首页属性脉冲：色条 + 圆点 + 阶梯名称） */
+#watchRRoot .r-tl { position: relative; margin: 6px 0 2px; --c: #ffa726; }
+#watchRRoot .r-tl-ax { position: absolute; left: 0; right: 0; top: 0; height: 14px; border-bottom: 1px solid rgba(255,255,255,0.12); }
+#watchRRoot .r-tl-ax span { position: absolute; top: 0; transform: translateX(-50%); font-size: 10.5px; color: #7d8aa0; font-variant-numeric: tabular-nums; }
+#watchRRoot .r-tl-ax span::after { content: ''; position: absolute; left: 50%; top: 13px; width: 1px; height: 5px; background: rgba(255,255,255,0.25); }
+#watchRRoot .r-tl-lb { position: absolute; top: 15px; font-style: normal; font-size: 11.5px; font-weight: 700; color: var(--c); white-space: nowrap; }
+#watchRRoot .r-tl-bar { position: absolute; top: 30px; height: 8px; margin-left: -3px; border-radius: 4px; background: var(--c); opacity: .85; }
+#watchRRoot .r-tl-dot { position: absolute; top: 28px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: #fff; border: 2px solid var(--c); box-sizing: border-box; }
+#watchRRoot .r-tl-dot.r-tl-dz { background: #1a1015; border-color: #ff5252; }
+#watchRRoot .r-tl-ld { position: absolute; width: 0; border-left: 1px dashed var(--c); opacity: .55; }
+#watchRRoot .r-tl-c { position: absolute; width: 212px; height: 24px; display: flex; align-items: center; gap: 5px; padding: 0 7px; box-sizing: border-box; border-radius: 12px;
+  background: #0f1726; border: 1px solid var(--c); font-size: 13px; line-height: 1; white-space: nowrap; overflow: hidden; z-index: 2; }
+#watchRRoot .r-tl-c .r-t { font-size: 11.5px; }
+#watchRRoot .r-tl-c .r-n { flex: 1 1 auto; min-width: 0; font-size: 13.5px; }
+#watchRRoot .r-tl-c .r-bd { font-size: 10.5px; }
+#watchRRoot .r-tl-c .r-lb { font-size: 12px; }
+#watchRRoot .r-tl-c .r-lb0 { display: none; }
+#watchRRoot .r-tl-c .r-kc { text-align: right; flex: 0 0 auto; }
+#watchRRoot .r-tl-c .r-k { font-size: 12px; }
+#watchRRoot .r-tl-c.r-new { animation: r-flash 2.4s ease-out 1; }
+#watchRRoot .r-tl-c.r-c-zb { border-color: #ff5252; border-style: dashed; background: #1d1118; }
+#watchRRoot .r-tl-c.r-c-zb .r-n { color: #ffb3b3; }
+#watchRRoot .r-zb { font-style: normal; font-size: 10.5px; font-weight: 800; padding: 1px 4px; margin-left: 3px; border-radius: 5px; color: #ffb74d; border: 1px solid rgba(255,183,77,.6); }
+#watchRRoot .r-zb-b { color: #fff; background: #e53935; border-color: #e53935; }
+
+#watchRRoot .r-jump { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; padding: 8px; border-radius: 12px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.07); }
+#watchRRoot .r-jmp { padding: 4px 9px; border-radius: 14px; border: 1px solid rgba(79,195,176,.5); background: rgba(79,195,176,.1); color: #d6f5ef; font-size: 13px; font-weight: 600; }
+#watchRRoot .r-jmp.r-jhot { border-color: rgba(255,167,38,.6); background: rgba(255,167,38,.12); color: #ffe0b2; }
+#watchRRoot .r-his.r-flash { animation: r-pmflash 2.2s ease-out 1; }

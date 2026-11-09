@@ -959,7 +959,7 @@ def _shared_theme_wind_snapshot(top_n=10):
     now = _bj_now()
     live = _is_trading_hours()
     key = 'theme_wind_strength:%s:%s:%s' % (top_n, now.strftime('%Y%m%d'), 'live' if live else 'closed')
-    ttl = 60 if live else 300
+    ttl = 20 if live else 300
     data = _get_cached(key, ttl=ttl)
     if data is not None:
         return data
@@ -1109,7 +1109,8 @@ def _pulse_compute(timeline):
         if s is None or not it.get('code'):
             continue
         st = {'code': str(it['code']), 'name': it.get('name') or it['code'], 's': s, 'ts': _pulse_ts(s),
-              'lb': int(it.get('lianban') or 0), 'ft': int(it.get('first_time') or 0)}
+              'lb': int(it.get('lianban') or 0), 'ft': int(it.get('first_time') or 0),
+              'zb': 1 if it.get('_zb') else 0, 'zbn': int(it.get('_zbn') or 0)}
         for t in _pulse_tags(it):
             by.setdefault(t, []).append(st)
     rows = []
@@ -1194,12 +1195,51 @@ def _pulse_cols(stocks, seal):
                 'zx': ''.join("<font color='%s'>**%s**</font>" % (rainbow[i], ch) for i, ch in enumerate('直线'))}.get(k, '　')
         lbc = {2: 'blue', 3: 'purple', 4: 'orange'}.get(x['lb'], 'red')
         lb = "<font color='%s'>**%s板**</font>" % (lbc, x['lb']) if x['lb'] > 1 else '首板'
+        if x.get('zb'):
+            kind = (kind.strip('　') + ' ' if kind.strip('　') else '') + "<font color='red'>💥已炸</font>"
+        elif x.get('zbn'):
+            kind = (kind.strip('　') + ' ' if kind.strip('　') else '') + "<font color='orange'>炸%s回封</font>" % x['zbn']
         for col, v in zip(cols, (_pulse_fmt(x['s']), '**%s**' % x['name'], _pulse_board(x['code']), lb, kind)):
             col.append(v)
     weights = (2, 3, 1, 2, 3)
     return {'tag': 'column_set', 'flex_mode': 'none', 'horizontal_spacing': '4px', 'columns': [
         {'tag': 'column', 'width': 'weighted', 'weight': w, 'elements': [{'tag': 'markdown', 'content': '\n'.join(c)}]}
         for w, c in zip(weights, cols)]}
+
+
+def _pulse_stair(stocks, seal, bar=True):
+    """文字版时间轴（飞书不能画图）：一行时间条（● 每只涨停所在时刻，━ 脉冲持续区间，✖ 已炸板）+ 按封板时间从上到下排列的名称行（不缩进）。"""
+    rainbow = ['red', 'orange', 'green', 'blue', 'purple']
+    ts = [_pulse_ts(x['s']) for x in stocks]
+    lo, hi = min(ts), max(ts)
+    span = max(hi - lo, 300)
+    lines = []
+    if bar:
+        cells = 22
+        mark = ['·'] * cells
+        for i in range(cells):
+            if lo <= lo + span * (i + 0.5) / cells <= hi:
+                mark[i] = '━'
+        for x, t in zip(stocks, ts):
+            i = min(cells - 1, int((t - lo) / span * (cells - 1) + 0.5))
+            mark[i] = '✖' if x.get('zb') else ('●' if mark[i] != '✖' else '✖')
+        lines.append("<font color='grey'>%s</font> %s <font color='grey'>%s</font>" % (_pulse_fmt(stocks[0]['s']), ''.join(mark), _pulse_fmt(stocks[-1]['s'])))
+    for x, t in zip(stocks, ts):
+        k = (seal.get(x['code']) or {}).get('k')
+        if k is None and x['ft'] and x['ft'] <= 92530:
+            k = 'yz'
+        kind = {'yz': "<font color='red'>一字</font>", 'hs': "<font color='grey'>换手</font>",
+                'zx': ''.join("<font color='%s'>**%s**</font>" % (rainbow[i], ch) for i, ch in enumerate('直线'))}.get(k, '')
+        lbc = {2: 'blue', 3: 'purple', 4: 'orange'}.get(x['lb'], 'red')
+        lb = "<font color='%s'>**%s板**</font>" % (lbc, x['lb']) if x['lb'] > 1 else ''
+        bd = _pulse_board(x['code'])
+        zb = "<font color='red'>**💥已炸**</font>" if x.get('zb') else ("<font color='orange'>炸%s回封</font>" % x['zbn'] if x.get('zbn') else '')
+        name = '**%s**' % x['name']
+        if x.get('zb'):
+            name = "<font color='red'>%s</font>" % name
+        parts = ["<font color='grey'>%s</font>" % _pulse_fmt(x['s']), name, "<font color='grey'>%s</font>" % bd if bd != '主' else '', lb, kind, zb]
+        lines.append(' '.join(q for q in parts if q))
+    return {'tag': 'markdown', 'content': '\n'.join(lines)}
 
 
 def _pulse_box(head, sections, seal, bg, bd):
@@ -1209,7 +1249,7 @@ def _pulse_box(head, sections, seal, bg, bd):
     for sub, stocks in sections:
         if sub:
             els.append({'tag': 'markdown', 'content': sub})
-        els.append(_pulse_cols(stocks, seal))
+        els.append(_pulse_stair(stocks, seal))
     return {'tag': 'interactive_container', 'width': 'fill', 'height': 'auto', 'has_border': True,
             'border_color': bd, 'corner_radius': '8px', 'background_style': bg, 'padding': '8px 12px 8px 12px',
             'margin': '4px 0px 4px 0px', 'elements': els}
@@ -1227,7 +1267,7 @@ def _pulse_wave_head(w):
     return '%s 第%s波 %s~%s · %s只' % ('🔥' if w['hot'] else '⚡', w['idx'], _pulse_fmt(w['c'][0]['s']), _pulse_fmt(w['c'][-1]['s']), w['n'])
 
 
-def _feishu_send_pulse_card(timeline, now, new_themes):
+def _feishu_send_pulse_card(timeline, now, new_themes, test=False, sim_ts=None):
     if not _FEISHU_WEBHOOK_URL:
         return False
     try:
@@ -1235,6 +1275,8 @@ def _feishu_send_pulse_card(timeline, now, new_themes):
         sec = now.hour * 3600 + now.minute * 60 + now.second
         if _is_trading_hours():
             now_ts = _pulse_ts(sec)
+        if sim_ts is not None:
+            now_ts = sim_ts
         current, history = _pulse_snapshot(timeline, now_ts)
         day = now.strftime('%Y-%m-%d')
         seal = {}
@@ -1243,18 +1285,31 @@ def _feishu_send_pulse_card(timeline, now, new_themes):
             seal = _seal_types(day, list({(x['code'], x['ft']) for w in allw for x in w['c'] if x['ft']})[:300])
         except Exception:
             seal = {}
-        # 当前脉冲（放最前）：一波一块，标明第几波
-        cur_boxes = []
+        # 当前脉冲（放最前）：一个题材一块；该题材所有波（含已结束的）都放进同一块，多波才标第几波
+        hist_by = {h['t']: h for h in history}
+        cur_themes = []
         for it in current:
-            wave = ' 第%s波' % it['idx'] if it['total'] > 1 else ''      # 只有一波就不写波次
-            head = '%s**%s**%s %s只 %s~%s' % (
-                '🔥' if it['hot'] else '⚡', it['t'], wave, it['n'],
-                _pulse_fmt(it['c'][0]['s']), _pulse_fmt(it['c'][-1]['s']))
-            if it['t'] in new_themes:
+            if it['t'] not in cur_themes:
+                cur_themes.append(it['t'])
+        cur_boxes = []
+        for th in cur_themes:
+            waves = [it for it in current if it['t'] == th] + list((hist_by.get(th) or {}).get('waves') or [])
+            waves.sort(key=lambda w: w['idx'])
+            hot = any(w['hot'] for w in waves)
+            live_w = [w for w in waves if w.get('live')]
+            if len(waves) > 1:
+                head = '%s**%s**' % ('🔥' if hot else '⚡', th)
+                secs = [(_pulse_wave_head(w) + (' ● 进行中' if w.get('live') else ''), w['c']) for w in waves]
+            else:
+                w = waves[0]
+                head = '%s**%s** %s只 %s~%s' % ('🔥' if hot else '⚡', th, w['n'], _pulse_fmt(w['c'][0]['s']), _pulse_fmt(w['c'][-1]['s']))
+                secs = [(None, w['c'])]
+            if th in new_themes:
                 head += ' 🆕'
-            hot = it['hot']
-            cur_boxes.append(_pulse_box(head, [(None, it['c'])], seal, _PULSE_BG_HOT if hot else _PULSE_BG_PLAIN,
-                                        _PULSE_BD_HOT if hot else _PULSE_BD_PLAIN))
+            live_hot = any(w['hot'] for w in live_w)
+            cur_boxes.append(_pulse_box(head, secs, seal, _PULSE_BG_HOT if live_hot else _PULSE_BG_PLAIN,
+                                        _PULSE_BD_HOT if live_hot else _PULSE_BD_PLAIN))
+        history = [h for h in history if h['t'] not in cur_themes]      # 已在「当前」里合并展示的题材，不在下面重复
         # 已脉冲/异动（放后面）：一个题材一块，已结束的各波分开说明
         his_boxes = []
         for h in history:
@@ -1278,6 +1333,11 @@ def _feishu_send_pulse_card(timeline, now, new_themes):
             used += n
         keep.reverse()
         hidden = len(his_boxes) - len(keep)
+        hidden_line = ''
+        if hidden:
+            hidden_line = '　'.join('%s %s只 %s~%s' % (h['t'], sum(w['n'] for w in h['waves']),
+                                                    _pulse_fmt(h['waves'][0]['c'][0]['s']), _pulse_fmt(h['waves'][-1]['c'][-1]['s']))
+                                  for h in history[:hidden])
         elements = [{'tag': 'div', 'text': {'tag': 'lark_md', 'content':
             '**%s**' % _feishu_color('● 当前脉冲/异动', 'red')}}]
         if not cur_boxes:
@@ -1285,10 +1345,12 @@ def _feishu_send_pulse_card(timeline, now, new_themes):
         elements += cur_boxes
         elements.append({'tag': 'hr'})
         elements.append({'tag': 'div', 'text': {'tag': 'lark_md', 'content':
-            '**%s**%s' % (_feishu_color('✅ 已脉冲/异动题材', 'green'), _feishu_color('　（更早 %s 个题材未显示）' % hidden, 'grey') if hidden else '')}})
+            '**%s**%s' % (_feishu_color('✅ 已脉冲/异动题材', 'green'), _feishu_color('　（更早 %s 个题材折叠为摘要）' % hidden, 'grey') if hidden else '')}})
         if not keep:
             elements.append({'tag': 'div', 'text': {'tag': 'lark_md', 'content': _feishu_color('暂无', 'grey')}})
         elements += keep
+        if hidden_line:
+            elements.append({'tag': 'div', 'text': {'tag': 'lark_md', 'content': _feishu_color('更早：' + hidden_line, 'grey')}})
         elements.append({'tag': 'div', 'text': {'tag': 'plain_text', 'text_size': 'notation', 'text_color': 'grey', 'content':
             '同题材涨停股相邻≤10分钟连成脉冲（≥2只），≥3只为题材异动；进行中=距最后一只≤10分钟 · 主/创/科 · 与盯盘页「属性脉冲」同源 · %s' % now.strftime('%H:%M:%S')}})
         title_new = '、'.join(sorted(new_themes)[:3]) if new_themes else ''
@@ -1296,7 +1358,7 @@ def _feishu_send_pulse_card(timeline, now, new_themes):
             'schema': '2.0',
             'config': {'width_mode': 'fill'},
             'header': {'template': 'orange', 'title': {'tag': 'plain_text', 'content':
-                '🔥 题材异动 · %s%s' % (now.strftime('%m-%d %H:%M'), (' · ' + title_new) if title_new else '')}},
+                '%s🔥 题材异动 · %s%s' % ('🧪测试 ' if test else '', now.strftime('%m-%d %H:%M'), (' · ' + title_new) if title_new else '')}},
             'body': {'elements': elements}}}
         resp = requests.post(_FEISHU_WEBHOOK_URL, json=payload, timeout=12)
         try:
@@ -1312,6 +1374,91 @@ def _feishu_send_pulse_card(timeline, now, new_themes):
         return False
 
 
+_pulse_zb_cache = {'key': '', 'ts': 0.0, 'map': {}}
+
+
+def _pulse_zb_pool(day_ymd, live):
+    """东财炸板股池（上板后现已炸开、未回封的票）：{code: {name, ft, n, industry}}；盘中 30s / 盘后 10min 缓存，失败沿用旧值。"""
+    c = _pulse_zb_cache
+    ttl = 30 if live else 600
+    if c['key'] == day_ymd and time.time() - c['ts'] < ttl:
+        return c['map']
+    m = c['map'] if c['key'] == day_ymd else {}
+    try:
+        import akshare as ak
+        df = ak.stock_zt_pool_zbgc_em(date=day_ymd)
+        m = {}
+        if df is not None and not df.empty:
+            for _, r in df.iterrows():
+                code = str(r.get('代码') or '').zfill(6)
+                try:
+                    ft = int(r.get('首次封板时间'))
+                except (TypeError, ValueError):
+                    continue
+                if code and ft >= 91500:
+                    m[code] = {'name': str(r.get('名称') or code), 'ft': ft, 'n': int(r.get('炸板次数') or 1),
+                               'industry': str(r.get('所属行业') or '')}
+    except Exception as exc:
+        print('[炸板池] 拉取失败: %s' % str(exc)[:80])
+    c.update(key=day_ymd, ts=time.time(), map=m)
+    return m
+
+
+def _pulse_timeline_with_zb(tws, live):
+    """时间轴 + 炸板标记：已回封的票带 _zbn（炸板次数），上板后炸开未回封的票补进时间轴并带 _zb=1。
+    R 页与飞书卡片共用，口径一致。仅当日有效（历史日/回退日原样返回）。"""
+    timeline = list((tws or {}).get('timeline') or [])
+    day = (tws or {}).get('date') or ''
+    if (tws or {}).get('live_unavailable') or (not timeline and not live):
+        return timeline
+    day_ymd = day.replace('-', '')
+    if day != _bj_now().strftime('%Y-%m-%d'):
+        return timeline
+    try:
+        pool = (_get_zt_timeline_pool_cached() if live else _get_zt_pool_cached()) or []
+        zbn = {p['code']: int(p.get('zb_count') or 0) for p in pool}
+    except Exception:
+        zbn = {}
+    out, have = [], set()
+    for it in timeline:
+        n = zbn.get(str(it.get('code')), 0)
+        if n:
+            it = dict(it, _zbn=n)
+        out.append(it)
+        have.add(str(it.get('code')))
+    for code, z in _pulse_zb_pool(day_ymd, live).items():
+        if code in have or _sq_is_st(z['name']):
+            continue
+        tags = []
+        try:
+            kpl = _kpl_resolve_stock_kpl(code, day) or {}
+            tags = _tws_mab_tags(kpl)          # 与时间轴同一套 M+A+B 标签口径
+        except Exception:
+            tags = []
+        if not tags and z['industry']:
+            tags = [{'t': z['industry'], 'p': 0}]
+        if not tags:
+            continue
+        out.append({'code': code, 'name': z['name'], 'first_time': z['ft'], 'lianban': 1, 'theme': tags[0]['t'],
+                    'mab': tags, '_zb': 1, '_zbn': z['n']})
+    return out
+
+
+def _pulse_refresh_window():
+    """R 页自动刷新窗口：交易日 9:15（竞价）~16:00（收盘后 1 小时）；窗口外前端停止轮询，resume_in = 距下一个交易日 9:15 的秒数。"""
+    bj = _bj_now()
+    total = bj.hour * 60 + bj.minute
+    if bj.strftime('%Y%m%d') in _trading_days and 555 <= total < 960:
+        return True, 0
+    for k in range(0, 15):
+        d = bj + timedelta(days=k)
+        if d.strftime('%Y%m%d') in _trading_days:
+            t = d.replace(hour=9, minute=15, second=0, microsecond=0)
+            if t > bj:
+                return False, int((t - bj).total_seconds())
+    return False, 6 * 3600
+
+
 _pulse_live_cache = {'ts': 0, 'data': None}
 
 
@@ -1324,9 +1471,9 @@ def _pulse_live_payload():
     bj = _bj_now()
     trading = _is_trading_hours()
     tws = _shared_theme_wind_snapshot(top_n=10) or {}
-    timeline = tws.get('timeline') or []
     day = tws.get('date') or bj.strftime('%Y-%m-%d')
     live = bool(trading and day == bj.strftime('%Y-%m-%d'))
+    timeline = _pulse_timeline_with_zb(tws, trading)
     now_ts = _pulse_ts(bj.hour * 3600 + bj.minute * 60 + bj.second) if live else None
     current, history = _pulse_snapshot(timeline, now_ts)
     seal = {}
@@ -1340,8 +1487,8 @@ def _pulse_live_payload():
         k = (seal.get(x['code']) or {}).get('k')
         if k is None and x['ft'] and x['ft'] <= 92530:
             k = 'yz'
-        return {'code': x['code'], 'name': x['name'], 't': _pulse_fmt(x['s']), 'board': _pulse_board(x['code']),
-                'lb': x['lb'], 'kind': k or ''}
+        return {'code': x['code'], 'name': x['name'], 't': _pulse_fmt(x['s']), 'sec': x['s'], 'board': _pulse_board(x['code']),
+                'lb': x['lb'], 'kind': k or '', 'zb': x['zb'], 'zbn': x['zbn']}
 
     def wave(w):
         return {'idx': w['idx'], 'hot': w['hot'], 'n': w['n'], 't0': _pulse_fmt(w['c'][0]['s']),
@@ -1380,26 +1527,27 @@ def _pulse_live_payload():
         print('[R页] 晋级数据失败: %s' % exc)
     data = {'date': day, 'live': live, 'trading': trading, 'updated': bj.strftime('%H:%M:%S'),
             'current': cur, 'history': his, 'promotion': promo}
+    data['active'], data['resume_in'] = _pulse_refresh_window()
     c['ts'], c['data'] = now, data
     return data
 
 
 def _feishu_pulse_loop():
-    """盘中每 30 秒检查：出现新的脉冲（≥2只）或已有脉冲新增成员时，发一张完整卡片。
+    """盘中每 10 秒检查：出现新的脉冲（≥2只）或已有脉冲新增成员时，发一张完整卡片。
     （触发口径：任一脉冲 ≥2 只即触发；已有脉冲新增成员也触发。）
     卡片 = 当前进行中的脉冲在前 + 今日已异动题材在后。"""
     _feishu_load_push_state()
     while True:
         try:
             if not _is_trading_hours():
-                time.sleep(30)
+                time.sleep(10)
                 continue
             now = _bj_now()
             tws = _shared_theme_wind_snapshot(top_n=10)
             if not tws or tws.get('live_unavailable') or tws.get('date') != now.strftime('%Y-%m-%d'):
-                time.sleep(20)
+                time.sleep(10)
                 continue
-            timeline = tws.get('timeline') or []
+            timeline = _pulse_timeline_with_zb(tws, True)
             sig = _pulse_signature(timeline)
             day = now.strftime('%Y%m%d')
             with _feishu_push_lock:
@@ -1410,10 +1558,10 @@ def _feishu_pulse_loop():
                 with _feishu_push_lock:
                     _feishu_push_state['pulse'] = {day: sorted(sig | old)}
                     _feishu_save_push_state()
-            time.sleep(30)
+            time.sleep(10)
         except Exception as exc:
             print('[飞书异动推送] 循环异常: %s' % exc)
-            time.sleep(30)
+            time.sleep(10)
 
 
 def _rtw_load_seen():
@@ -2909,6 +3057,12 @@ def _kpl_build_akshare_rows(df, date_fmt):
     rows = []
     if df is None or df.empty:
         return rows
+    fpl = {}
+    try:
+        if date_fmt == _bj_now().strftime('%Y-%m-%d') and _is_trading_hours():
+            fpl = _kpl_fpl_today_map(date_fmt.replace('-', ''))
+    except Exception:
+        fpl = {}
     for _, row in df.iterrows():
         try:
             code = str(int(row['代码'])).zfill(6)
@@ -2916,13 +3070,21 @@ def _kpl_build_akshare_rows(df, date_fmt):
             code = str(row.get('代码', '') or '').zfill(6)
         name = str(row.get('名称', '')) or ''
         lianban = int(row['连板数']) if pd.notna(row.get('连板数')) else 0
-        # LEVEL 1: _kpl_rows_by_stock 按日期倒序第一个非空 reason_tag
+        # LEVEL 0（盘中）：开盘啦今日真实涨停原因，与盘后日文件同源
         reason_tag = ''
         reason_brief = ''
         plate_name = ''
         concepts = ''
         reason_detail = ''
-        for r in sorted(_kpl_rows_by_stock.get(code, []), key=lambda x: x.get('date', ''), reverse=True):
+        _f = fpl.get(code)
+        if _f:
+            reason_tag = (_f.get('reason_tag') or '').strip()
+            reason_brief = _f.get('reason_brief', '') or ''
+            plate_name = _f.get('plate_name', '') or ''
+            concepts = _f.get('concepts', '') or ''
+            reason_detail = _f.get('reason_detail', '') or ''
+        # LEVEL 1: _kpl_rows_by_stock 按日期倒序第一个非空 reason_tag
+        for r in ([] if reason_tag else sorted(_kpl_rows_by_stock.get(code, []), key=lambda x: x.get('date', ''), reverse=True)):
             reason_tag = (r.get('reason_tag', '') or '').strip()
             if reason_tag:
                 reason_brief = r.get('reason_brief', '') or ''
@@ -2956,6 +3118,41 @@ def _kpl_build_akshare_rows(df, date_fmt):
             'first_time': first_time,
         })
     return rows
+
+
+_kpl_fpl_today = {'ymd': '', 'ts': 0.0, 'map': {}, 'busy': False}
+
+
+def _kpl_fpl_today_map(today_ymd):
+    """盘中拉取开盘啦「今日」涨停原因（与盘后日文件同源同字段：reason_tag/plate_name/reason_brief/detail/concepts），
+    45s 刷新一次，后台线程拉取不阻塞请求；首次最多等 8 秒。返回 {code: record}，失败沿用上一份。"""
+    st = _kpl_fpl_today
+    if st['ymd'] != today_ymd:
+        st.update(ymd=today_ymd, ts=0.0, map={})
+    if time.time() - st['ts'] >= 45 and not st['busy']:
+        st['busy'] = True
+
+        def work():
+            try:
+                from data.update_zt_data import fetch_day_data
+                recs = fetch_day_data('%s-%s-%s' % (today_ymd[:4], today_ymd[4:6], today_ymd[6:]), enrich=False, attempts=1)
+                m = {}
+                for r in recs or []:
+                    c = r.get('stock_code')
+                    if c and c not in m and (r.get('reason_tag') or '').strip():
+                        m[c] = r
+                if m:
+                    st['map'] = m
+            except Exception as exc:
+                print('[开盘啦盘中] 拉取失败: %s' % str(exc)[:80])
+            finally:
+                st['ts'] = time.time()
+                st['busy'] = False
+        th = threading.Thread(target=work, daemon=True, name='kpl-fpl-today')
+        th.start()
+        if not st['map']:
+            th.join(8)
+    return st['map']
 
 
 _kpl_ak_zt_cache = {}
@@ -44861,6 +45058,18 @@ class Handler(BaseHTTPRequestHandler):
             day = query.get('date', [''])[0].strip().replace('-', '')
             self._respond_json(_auction_load_report(day), cors_headers)
 
+        elif path == '/api/pulse_feishu_test':
+            # 手动试发：用当前时间轴 + 炸板标记生成一张飞书脉冲卡，标题带「测试」；sim=HHMM 可模拟盘中时刻（收盘后看「进行中」样式）
+            try:
+                q = query
+                tws = _shared_theme_wind_snapshot(top_n=10) or {}
+                tl = _pulse_timeline_with_zb(tws, False)
+                sim = (q.get('sim') or [''])[0]
+                sim_ts = int(sim[:2]) * 3600 + int(sim[2:4]) * 60 if len(sim) == 4 and sim.isdigit() else None
+                ok = _feishu_send_pulse_card(tl, _bj_now(), set(), test=True, sim_ts=sim_ts)
+                self._respond_json({'ok': bool(ok), 'sim': sim, 'stocks': len(tl)}, cors_headers)
+            except Exception as exc:
+                self._respond_json({'ok': False, 'error': str(exc)}, cors_headers)
         elif path == '/api/pulse_live':
             # 手机 R 页：当前脉冲/异动 + 已脉冲/异动题材（与飞书推送同源）
             try:
