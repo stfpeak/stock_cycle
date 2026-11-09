@@ -1249,7 +1249,7 @@ def _pulse_box(head, sections, seal, bg, bd):
     for sub, stocks in sections:
         if sub:
             els.append({'tag': 'markdown', 'content': sub})
-        els.append(_pulse_stair(stocks, seal))
+        els.append(_pulse_cols(stocks, seal))
     return {'tag': 'interactive_container', 'width': 'fill', 'height': 'auto', 'has_border': True,
             'border_color': bd, 'corner_radius': '8px', 'background_style': bg, 'padding': '8px 12px 8px 12px',
             'margin': '4px 0px 4px 0px', 'elements': els}
@@ -1267,7 +1267,7 @@ def _pulse_wave_head(w):
     return '%s 第%s波 %s~%s · %s只' % ('🔥' if w['hot'] else '⚡', w['idx'], _pulse_fmt(w['c'][0]['s']), _pulse_fmt(w['c'][-1]['s']), w['n'])
 
 
-def _feishu_send_pulse_card(timeline, now, new_themes, test=False, sim_ts=None):
+def _feishu_send_pulse_card(timeline, now, new_themes, test=False, sim_ts=None, day=None):
     if not _FEISHU_WEBHOOK_URL:
         return False
     try:
@@ -1278,7 +1278,7 @@ def _feishu_send_pulse_card(timeline, now, new_themes, test=False, sim_ts=None):
         if sim_ts is not None:
             now_ts = sim_ts
         current, history = _pulse_snapshot(timeline, now_ts)
-        day = now.strftime('%Y-%m-%d')
+        day = day or now.strftime('%Y-%m-%d')
         seal = {}
         try:
             allw = [w for it in current for w in [it]] + [w for h in history for w in h['waves']]
@@ -1404,6 +1404,28 @@ def _pulse_zb_pool(day_ymd, live):
     return m
 
 
+_pulse_hist_zbn_cache = {}
+
+
+def _pulse_hist_zbn(day_ymd):
+    """某历史日涨停池中各票的炸板次数 {code: n}（akshare 历史涨停池，按日缓存；失败返回空）。"""
+    if day_ymd in _pulse_hist_zbn_cache:
+        return _pulse_hist_zbn_cache[day_ymd]
+    m = {}
+    try:
+        import akshare as ak
+        df = ak.stock_zt_pool_em(date=day_ymd)
+        if df is not None and not df.empty:
+            for _, r in df.iterrows():
+                n = int(r.get('炸板次数') or 0)
+                if n:
+                    m[str(r.get('代码') or '').zfill(6)] = n
+        _pulse_hist_zbn_cache[day_ymd] = m
+    except Exception as exc:
+        print('[炸板次数] 拉取失败: %s' % str(exc)[:80])
+    return m
+
+
 def _pulse_timeline_with_zb(tws, live):
     """时间轴 + 炸板标记：已回封的票带 _zbn（炸板次数），上板后炸开未回封的票补进时间轴并带 _zb=1。
     R 页与飞书卡片共用，口径一致。仅当日有效（历史日/回退日原样返回）。"""
@@ -1412,11 +1434,13 @@ def _pulse_timeline_with_zb(tws, live):
     if (tws or {}).get('live_unavailable') or (not timeline and not live):
         return timeline
     day_ymd = day.replace('-', '')
-    if day != _bj_now().strftime('%Y-%m-%d'):
-        return timeline
+    is_today = day == _bj_now().strftime('%Y-%m-%d')
     try:
-        pool = (_get_zt_timeline_pool_cached() if live else _get_zt_pool_cached()) or []
-        zbn = {p['code']: int(p.get('zb_count') or 0) for p in pool}
+        if is_today:
+            pool = (_get_zt_timeline_pool_cached() if live else _get_zt_pool_cached()) or []
+            zbn = {p['code']: int(p.get('zb_count') or 0) for p in pool}
+        else:
+            zbn = _pulse_hist_zbn(day_ymd)       # 非今日（休市/盘前回看上一交易日）：按该日涨停池取炸板次数
     except Exception:
         zbn = {}
     out, have = [], set()
@@ -45066,7 +45090,7 @@ class Handler(BaseHTTPRequestHandler):
                 tl = _pulse_timeline_with_zb(tws, False)
                 sim = (q.get('sim') or [''])[0]
                 sim_ts = int(sim[:2]) * 3600 + int(sim[2:4]) * 60 if len(sim) == 4 and sim.isdigit() else None
-                ok = _feishu_send_pulse_card(tl, _bj_now(), set(), test=True, sim_ts=sim_ts)
+                ok = _feishu_send_pulse_card(tl, _bj_now(), set(), test=True, sim_ts=sim_ts, day=tws.get('date'))
                 self._respond_json({'ok': bool(ok), 'sim': sim, 'stocks': len(tl)}, cors_headers)
             except Exception as exc:
                 self._respond_json({'ok': False, 'error': str(exc)}, cors_headers)
